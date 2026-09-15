@@ -1,0 +1,49 @@
+[package]
+name = "pg-catalog"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["James Sadler <freshtonic@gmail.com>"]
+license = "MIT"
+description = "A semantic Rust model of a PostgreSQL database's system catalog"
+keywords = ["postgresql", "catalog", "types", "schema"]
+categories = ["database"]
+repository = "https://github.com/freshtonic/pg-catalog"
+readme = "README.md"
+publish = false
+
+[workspace]
+members = ["xtask"]
+resolver = "3"
+
+[features]
+default = []
+# Serialize and deserialize a Catalog.
+serde = ["dep:serde"]
+# Embed a stock PostgreSQL 17 Catalog as a Fixture. Implies `serde`.
+fixture = ["serde", "dep:serde_json", "dep:zstd"]
+# Async `Executor` trait.
+async = []
+# Sync adapter for the `postgres` crate.
+postgres = ["dep:postgres"]
+# Async adapter for the `tokio-postgres` crate. Implies `async`.
+tokio-postgres = ["async", "dep:tokio-postgres"]
+
+[dependencies]
+thiserror = "2"
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+zstd = { version = "0.13", optional = true }
+postgres = { version = "0.19", optional = true }
+tokio-postgres = { version = "0.7", optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "warn"
