@@ -15,8 +15,12 @@ pub struct Oid(
 );
 
 impl fmt::Display for Oid {
+    /// Print the number.
+    ///
+    /// This passes the format string on to the number, so a width and an
+    /// alignment apply to it.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
+        fmt::Display::fmt(&self.0, f)
     }
 }
 
@@ -33,6 +37,11 @@ mod tests {
     #[test]
     fn display_prints_the_number() {
         assert_eq!(Oid(23).to_string(), "23");
+    }
+
+    #[test]
+    fn display_obeys_a_width() {
+        assert_eq!(format!("[{:>5}]", Oid(23)), "[   23]");
     }
 
     #[test]

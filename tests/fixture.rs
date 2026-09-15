@@ -87,6 +87,53 @@ fn pg_class_is_a_relation_with_a_relname_column() {
     );
 }
 
+/// Compare two catalogs arena by arena.
+///
+/// The arenas are private, so the comparison reads each one through its
+/// iterator. Each iterator gives the entities in handle order.
+fn assert_same_catalog(left: &Catalog, right: &Catalog) {
+    assert_eq!(left.metadata(), right.metadata(), "metadata");
+
+    macro_rules! same_arena {
+        ($arena:ident) => {{
+            assert_eq!(
+                left.$arena().len(),
+                right.$arena().len(),
+                concat!(stringify!($arena), " count")
+            );
+            for ((handle, a), (other, b)) in left.$arena().zip(right.$arena()) {
+                assert_eq!(handle, other, concat!(stringify!($arena), " handle"));
+                assert_eq!(a, b, "{} {:?}", stringify!($arena), handle);
+            }
+        }};
+    }
+
+    same_arena!(schemas);
+    same_arena!(extensions);
+    same_arena!(types);
+    same_arena!(relations);
+    same_arena!(functions);
+    same_arena!(operators);
+    same_arena!(casts);
+}
+
+#[test]
+fn the_fixture_makes_a_serde_round_trip() {
+    let catalog = pg17();
+    let json = serde_json::to_string(&catalog).expect("the catalog serializes");
+    let back: Catalog = serde_json::from_str(&json).expect("the catalog deserializes");
+
+    assert_same_catalog(&catalog, &back);
+
+    // The rebuilt catalog answers a lookup the same way, so its indexes and
+    // its built-ins came back too.
+    let int4 = back.builtin(Builtin::Int4);
+    assert_eq!(back.as_builtin(int4), Some(Builtin::Int4));
+    assert_eq!(catalog.builtin(Builtin::Int4), int4);
+    let name = QualifiedName::new("pg_catalog", "pg_class");
+    assert_eq!(back.relation_named(&name), catalog.relation_named(&name));
+}
+
 #[test]
 fn the_builder_adds_a_table_to_the_fixture() {
     let catalog = pg17();
