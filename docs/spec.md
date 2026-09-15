@@ -227,7 +227,7 @@ Generation rules:
 - Order: by OID ascending. Discriminants are contiguous from 0 so
   `Builtin::ALL[b as usize] == b`.
 - Header comment names the source file and says the file is generated.
-- Expected count for 17.9: 113 entries plus 83 arrays, 196 variants.
+- Expected count for 17.9: 112 entries plus 81 arrays, 193 variants.
 
 Hand-written in `src/builtin.rs`: `impl Builtin { pub fn from_oid(Oid) -> Option<Builtin> }`
 (binary search over a const sorted table or a match).
