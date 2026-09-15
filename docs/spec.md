@@ -45,6 +45,7 @@ src/
   loader/parse.rs     row-to-value helpers
   loader/build.rs     kept-set computation and Catalog assembly
   executor.rs         Executor, load(); AsyncExecutor, load_async() (feature async)
+  adapters/mod.rs             declares the two adapters
   adapters/postgres.rs        feature postgres
   adapters/tokio_postgres.rs  feature tokio-postgres
   fixture.rs          feature fixture
@@ -436,7 +437,10 @@ pub enum LoadError {
 ```
 
 `Parse` is fatal only for columns whose failure means the query is wrong
-(OIDs, booleans, version). Per-entity oddities become `Diagnostic`s.
+(OIDs, booleans, version, a "one letter" cell that is not one character).
+Per-entity oddities, such as an unknown letter in `prokind` or
+`castmethod`, become `UnparsableValue` diagnostics and skip that entity.
+A pseudo-type wins over `is_array`, so `_record` is `Pseudo(RecordArray)`.
 
 ## 10. Loader (sans-IO)
 
@@ -457,7 +461,8 @@ impl Loader {
     pub const BOOTSTRAP_QUERY: &'static str;
     pub fn new(bootstrap_rows: Rows) -> Result<Self, LoadError>;
     pub fn version(&self) -> ServerVersion;
-    /// Every query to run, with its SQL text. Order is irrelevant.
+    /// Every query still to run, with its SQL text. Order is irrelevant.
+    /// `Version` is omitted because the bootstrap row already answered it.
     pub fn queries(&self) -> impl Iterator<Item = (QueryId, &'static str)>;
     pub fn feed(&mut self, query: QueryId, rows: Rows);
     /// Fails with MissingRows if any query was not fed.
