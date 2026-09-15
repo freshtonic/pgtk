@@ -524,7 +524,9 @@ NOT LIKE 'pg\_temp%'` via a join on `pg_namespace`.
   `ORDER BY oid`.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
-listing its column indexes. Validate each query against PostgreSQL 14, 15,
+listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
+`pub fn sql(id: QueryId) -> &'static str`; `loader/mod.rs` re-exports
+`QueryId`. `loader/queries.rs` has no `use` of anything else in the crate. Validate each query against PostgreSQL 14, 15,
 16, and 17 in Docker (`postgres:14`, `:15`, `:16`, `:17`).
 
 ### Assembly policy (`loader/build.rs`)
@@ -639,9 +641,13 @@ Wave 1, in parallel, each in its own worktree and branch:
 - **W1-builtins**: the `gen-builtins` xtask and the real
   `src/builtin/generated.rs`. Must produce exactly the enum shape in
   section 4; verify count 196 and spot-check OIDs against a live server.
-- **W1-queries**: `src/loader/queries.rs` SQL text and `QueryId`, plus a
-  shell script `scripts/check-queries.sh` that runs every query against
-  `postgres:14`..`:17` in Docker and fails on any error. No other Rust.
+- **W1-queries**: `src/loader/queries.rs` (SQL text, `QueryId`, `sql()`),
+  plus a shell script `scripts/check-queries.sh` that runs every query
+  against `postgres:14`..`:17` in Docker and fails on any error. No other
+  Rust. W1-model writes a placeholder `queries.rs` with the same public
+  surface and stub SQL so it compiles; on merge the W1-queries file wins.
+  Likewise W1-model's placeholder `builtin/generated.rs` loses to
+  W1-builtins' file on merge.
 
 Wave 2, after Wave 1 merges:
 
