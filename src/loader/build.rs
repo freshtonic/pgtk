@@ -1,0 +1,610 @@
+//! The assembly policy: the loader turns query rows into a catalog here.
+//!
+//! The policy is section 10 of `docs/spec.md`. The steps are:
+//!
+//! 1. Read every query into a typed row.
+//! 2. Keep every schema. Keep an extension when its schema is loaded.
+//! 3. Compute the set of types to keep, to a fixpoint.
+//! 4. Compute the set of relations to keep.
+//! 5. Give each kept entity a handle, in OID order.
+//! 6. Build every entity. A cycle closes through a handle that step 5
+//!    computed, so nothing needs a patch afterwards.
+//! 7. Push everything into the builder, in handle order, and finish.
+//!
+//! An entity that the loader cannot keep produces a
+//! [`Diagnostic`](crate::Diagnostic). Only a value that makes a query wrong
+//! stops the load.
+
+use std::collections::HashMap;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::builder::CatalogBuilder;
+use crate::catalog::{Metadata, ServerVersion};
+use crate::diagnostic::{Diagnostic, EntityKind};
+use crate::error::LoadError;
+use crate::loader::parse::Cells;
+use crate::loader::queries::QueryId;
+use crate::loader::{Loaded, Rows};
+use crate::name::Name;
+use crate::oid::Oid;
+
+// ---------------------------------------------------------------------------
+// Raw rows
+// ---------------------------------------------------------------------------
+
+/// One row of [`QueryId::Schemas`].
+#[derive(Debug, Clone)]
+struct SchemaRow {
+    /// The OID of the schema.
+    oid: Oid,
+    /// The name of the schema.
+    name: Name,
+}
+
+/// One row of [`QueryId::Extensions`].
+#[derive(Debug, Clone)]
+struct ExtensionRow {
+    /// The OID of the extension.
+    oid: Oid,
+    /// The name of the extension.
+    name: Name,
+    /// The installed version.
+    version: String,
+    /// The OID of the schema that holds the extension.
+    namespace: Oid,
+}
+
+/// One row of [`QueryId::ExtensionMembers`].
+#[derive(Debug, Clone)]
+struct MemberRow {
+    /// The catalog that holds the member object.
+    class: MemberClass,
+    /// The OID of the member object.
+    oid: Oid,
+    /// The OID of the extension that owns it.
+    extension: Oid,
+}
+
+/// The catalog that holds one member of an extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MemberClass {
+    /// A row of `pg_type`.
+    Type,
+    /// A row of `pg_class`.
+    Class,
+    /// A row of `pg_proc`.
+    Proc,
+    /// A row of `pg_operator`.
+    Operator,
+    /// A row of `pg_cast`.
+    Cast,
+    /// A row of `pg_namespace`.
+    Namespace,
+    /// A catalog that this model does not hold.
+    Other,
+}
+
+impl MemberClass {
+    /// Read the `class_label` of a member row.
+    fn from_label(label: &str) -> Self {
+        match label {
+            "type" => MemberClass::Type,
+            "class" => MemberClass::Class,
+            "proc" => MemberClass::Proc,
+            "operator" => MemberClass::Operator,
+            "cast" => MemberClass::Cast,
+            "namespace" => MemberClass::Namespace,
+            _ => MemberClass::Other,
+        }
+    }
+}
+
+/// One row of [`QueryId::Types`].
+#[derive(Debug, Clone)]
+struct TypeRow {
+    /// The OID of the type.
+    oid: Oid,
+    /// The name of the type.
+    name: Name,
+    /// The OID of the schema that holds the type.
+    namespace: Oid,
+    /// The `typtype` letter.
+    typtype: char,
+    /// The `typcategory` letter.
+    category: char,
+    /// True when the type is preferred in its category.
+    is_preferred: bool,
+    /// True when the type takes a collation.
+    collatable: bool,
+    /// The OID of the array of this type, or 0.
+    typarray: Oid,
+    /// The OID of the element type, or 0.
+    typelem: Oid,
+    /// True when the type is a true array.
+    is_array: bool,
+    /// The OID of the class that backs a composite, or 0.
+    typrelid: Oid,
+    /// The `relkind` of that class.
+    relkind: Option<char>,
+    /// The OID of the base type of a domain, or 0.
+    typbasetype: Oid,
+    /// The type modifier that a domain applies.
+    typtypmod: i32,
+    /// True when a domain declares `NOT NULL`.
+    typnotnull: bool,
+    /// The OID of the subtype of a range.
+    rngsubtype: Option<Oid>,
+    /// The OID of the multirange of a range.
+    rngmultitypid: Option<Oid>,
+    /// The OID of the range that a multirange holds.
+    multirange_of: Option<Oid>,
+    /// The number of `CHECK` constraints on a domain.
+    check_count: u32,
+}
+
+/// One row of [`QueryId::Attributes`].
+#[derive(Debug, Clone)]
+struct AttributeRow {
+    /// The OID of the relation or of the composite class.
+    relid: Oid,
+    /// The attribute position, which starts at 1.
+    num: i16,
+    /// The name of the attribute.
+    name: Name,
+    /// The OID of the type of the attribute.
+    typid: Oid,
+    /// The type modifier.
+    typmod: i32,
+    /// True when the attribute declares `NOT NULL`.
+    not_null: bool,
+    /// True when the attribute has a default.
+    has_default: bool,
+    /// True when the attribute is a generated column.
+    generated: bool,
+    /// True when the attribute is an identity column.
+    identity: bool,
+}
+
+/// One row of [`QueryId::Relations`].
+#[derive(Debug, Clone)]
+struct RelationRow {
+    /// The OID of the relation.
+    oid: Oid,
+    /// The name of the relation.
+    name: Name,
+    /// The OID of the schema that holds the relation.
+    namespace: Oid,
+    /// The `relkind` letter.
+    relkind: char,
+    /// The OID of the row type.
+    reltype: Oid,
+}
+
+/// One row of [`QueryId::Functions`].
+#[derive(Debug, Clone)]
+struct FunctionRow {
+    /// The OID of the function.
+    oid: Oid,
+    /// The name of the function.
+    name: Name,
+    /// The OID of the schema that holds the function.
+    namespace: Oid,
+    /// The `prokind` letter.
+    prokind: char,
+    /// The OID of the variadic element type, or 0.
+    variadic: Oid,
+    /// The number of arguments that have a default.
+    default_count: u16,
+    /// The OID of the return type.
+    rettype: Oid,
+    /// True when the function returns a set.
+    retset: bool,
+    /// True when the function is strict.
+    strict: bool,
+    /// The `provolatile` letter.
+    volatile: char,
+}
+
+/// One row of [`QueryId::FunctionArguments`].
+#[derive(Debug, Clone)]
+struct ArgumentRow {
+    /// The OID of the function.
+    function: Oid,
+    /// The OID of the type of the argument.
+    typid: Oid,
+    /// The mode letter. `None` means an IN argument.
+    mode: Option<char>,
+    /// The name of the argument, when it has one.
+    name: Option<Name>,
+}
+
+/// One row of [`QueryId::Aggregates`].
+#[derive(Debug, Clone)]
+struct AggregateRow {
+    /// The `aggkind` letter.
+    kind: char,
+    /// The number of direct arguments.
+    direct_args: u16,
+}
+
+/// One row of [`QueryId::Operators`].
+#[derive(Debug, Clone)]
+struct OperatorRow {
+    /// The OID of the operator.
+    oid: Oid,
+    /// The symbol of the operator.
+    name: Name,
+    /// The OID of the schema that holds the operator.
+    namespace: Oid,
+    /// The `oprkind` letter.
+    oprkind: char,
+    /// The OID of the left operand type, or 0.
+    left: Oid,
+    /// The OID of the right operand type.
+    right: Oid,
+    /// The OID of the result type.
+    result: Oid,
+    /// The OID of the function that implements the operator, or 0.
+    code: Oid,
+    /// The OID of the commutator, or 0.
+    commutator: Oid,
+    /// The OID of the negator, or 0.
+    negator: Oid,
+}
+
+/// One row of [`QueryId::Casts`].
+#[derive(Debug, Clone)]
+struct CastRow {
+    /// The OID of the cast.
+    oid: Oid,
+    /// The OID of the source type.
+    source: Oid,
+    /// The OID of the target type.
+    target: Oid,
+    /// The OID of the cast function, or 0.
+    func: Oid,
+    /// The `castcontext` letter.
+    context: char,
+    /// The `castmethod` letter.
+    method: char,
+}
+
+// ---------------------------------------------------------------------------
+// Reading the rows
+// ---------------------------------------------------------------------------
+
+/// The rows of one query, or [`LoadError::MissingRows`].
+fn rows_of(rows: &HashMap<QueryId, Rows>, query: QueryId) -> Result<&Rows, LoadError> {
+    rows.get(&query).ok_or(LoadError::MissingRows { query })
+}
+
+/// Read every row of one query with a function that reads one row.
+fn read<T, F>(rows: &Rows, query: QueryId, mut one: F) -> Result<Vec<T>, LoadError>
+where
+    F: FnMut(Cells<'_>) -> Result<T, LoadError>,
+{
+    rows.iter()
+        .enumerate()
+        .map(|(index, cells)| one(Cells::new(query, index, cells)))
+        .collect()
+}
+
+/// The one text value of a query that gives one row and one column.
+fn single_text(rows: &HashMap<QueryId, Rows>, query: QueryId) -> Result<String, LoadError> {
+    let rows = rows_of(rows, query)?;
+    let empty: Vec<Option<String>> = Vec::new();
+    let first = rows.first().unwrap_or(&empty);
+    Ok(Cells::new(query, 0, first).text(0)?.to_owned())
+}
+
+/// The first column of every row of a query.
+fn first_column(rows: &HashMap<QueryId, Rows>, query: QueryId) -> Result<Vec<Name>, LoadError> {
+    read(rows_of(rows, query)?, query, |row| row.name(0))
+}
+
+/// Read [`QueryId::Schemas`].
+fn schema_rows(rows: &Rows) -> Result<Vec<SchemaRow>, LoadError> {
+    read(rows, QueryId::Schemas, |row| {
+        Ok(SchemaRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+        })
+    })
+}
+
+/// Read [`QueryId::Extensions`].
+fn extension_rows(rows: &Rows) -> Result<Vec<ExtensionRow>, LoadError> {
+    read(rows, QueryId::Extensions, |row| {
+        Ok(ExtensionRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            version: row.text(2)?.to_owned(),
+            namespace: row.oid(3)?,
+        })
+    })
+}
+
+/// Read [`QueryId::ExtensionMembers`].
+fn member_rows(rows: &Rows) -> Result<Vec<MemberRow>, LoadError> {
+    read(rows, QueryId::ExtensionMembers, |row| {
+        Ok(MemberRow {
+            class: MemberClass::from_label(row.text(0)?),
+            oid: row.oid(1)?,
+            extension: row.oid(2)?,
+        })
+    })
+}
+
+/// Read [`QueryId::Types`].
+fn type_rows(rows: &Rows) -> Result<Vec<TypeRow>, LoadError> {
+    read(rows, QueryId::Types, |row| {
+        Ok(TypeRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            typtype: row.char(3)?,
+            category: row.char(4)?,
+            is_preferred: row.bool(5)?,
+            collatable: row.bool(6)?,
+            typarray: row.oid(7)?,
+            typelem: row.oid(8)?,
+            is_array: row.bool(9)?,
+            typrelid: row.oid(10)?,
+            relkind: row.opt_char(11)?,
+            typbasetype: row.oid(12)?,
+            typtypmod: row.i32(13)?,
+            typnotnull: row.bool(14)?,
+            rngsubtype: row.opt_oid(15)?,
+            rngmultitypid: row.opt_oid(16)?,
+            multirange_of: row.opt_oid(17)?,
+            check_count: row.u32(18)?,
+        })
+    })
+}
+
+/// Read [`QueryId::EnumLabels`] into the labels of each enum type.
+///
+/// The query gives the labels in `enumsortorder`, so the order of the rows
+/// is the order of the labels.
+fn enum_labels(rows: &Rows) -> Result<HashMap<Oid, Vec<Name>>, LoadError> {
+    let mut labels: HashMap<Oid, Vec<Name>> = HashMap::new();
+    for (index, cells) in rows.iter().enumerate() {
+        let row = Cells::new(QueryId::EnumLabels, index, cells);
+        labels.entry(row.oid(0)?).or_default().push(row.name(2)?);
+    }
+    Ok(labels)
+}
+
+/// Read [`QueryId::Relations`].
+fn relation_rows(rows: &Rows) -> Result<Vec<RelationRow>, LoadError> {
+    read(rows, QueryId::Relations, |row| {
+        Ok(RelationRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            relkind: row.char(3)?,
+            reltype: row.oid(4)?,
+        })
+    })
+}
+
+/// Read [`QueryId::Attributes`] into the attributes of each class.
+///
+/// The query gives the attributes in `attnum`, so the order of the rows is
+/// the order of the attributes.
+fn attribute_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<AttributeRow>>, LoadError> {
+    let mut attributes: HashMap<Oid, Vec<AttributeRow>> = HashMap::new();
+    for (index, cells) in rows.iter().enumerate() {
+        let row = Cells::new(QueryId::Attributes, index, cells);
+        let attribute = AttributeRow {
+            relid: row.oid(0)?,
+            num: row.i16(1)?,
+            name: row.name(2)?,
+            typid: row.oid(3)?,
+            typmod: row.i32(4)?,
+            not_null: row.bool(5)?,
+            has_default: row.bool(6)?,
+            generated: row.bool(7)?,
+            identity: row.bool(8)?,
+        };
+        attributes.entry(attribute.relid).or_default().push(attribute);
+    }
+    Ok(attributes)
+}
+
+/// Read [`QueryId::Functions`].
+fn function_rows(rows: &Rows) -> Result<Vec<FunctionRow>, LoadError> {
+    read(rows, QueryId::Functions, |row| {
+        Ok(FunctionRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            prokind: row.char(3)?,
+            variadic: row.oid(4)?,
+            default_count: row.u16(5)?,
+            rettype: row.oid(6)?,
+            retset: row.bool(7)?,
+            strict: row.bool(8)?,
+            volatile: row.char(9)?,
+        })
+    })
+}
+
+/// Read [`QueryId::FunctionArguments`] into the arguments of each function.
+///
+/// The query gives the arguments in argument order, so the order of the rows
+/// is the order of the arguments.
+fn argument_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<ArgumentRow>>, LoadError> {
+    let mut arguments: HashMap<Oid, Vec<ArgumentRow>> = HashMap::new();
+    for (index, cells) in rows.iter().enumerate() {
+        let row = Cells::new(QueryId::FunctionArguments, index, cells);
+        let argument = ArgumentRow {
+            function: row.oid(0)?,
+            typid: row.oid(2)?,
+            mode: row.opt_char(3)?,
+            name: row.opt_name(4)?,
+        };
+        arguments
+            .entry(argument.function)
+            .or_default()
+            .push(argument);
+    }
+    Ok(arguments)
+}
+
+/// Read [`QueryId::Aggregates`] into the detail of each aggregate.
+fn aggregate_rows(rows: &Rows) -> Result<HashMap<Oid, AggregateRow>, LoadError> {
+    let mut aggregates = HashMap::new();
+    for (index, cells) in rows.iter().enumerate() {
+        let row = Cells::new(QueryId::Aggregates, index, cells);
+        let oid = row.oid(0)?;
+        aggregates.insert(
+            oid,
+            AggregateRow {
+                kind: row.char(1)?,
+                direct_args: row.u16(2)?,
+            },
+        );
+    }
+    Ok(aggregates)
+}
+
+/// Read [`QueryId::Operators`].
+fn operator_rows(rows: &Rows) -> Result<Vec<OperatorRow>, LoadError> {
+    read(rows, QueryId::Operators, |row| {
+        Ok(OperatorRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            oprkind: row.char(3)?,
+            left: row.oid(4)?,
+            right: row.oid(5)?,
+            result: row.oid(6)?,
+            code: row.oid(7)?,
+            commutator: row.oid(8)?,
+            negator: row.oid(9)?,
+        })
+    })
+}
+
+/// Read [`QueryId::Casts`].
+fn cast_rows(rows: &Rows) -> Result<Vec<CastRow>, LoadError> {
+    read(rows, QueryId::Casts, |row| {
+        Ok(CastRow {
+            oid: row.oid(0)?,
+            source: row.oid(1)?,
+            target: row.oid(2)?,
+            func: row.oid(3)?,
+            context: row.char(4)?,
+            method: row.char(5)?,
+        })
+    })
+}
+
+/// Every query, read into typed rows.
+struct Input {
+    /// The name of the database.
+    database: Name,
+    /// The effective search path at the moment of the load.
+    search_path: Vec<Name>,
+    /// Every schema.
+    schemas: Vec<SchemaRow>,
+    /// Every extension.
+    extensions: Vec<ExtensionRow>,
+    /// Every object that belongs to an extension.
+    members: Vec<MemberRow>,
+    /// Every type.
+    types: Vec<TypeRow>,
+    /// The labels of each enum type.
+    labels: HashMap<Oid, Vec<Name>>,
+    /// Every relation.
+    relations: Vec<RelationRow>,
+    /// The attributes of each class.
+    attributes: HashMap<Oid, Vec<AttributeRow>>,
+    /// Every function.
+    functions: Vec<FunctionRow>,
+    /// The arguments of each function.
+    arguments: HashMap<Oid, Vec<ArgumentRow>>,
+    /// The detail of each aggregate.
+    aggregates: HashMap<Oid, AggregateRow>,
+    /// Every operator.
+    operators: Vec<OperatorRow>,
+    /// Every cast.
+    casts: Vec<CastRow>,
+}
+
+impl Input {
+    /// Read every query.
+    fn read(rows: &HashMap<QueryId, Rows>) -> Result<Self, LoadError> {
+        let mut input = Input {
+            database: Name::new(single_text(rows, QueryId::Database)?),
+            search_path: first_column(rows, QueryId::SearchPath)?,
+            schemas: schema_rows(rows_of(rows, QueryId::Schemas)?)?,
+            extensions: extension_rows(rows_of(rows, QueryId::Extensions)?)?,
+            members: member_rows(rows_of(rows, QueryId::ExtensionMembers)?)?,
+            types: type_rows(rows_of(rows, QueryId::Types)?)?,
+            labels: enum_labels(rows_of(rows, QueryId::EnumLabels)?)?,
+            relations: relation_rows(rows_of(rows, QueryId::Relations)?)?,
+            attributes: attribute_rows(rows_of(rows, QueryId::Attributes)?)?,
+            functions: function_rows(rows_of(rows, QueryId::Functions)?)?,
+            arguments: argument_rows(rows_of(rows, QueryId::FunctionArguments)?)?,
+            aggregates: aggregate_rows(rows_of(rows, QueryId::Aggregates)?)?,
+            operators: operator_rows(rows_of(rows, QueryId::Operators)?)?,
+            casts: cast_rows(rows_of(rows, QueryId::Casts)?)?,
+        };
+        // A handle is the position in the arena, and an arena is in OID
+        // order. Every query already sorts by OID; the sort here makes the
+        // order of the handles certain even when a caller feeds its own
+        // rows.
+        input.schemas.sort_by_key(|row| row.oid);
+        input.extensions.sort_by_key(|row| row.oid);
+        input.types.sort_by_key(|row| row.oid);
+        input.relations.sort_by_key(|row| row.oid);
+        input.functions.sort_by_key(|row| row.oid);
+        input.operators.sort_by_key(|row| row.oid);
+        input.casts.sort_by_key(|row| row.oid);
+        Ok(input)
+    }
+}
+
+/// The moment of the load, in seconds since the Unix epoch.
+fn now_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_secs())
+        .unwrap_or_default()
+}
+
+/// Turn the rows of every query into a catalog.
+///
+/// `permit_missing_builtins` passes the same permission to the builder. The
+/// loader always gives `false`; a unit test that feeds a few rows by hand
+/// gives `true`.
+pub(crate) fn assemble(
+    version: ServerVersion,
+    rows: &HashMap<QueryId, Rows>,
+    permit_missing_builtins: bool,
+) -> Result<Loaded, LoadError> {
+    let input = Input::read(rows)?;
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+
+    let metadata = Metadata {
+        server_version: version,
+        database: input.database.clone(),
+        search_path: input.search_path.clone(),
+        loaded_at_unix_secs: now_unix_secs(),
+        format_version: crate::catalog::Catalog::FORMAT_VERSION,
+    };
+
+    let mut builder = CatalogBuilder::new(metadata);
+    if permit_missing_builtins {
+        builder.permit_missing_builtins();
+    }
+    let _ = (&input, &mut diagnostics, EntityKind::Schema);
+
+    let catalog = builder.finish()?;
+    Ok(Loaded {
+        catalog,
+        diagnostics,
+    })
+}
