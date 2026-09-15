@@ -27,9 +27,26 @@ fn skip(test: &str) {
     println!("skipping {test}: set {URL_VARIABLE} to run it against a server");
 }
 
+/// The lock that lets one live test at a time use the server.
+///
+/// The tests share one database. One of them makes a schema and drops it
+/// again, so a test beside it sees the database half made. Each test holds
+/// this lock for the whole of its body.
+static SERVER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Take the lock on the server.
+///
+/// A test that fails poisons the lock. The next test still takes it, because
+/// the lock guards the server and not a value in memory.
+fn lock_server() -> std::sync::MutexGuard<'static, ()> {
+    SERVER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 #[cfg(feature = "postgres")]
 mod sync_tests {
-    use super::{skip, url};
+    use super::{lock_server, skip, url};
     use pg_catalog::{
         ArgMode, Builtin, CastMethod, Catalog, FunctionKind, Loaded, Name, QualifiedName,
         RelationKind, TypeKind,
@@ -79,6 +96,7 @@ mod sync_tests {
             skip("it_loads_a_stock_database_with_no_diagnostics");
             return;
         };
+        let _guard = lock_server();
         let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
         let loaded = load(&mut client);
         let catalog = &loaded.catalog;
@@ -159,6 +177,7 @@ mod sync_tests {
             skip("it_loads_custom_entities_with_the_right_shape");
             return;
         };
+        let _guard = lock_server();
         let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
 
         // The schema name holds the process id, so two runs at once do not
@@ -326,15 +345,20 @@ mod sync_tests {
 
 #[cfg(feature = "tokio-postgres")]
 mod async_tests {
-    use super::{skip, url};
+    use super::{lock_server, skip, url};
     use pg_catalog::{Builtin, Name};
 
+    // The guard stays across each `await`. This is safe here, because the
+    // test is the only task on its runtime, and the lock keeps two test
+    // threads off one server. An async lock would need another dependency.
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn it_loads_through_the_async_executor() {
         let Some(url) = url() else {
             skip("it_loads_through_the_async_executor");
             return;
         };
+        let _guard = lock_server();
         let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
             .await
             .expect("the server accepts the connection");
