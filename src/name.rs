@@ -69,8 +69,12 @@ impl PartialEq<&str> for Name {
 }
 
 impl fmt::Display for Name {
+    /// Print the name raw, with no quoting.
+    ///
+    /// This uses [`fmt::Formatter::pad`], so a width and an alignment in the
+    /// format string apply to the name.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
+        f.pad(&self.0)
     }
 }
 
@@ -111,6 +115,12 @@ mod tests {
     fn display_prints_the_raw_text() {
         assert_eq!(Name::new("Mixed Case").to_string(), "Mixed Case");
         assert_eq!(QualifiedName::new("public", "t").to_string(), "public.t");
+    }
+
+    #[test]
+    fn display_obeys_a_width() {
+        assert_eq!(format!("[{:<6}]", Name::new("int4")), "[int4  ]");
+        assert_eq!(format!("[{:>6}]", Name::new("int4")), "[  int4]");
     }
 
     #[test]
