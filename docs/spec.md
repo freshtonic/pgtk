@@ -467,7 +467,12 @@ impl Loader {
 
 The SQL for each query is version-independent across 14 through 17. Every
 selected column is cast to `text`. `Loader::new` still records the version
-for `Metadata` and for future divergence. Booleans arrive as `t`/`f`.
+for `Metadata` and for future divergence. Booleans arrive as `t`/`f`: the
+SQL spells each boolean as `(CASE WHEN x THEN 't' ELSE 'f' END)::text`,
+because `bool::text` yields `true`/`false`. `regproc` columns (`oprcode`,
+`aggfnoid`) are cast `::oid::text`, because `regproc::text` yields a name.
+`scripts/check-queries.sh` extracts each query through a marker convention
+documented in `queries.rs`; keep that shape when editing SQL.
 
 ### Query definitions (column order is the contract)
 
