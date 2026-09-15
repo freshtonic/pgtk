@@ -1,5 +1,5 @@
 //! Repository tasks: `cargo xtask gen-builtins <pg_type.dat>` and
-//! `cargo xtask fixture <postgres-url> <out-file>`. See `docs/spec.md`.
+//! `cargo xtask fixture <postgres-url> [--out <file>]`. See `docs/spec.md`.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -18,8 +18,10 @@ fn main() {
             }
         }
         Some("fixture") => {
-            eprintln!("xtask: `fixture` is not implemented yet; see docs/spec.md");
-            std::process::exit(2);
+            if let Err(message) = fixture(&args[1..]) {
+                eprintln!("xtask: {message}");
+                std::process::exit(1);
+            }
         }
         Some(other) => {
             eprintln!("xtask: `{other}` is not implemented yet; see docs/spec.md");
@@ -89,9 +91,19 @@ fn gen_builtins(args: &[String]) -> Result<(), String> {
 
 /// The default output path, below the workspace root.
 fn default_out() -> PathBuf {
+    workspace_root()
+        .join("src")
+        .join("builtin")
+        .join("generated.rs")
+}
+
+/// The root of the workspace, from the manifest directory of this crate.
+///
+/// The path does not depend on the working directory, so a task writes the
+/// same file from anywhere.
+fn workspace_root() -> PathBuf {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let root = manifest.parent().unwrap_or(manifest);
-    root.join("src").join("builtin").join("generated.rs")
+    manifest.parent().unwrap_or(manifest).to_path_buf()
 }
 
 /// Runs `rustfmt` on the written file so that the output is formatted.
@@ -450,6 +462,101 @@ fn render(builtins: &[Builtin]) -> String {
     code.push_str("        }\n    }\n");
     code.push_str("}\n");
     code
+}
+
+// --------------------------------------------------------------------------
+// fixture
+// --------------------------------------------------------------------------
+
+/// The compression level of the fixture file.
+const ZSTD_LEVEL: i32 = 19;
+
+/// Loads a catalog from a live server and writes it as a fixture file.
+///
+/// The task connects with the `postgres` crate, runs the loader, and stops
+/// when the loader reports a diagnostic. A stock database gives none. The
+/// catalog then goes to JSON, and the JSON goes through zstd.
+fn fixture(args: &[String]) -> Result<(), String> {
+    let (url, out) = fixture_args(args)?;
+
+    let mut client = postgres::Client::connect(&url, postgres::NoTls)
+        .map_err(|error| format!("cannot connect to {url}: {error}"))?;
+    let loaded =
+        pg_catalog::load(&mut client).map_err(|error| format!("the load failed: {error}"))?;
+    drop(client);
+
+    if !loaded.diagnostics.is_empty() {
+        for diagnostic in &loaded.diagnostics {
+            eprintln!("xtask: diagnostic: {diagnostic}");
+        }
+        return Err(format!(
+            "the load reported {} diagnostics; the database is not stock, or the model is wrong",
+            loaded.diagnostics.len()
+        ));
+    }
+
+    let version = loaded.catalog.metadata().server_version;
+    let json = serde_json::to_vec(&loaded.catalog)
+        .map_err(|error| format!("cannot serialize the catalog: {error}"))?;
+    let compressed = zstd::encode_all(json.as_slice(), ZSTD_LEVEL)
+        .map_err(|error| format!("cannot compress the catalog: {error}"))?;
+
+    if let Some(parent) = out.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("cannot create {}: {error}", parent.display()))?;
+    }
+    std::fs::write(&out, &compressed)
+        .map_err(|error| format!("cannot write {}: {error}", out.display()))?;
+
+    println!(
+        "xtask: PostgreSQL {version}: {} schemas, {} types, {} relations, {} functions, {} operators, {} casts",
+        loaded.catalog.schemas().len(),
+        loaded.catalog.types().len(),
+        loaded.catalog.relations().len(),
+        loaded.catalog.functions().len(),
+        loaded.catalog.operators().len(),
+        loaded.catalog.casts().len(),
+    );
+    println!(
+        "xtask: {} bytes of JSON, {} bytes after zstd level {} -> {}",
+        json.len(),
+        compressed.len(),
+        ZSTD_LEVEL,
+        out.display()
+    );
+    Ok(())
+}
+
+/// Reads the connection string and the output path from the command line.
+fn fixture_args(args: &[String]) -> Result<(String, PathBuf), String> {
+    let mut url: Option<String> = None;
+    let mut out: Option<PathBuf> = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            "--out" => {
+                let path = rest
+                    .next()
+                    .ok_or_else(|| "`--out` needs a path".to_string())?;
+                out = Some(PathBuf::from(path));
+            }
+            other if other.starts_with("--") => {
+                return Err(format!("unknown option `{other}`"));
+            }
+            other if url.is_none() => url = Some(other.to_owned()),
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+    let url =
+        url.ok_or_else(|| "usage: cargo xtask fixture <postgres-url> [--out <file>]".to_string())?;
+    Ok((url, out.unwrap_or_else(default_fixture_out)))
+}
+
+/// The default fixture path, below the workspace root.
+fn default_fixture_out() -> PathBuf {
+    workspace_root().join("fixtures").join("pg17.json.zst")
 }
 
 #[cfg(test)]

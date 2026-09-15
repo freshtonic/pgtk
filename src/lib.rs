@@ -27,6 +27,14 @@
 //!
 //! An [`Oid`] is the identifier of the server. The model keeps it for
 //! display and for correlation, and never uses it as its own identity.
+//!
+//! # Getting a catalog
+//!
+//! [`load`] reads a catalog from a live server through an [`Executor`]. The
+//! `postgres` and `tokio-postgres` features give an executor for each of
+//! those drivers. The `fixture` feature gives `fixture::pg17`, which is a
+//! stock PostgreSQL 17 catalog embedded in the crate. A test that needs no
+//! server starts there.
 
 #[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
 mod adapters;
@@ -38,6 +46,8 @@ mod diagnostic;
 mod error;
 mod executor;
 mod extension;
+#[cfg(feature = "fixture")]
+pub mod fixture;
 mod function;
 mod handle;
 pub mod loader;
