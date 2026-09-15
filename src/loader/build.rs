@@ -19,16 +19,21 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::builder::CatalogBuilder;
+use crate::cast::{Cast, CastContext, CastMethod};
 use crate::catalog::{Catalog, Metadata, ServerVersion};
 use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
 use crate::error::LoadError;
 use crate::extension::Extension;
+use crate::function::{
+    AggregateDetail, AggregateKind, ArgMode, Argument, Function, FunctionKind, Volatility,
+};
 use crate::handle::Handle;
 use crate::loader::parse::Cells;
 use crate::loader::queries::QueryId;
 use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
+use crate::operator::{Operator, OperatorKind};
 use crate::relation::{Column, Relation, RelationKind};
 use crate::schema::Schema;
 use crate::typmod::Typmod;
@@ -1041,6 +1046,37 @@ pub(crate) fn assemble(
         });
     }
 
+    // Step 8. Functions, with the detail of an aggregate.
+    let (functions, function_handles) = build_functions(
+        &input,
+        &schema_handles,
+        &type_handles,
+        &members,
+        &mut diagnostics,
+    );
+
+    // Step 9. Operators.
+    let operators = build_operators(
+        &input,
+        &schema_handles,
+        &type_handles,
+        &function_handles,
+        &members,
+        &mut diagnostics,
+    );
+
+    // Step 10. Casts.
+    let mut casts: Vec<Cast> = Vec::new();
+    for row in &input.casts {
+        let extension = owner(MemberClass::Cast, row.oid);
+        match one_cast(row, &type_handles, &function_handles, extension) {
+            Ok(cast) => casts.push(cast),
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+
+    // Step 12. Push in handle order. Step 11, the extension of each entity,
+    // is already in place, because the map of step 3 answered every push.
     let mut builder = CatalogBuilder::new(metadata);
     if permit_missing_builtins {
         builder.permit_missing_builtins();
@@ -1060,6 +1096,15 @@ pub(crate) fn assemble(
     }
     for relation in relations {
         builder.push_relation(relation);
+    }
+    for function in functions {
+        builder.push_function(function);
+    }
+    for operator in operators {
+        builder.push_operator(operator);
+    }
+    for cast in casts {
+        builder.push_cast(cast);
     }
 
     let catalog = builder.finish()?;
@@ -1106,6 +1151,438 @@ fn columns_of(
             })
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Functions, operators, and casts
+// ---------------------------------------------------------------------------
+
+/// Make the note for a letter that the loader does not know.
+fn unparsable(entity: EntityKind, oid: Oid, column: &'static str, letter: char) -> Diagnostic {
+    Diagnostic::UnparsableValue {
+        entity,
+        oid,
+        column,
+        value: letter.to_string(),
+    }
+}
+
+/// Make the note for a reference that the catalog does not hold.
+fn missing(
+    entity: EntityKind,
+    oid: Oid,
+    name: &Name,
+    referenced: EntityKind,
+    referenced_oid: Oid,
+) -> Diagnostic {
+    Diagnostic::MissingReference {
+        entity,
+        oid,
+        name: name.clone(),
+        referenced,
+        referenced_oid,
+    }
+}
+
+/// The kind of a function, from `prokind`.
+fn function_kind(prokind: char) -> Option<FunctionKind> {
+    match prokind {
+        'f' => Some(FunctionKind::Function),
+        'p' => Some(FunctionKind::Procedure),
+        'a' => Some(FunctionKind::Aggregate),
+        'w' => Some(FunctionKind::Window),
+        _ => None,
+    }
+}
+
+/// The volatility of a function, from `provolatile`.
+fn volatility(letter: char) -> Option<Volatility> {
+    match letter {
+        'i' => Some(Volatility::Immutable),
+        's' => Some(Volatility::Stable),
+        'v' => Some(Volatility::Volatile),
+        _ => None,
+    }
+}
+
+/// The mode of an argument, from `proargmodes`. A missing letter means `In`.
+fn arg_mode(letter: Option<char>) -> Option<ArgMode> {
+    match letter {
+        None | Some('i') => Some(ArgMode::In),
+        Some('o') => Some(ArgMode::Out),
+        Some('b') => Some(ArgMode::InOut),
+        Some('v') => Some(ArgMode::Variadic),
+        Some('t') => Some(ArgMode::Table),
+        Some(_) => None,
+    }
+}
+
+/// The kind of an aggregate, from `aggkind`.
+fn aggregate_kind(letter: char) -> Option<AggregateKind> {
+    match letter {
+        'n' => Some(AggregateKind::Normal),
+        'o' => Some(AggregateKind::OrderedSet),
+        'h' => Some(AggregateKind::HypotheticalSet),
+        _ => None,
+    }
+}
+
+/// The kind of an operator, from `oprkind`.
+fn operator_kind(letter: char) -> Option<OperatorKind> {
+    match letter {
+        'b' => Some(OperatorKind::Infix),
+        'l' => Some(OperatorKind::Prefix),
+        _ => None,
+    }
+}
+
+/// The context of a cast, from `castcontext`.
+fn cast_context(letter: char) -> Option<CastContext> {
+    match letter {
+        'i' => Some(CastContext::Implicit),
+        'a' => Some(CastContext::Assignment),
+        'e' => Some(CastContext::Explicit),
+        _ => None,
+    }
+}
+
+/// The arguments of one function, or the note that stops the loader keeping
+/// it.
+fn arguments_of(
+    row: &FunctionRow,
+    arguments: &HashMap<Oid, Vec<ArgumentRow>>,
+    types: &HashMap<Oid, Handle<Type>>,
+) -> Result<Vec<Argument>, Diagnostic> {
+    let mut built = Vec::new();
+    for argument in arguments.get(&row.oid).into_iter().flatten() {
+        let Some(mode) = arg_mode(argument.mode) else {
+            return Err(unparsable(
+                EntityKind::Function,
+                row.oid,
+                "proargmodes",
+                argument.mode.unwrap_or('?'),
+            ));
+        };
+        let Some(ty) = types.get(&argument.typid) else {
+            return Err(missing(
+                EntityKind::Function,
+                row.oid,
+                &row.name,
+                EntityKind::Type,
+                argument.typid,
+            ));
+        };
+        built.push(Argument {
+            name: argument.name.clone(),
+            ty: *ty,
+            mode,
+        });
+    }
+    Ok(built)
+}
+
+/// Build one function, or give the note that says why it went away.
+fn one_function(
+    row: &FunctionRow,
+    input: &Input,
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    types: &HashMap<Oid, Handle<Type>>,
+    extension: Option<Handle<Extension>>,
+) -> Result<Function, Diagnostic> {
+    let Some(schema) = schemas.get(&row.namespace) else {
+        return Err(missing(
+            EntityKind::Function,
+            row.oid,
+            &row.name,
+            EntityKind::Schema,
+            row.namespace,
+        ));
+    };
+    let Some(kind) = function_kind(row.prokind) else {
+        return Err(unparsable(
+            EntityKind::Function,
+            row.oid,
+            "prokind",
+            row.prokind,
+        ));
+    };
+    let Some(volatility) = volatility(row.volatile) else {
+        return Err(unparsable(
+            EntityKind::Function,
+            row.oid,
+            "provolatile",
+            row.volatile,
+        ));
+    };
+    let built = arguments_of(row, &input.arguments, types)?;
+    let Some(returns) = types.get(&row.rettype) else {
+        return Err(missing(
+            EntityKind::Function,
+            row.oid,
+            &row.name,
+            EntityKind::Type,
+            row.rettype,
+        ));
+    };
+    let variadic = if row.variadic == Oid(0) {
+        None
+    } else {
+        match types.get(&row.variadic) {
+            Some(handle) => Some(*handle),
+            None => {
+                return Err(missing(
+                    EntityKind::Function,
+                    row.oid,
+                    &row.name,
+                    EntityKind::Type,
+                    row.variadic,
+                ));
+            }
+        }
+    };
+    let aggregate = match input.aggregates.get(&row.oid) {
+        None => None,
+        Some(detail) => {
+            let Some(kind) = aggregate_kind(detail.kind) else {
+                return Err(unparsable(
+                    EntityKind::Function,
+                    row.oid,
+                    "aggkind",
+                    detail.kind,
+                ));
+            };
+            Some(AggregateDetail {
+                kind,
+                direct_args: detail.direct_args,
+            })
+        }
+    };
+    Ok(Function {
+        oid: row.oid,
+        name: row.name.clone(),
+        schema: *schema,
+        kind,
+        arguments: built,
+        variadic,
+        default_count: row.default_count,
+        returns: *returns,
+        returns_set: row.retset,
+        strict: row.strict,
+        volatility,
+        aggregate,
+        extension,
+    })
+}
+
+/// Build every function that the loader keeps, with its handle.
+fn build_functions(
+    input: &Input,
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    types: &HashMap<Oid, Handle<Type>>,
+    members: &HashMap<(MemberClass, Oid), Handle<Extension>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> (Vec<Function>, HashMap<Oid, Handle<Function>>) {
+    let mut functions = Vec::new();
+    let mut handles = HashMap::new();
+    for row in &input.functions {
+        let extension = members.get(&(MemberClass::Proc, row.oid)).copied();
+        match one_function(row, input, schemas, types, extension) {
+            Ok(function) => {
+                handles.insert(row.oid, Handle::new(functions.len() as u32));
+                functions.push(function);
+            }
+            Err(diagnostic) => diagnostics.push(diagnostic),
+        }
+    }
+    (functions, handles)
+}
+
+/// Say whether one operator stays, and why it does not.
+fn operator_note(
+    row: &OperatorRow,
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    types: &HashMap<Oid, Handle<Type>>,
+    functions: &HashMap<Oid, Handle<Function>>,
+) -> Option<Diagnostic> {
+    if !schemas.contains_key(&row.namespace) {
+        return Some(missing(
+            EntityKind::Operator,
+            row.oid,
+            &row.name,
+            EntityKind::Schema,
+            row.namespace,
+        ));
+    }
+    if operator_kind(row.oprkind).is_none() {
+        return Some(unparsable(
+            EntityKind::Operator,
+            row.oid,
+            "oprkind",
+            row.oprkind,
+        ));
+    }
+    if row.code == Oid(0) {
+        return Some(Diagnostic::Skipped {
+            entity: EntityKind::Operator,
+            oid: row.oid,
+            name: row.name.clone(),
+            reason: SkipReason::ShellOperator,
+        });
+    }
+    if !functions.contains_key(&row.code) {
+        return Some(missing(
+            EntityKind::Operator,
+            row.oid,
+            &row.name,
+            EntityKind::Function,
+            row.code,
+        ));
+    }
+    // A prefix operator has no left operand, and writes 0 there.
+    let operands = if row.left == Oid(0) {
+        vec![row.right, row.result]
+    } else {
+        vec![row.left, row.right, row.result]
+    };
+    for referenced in operands {
+        if !types.contains_key(&referenced) {
+            return Some(missing(
+                EntityKind::Operator,
+                row.oid,
+                &row.name,
+                EntityKind::Type,
+                referenced,
+            ));
+        }
+    }
+    None
+}
+
+/// Build every operator that the loader keeps.
+///
+/// The commutator and the negator of an operator are operators, so the
+/// kept set comes first and the references resolve against it.
+fn build_operators(
+    input: &Input,
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    types: &HashMap<Oid, Handle<Type>>,
+    functions: &HashMap<Oid, Handle<Function>>,
+    members: &HashMap<(MemberClass, Oid), Handle<Extension>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Operator> {
+    let mut kept = KeptSet::all(input.operators.iter().map(|row| row.oid));
+    for (index, row) in input.operators.iter().enumerate() {
+        if let Some(diagnostic) = operator_note(row, schemas, types, functions) {
+            kept.drop_at(index);
+            diagnostics.push(diagnostic);
+        }
+    }
+    let handles: HashMap<Oid, Handle<Operator>> =
+        assign_handles(&input.operators, &kept, |row| row.oid);
+
+    let mut operators = Vec::new();
+    for (index, row) in input.operators.iter().enumerate() {
+        if !kept.keep[index] {
+            continue;
+        }
+        let mut sibling = |referenced_oid: Oid| -> Option<Handle<Operator>> {
+            if referenced_oid == Oid(0) {
+                return None;
+            }
+            match handles.get(&referenced_oid) {
+                Some(handle) => Some(*handle),
+                None => {
+                    diagnostics.push(missing(
+                        EntityKind::Operator,
+                        row.oid,
+                        &row.name,
+                        EntityKind::Operator,
+                        referenced_oid,
+                    ));
+                    None
+                }
+            }
+        };
+        let commutator = sibling(row.commutator);
+        let negator = sibling(row.negator);
+        operators.push(Operator {
+            oid: row.oid,
+            name: row.name.clone(),
+            schema: schemas[&row.namespace],
+            kind: operator_kind(row.oprkind).unwrap_or(OperatorKind::Infix),
+            left: types.get(&row.left).copied(),
+            right: types[&row.right],
+            result: types[&row.result],
+            function: functions[&row.code],
+            commutator,
+            negator,
+            extension: members.get(&(MemberClass::Operator, row.oid)).copied(),
+        });
+    }
+    operators
+}
+
+/// Build one cast, or give the note that says why it went away.
+///
+/// A cast has no name, so a note about one carries the empty name.
+fn one_cast(
+    row: &CastRow,
+    types: &HashMap<Oid, Handle<Type>>,
+    functions: &HashMap<Oid, Handle<Function>>,
+    extension: Option<Handle<Extension>>,
+) -> Result<Cast, Diagnostic> {
+    let nameless = Name::new("");
+    let Some(context) = cast_context(row.context) else {
+        return Err(unparsable(
+            EntityKind::Cast,
+            row.oid,
+            "castcontext",
+            row.context,
+        ));
+    };
+    let method = match row.method {
+        'b' => CastMethod::Binary,
+        'i' => CastMethod::InOut,
+        'f' => match functions.get(&row.func) {
+            Some(handle) => CastMethod::Function(*handle),
+            None => {
+                return Err(missing(
+                    EntityKind::Cast,
+                    row.oid,
+                    &nameless,
+                    EntityKind::Function,
+                    row.func,
+                ));
+            }
+        },
+        other => return Err(unparsable(EntityKind::Cast, row.oid, "castmethod", other)),
+    };
+    let Some(source) = types.get(&row.source) else {
+        return Err(missing(
+            EntityKind::Cast,
+            row.oid,
+            &nameless,
+            EntityKind::Type,
+            row.source,
+        ));
+    };
+    let Some(target) = types.get(&row.target) else {
+        return Err(missing(
+            EntityKind::Cast,
+            row.oid,
+            &nameless,
+            EntityKind::Type,
+            row.target,
+        ));
+    };
+    Ok(Cast {
+        oid: row.oid,
+        source: *source,
+        target: *target,
+        context,
+        method,
+        extension,
+    })
 }
 
 /// The kind of a relation.
