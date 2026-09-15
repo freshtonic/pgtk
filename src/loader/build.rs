@@ -19,14 +19,22 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::builder::CatalogBuilder;
-use crate::catalog::{Metadata, ServerVersion};
-use crate::diagnostic::{Diagnostic, EntityKind};
+use crate::catalog::{Catalog, Metadata, ServerVersion};
+use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
 use crate::error::LoadError;
+use crate::extension::Extension;
+use crate::handle::Handle;
 use crate::loader::parse::Cells;
 use crate::loader::queries::QueryId;
 use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
+use crate::relation::{Column, Relation, RelationKind};
+use crate::schema::Schema;
+use crate::typmod::Typmod;
+use crate::types::{
+    CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type, TypeCategory, TypeKind,
+};
 
 // ---------------------------------------------------------------------------
 // Raw rows
@@ -575,6 +583,331 @@ fn now_unix_secs() -> u64 {
         .unwrap_or_default()
 }
 
+// ---------------------------------------------------------------------------
+// The kept set of types
+// ---------------------------------------------------------------------------
+
+/// The `typtype` letters that this model keeps.
+const KEPT_TYPE_KINDS: &[char] = &['b', 'c', 'd', 'e', 'p', 'r', 'm'];
+
+/// The `relkind` letters that back a composite type that this model keeps.
+///
+/// A relation keeps `r v m f p`. A standalone composite type keeps `c`. A
+/// sequence, an index, and a TOAST table are not here, so the composite type
+/// of one of those goes away without a diagnostic.
+const KEPT_COMPOSITE_RELKINDS: &[char] = &['r', 'v', 'm', 'f', 'p', 'c'];
+
+/// The `relkind` letters of a relation.
+const RELATION_RELKINDS: &[char] = &['r', 'v', 'm', 'f', 'p'];
+
+/// Which rows of one arena the loader keeps.
+///
+/// The rows are in OID order, so the position of a kept row is its handle.
+#[derive(Debug)]
+struct KeptSet {
+    /// The position of each OID in the rows.
+    index_by_oid: HashMap<Oid, usize>,
+    /// True at the position of a row that the loader keeps.
+    keep: Vec<bool>,
+}
+
+impl KeptSet {
+    /// Start with every row kept.
+    fn all(oids: impl Iterator<Item = Oid>) -> Self {
+        let index_by_oid: HashMap<Oid, usize> =
+            oids.enumerate().map(|(index, oid)| (oid, index)).collect();
+        let keep = vec![true; index_by_oid.len()];
+        KeptSet { index_by_oid, keep }
+    }
+
+    /// True when the row with this OID is present and kept.
+    fn alive(&self, oid: Oid) -> bool {
+        self.index_by_oid
+            .get(&oid)
+            .is_some_and(|index| self.keep[*index])
+    }
+
+    /// Drop the row at one position.
+    fn drop_at(&mut self, index: usize) {
+        self.keep[index] = false;
+    }
+}
+
+/// The first type that a type names and the loader does not keep.
+///
+/// The references are the array element, the array of the type, the base of
+/// a domain, the subtype and the multirange of a range, the range of a
+/// multirange, and every attribute type of a composite.
+fn missing_type_reference(
+    row: &TypeRow,
+    kept: &KeptSet,
+    attributes: &HashMap<Oid, Vec<AttributeRow>>,
+) -> Option<Oid> {
+    if row.is_array && !kept.alive(row.typelem) {
+        return Some(row.typelem);
+    }
+    if row.typarray != Oid(0) && !kept.alive(row.typarray) {
+        return Some(row.typarray);
+    }
+    match row.typtype {
+        'd' => {
+            if !kept.alive(row.typbasetype) {
+                return Some(row.typbasetype);
+            }
+        }
+        'r' => {
+            let subtype = row.rngsubtype.unwrap_or(Oid(0));
+            if !kept.alive(subtype) {
+                return Some(subtype);
+            }
+            let multirange = row.rngmultitypid.unwrap_or(Oid(0));
+            if !kept.alive(multirange) {
+                return Some(multirange);
+            }
+        }
+        'm' => {
+            let range = row.multirange_of.unwrap_or(Oid(0));
+            if !kept.alive(range) {
+                return Some(range);
+            }
+        }
+        'c' => {
+            for attribute in attributes.get(&row.typrelid).into_iter().flatten() {
+                if !kept.alive(attribute.typid) {
+                    return Some(attribute.typid);
+                }
+            }
+        }
+        _ => {}
+    }
+    None
+}
+
+/// Compute the set of types to keep.
+///
+/// A type goes away when its `typtype` is unknown, when its schema is not
+/// loaded, when it is the composite type of a class that this model does not
+/// keep, or when it names a type that the loader does not keep. The last
+/// rule runs to a fixpoint, because one type that goes away can take another
+/// with it.
+fn kept_types(
+    types: &[TypeRow],
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    attributes: &HashMap<Oid, Vec<AttributeRow>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> KeptSet {
+    let mut kept = KeptSet::all(types.iter().map(|row| row.oid));
+
+    for (index, row) in types.iter().enumerate() {
+        if !KEPT_TYPE_KINDS.contains(&row.typtype) {
+            kept.drop_at(index);
+            diagnostics.push(Diagnostic::UnknownTypeKind {
+                oid: row.oid,
+                name: row.name.clone(),
+                typtype: row.typtype,
+            });
+            continue;
+        }
+        if !schemas.contains_key(&row.namespace) {
+            kept.drop_at(index);
+            diagnostics.push(Diagnostic::MissingReference {
+                entity: EntityKind::Type,
+                oid: row.oid,
+                name: row.name.clone(),
+                referenced: EntityKind::Schema,
+                referenced_oid: row.namespace,
+            });
+            continue;
+        }
+        // The composite type of a sequence, of an index, or of a TOAST
+        // table goes away without a note. The model does not hold those
+        // classes, so the type has no place either.
+        if row.typtype == 'c'
+            && !row
+                .relkind
+                .is_some_and(|kind| KEPT_COMPOSITE_RELKINDS.contains(&kind))
+        {
+            kept.drop_at(index);
+        }
+    }
+
+    loop {
+        let mut changed = false;
+        for (index, row) in types.iter().enumerate() {
+            if !kept.keep[index] {
+                continue;
+            }
+            if let Some(referenced_oid) = missing_type_reference(row, &kept, attributes) {
+                kept.drop_at(index);
+                changed = true;
+                diagnostics.push(Diagnostic::MissingReference {
+                    entity: EntityKind::Type,
+                    oid: row.oid,
+                    name: row.name.clone(),
+                    referenced: EntityKind::Type,
+                    referenced_oid,
+                });
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    kept
+}
+
+/// Compute the set of relations to keep.
+///
+/// A relation stays when its schema is loaded and its row type is a type
+/// that the loader keeps.
+fn kept_relations(
+    relations: &[RelationRow],
+    schemas: &HashMap<Oid, Handle<Schema>>,
+    types: &KeptSet,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> KeptSet {
+    let mut kept = KeptSet::all(relations.iter().map(|row| row.oid));
+    for (index, row) in relations.iter().enumerate() {
+        if !RELATION_RELKINDS.contains(&row.relkind) {
+            kept.drop_at(index);
+            diagnostics.push(Diagnostic::Skipped {
+                entity: EntityKind::Relation,
+                oid: row.oid,
+                name: row.name.clone(),
+                reason: SkipReason::UnsupportedRelationKind(row.relkind),
+            });
+            continue;
+        }
+        if !schemas.contains_key(&row.namespace) {
+            kept.drop_at(index);
+            diagnostics.push(Diagnostic::MissingReference {
+                entity: EntityKind::Relation,
+                oid: row.oid,
+                name: row.name.clone(),
+                referenced: EntityKind::Schema,
+                referenced_oid: row.namespace,
+            });
+            continue;
+        }
+        if !types.alive(row.reltype) {
+            kept.drop_at(index);
+            diagnostics.push(Diagnostic::MissingReference {
+                entity: EntityKind::Relation,
+                oid: row.oid,
+                name: row.name.clone(),
+                referenced: EntityKind::Type,
+                referenced_oid: row.reltype,
+            });
+        }
+    }
+    kept
+}
+
+/// Give a handle to every kept row, in OID order.
+///
+/// The rows are already in OID order, so the handle of a row is the number
+/// of kept rows before it.
+fn assign_handles<R, E, F>(rows: &[R], kept: &KeptSet, oid_of: F) -> HashMap<Oid, Handle<E>>
+where
+    F: Fn(&R) -> Oid,
+{
+    let mut handles = HashMap::new();
+    let mut next = 0u32;
+    for (index, row) in rows.iter().enumerate() {
+        if kept.keep[index] {
+            handles.insert(oid_of(row), Handle::new(next));
+            next += 1;
+        }
+    }
+    handles
+}
+
+/// The kind of a type, and the detail that belongs to the kind.
+fn type_kind(
+    row: &TypeRow,
+    types: &HashMap<Oid, Handle<Type>>,
+    relations: &HashMap<Oid, Handle<Relation>>,
+    labels: &HashMap<Oid, Vec<Name>>,
+    attributes: &HashMap<Oid, Vec<AttributeRow>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> TypeKind {
+    // Every reference here survived the fixpoint, so the handle is present.
+    // A reference that is absent all the same becomes a note, and the model
+    // loses only that one field.
+    let mut handle_of = |referenced_oid: Oid| -> Option<Handle<Type>> {
+        match types.get(&referenced_oid) {
+            Some(handle) => Some(*handle),
+            None => {
+                diagnostics.push(Diagnostic::MissingReference {
+                    entity: EntityKind::Type,
+                    oid: row.oid,
+                    name: row.name.clone(),
+                    referenced: EntityKind::Type,
+                    referenced_oid,
+                });
+                None
+            }
+        }
+    };
+
+    match row.typtype {
+        'p' => TypeKind::Pseudo(PseudoType::from_name(row.name.as_str())),
+        'e' => TypeKind::Enum {
+            labels: labels.get(&row.oid).cloned().unwrap_or_default(),
+        },
+        'c' => {
+            let fields = attributes
+                .get(&row.typrelid)
+                .into_iter()
+                .flatten()
+                .filter_map(|attribute| {
+                    Some(Field {
+                        name: attribute.name.clone(),
+                        ty: handle_of(attribute.typid)?,
+                        typmod: Typmod(attribute.typmod),
+                    })
+                })
+                .collect();
+            let relation = row
+                .relkind
+                .filter(|kind| RELATION_RELKINDS.contains(kind))
+                .and_then(|_| relations.get(&row.typrelid).copied());
+            TypeKind::Composite(CompositeDetail { fields, relation })
+        }
+        'd' => match handle_of(row.typbasetype) {
+            Some(base) => TypeKind::Domain(DomainDetail {
+                base,
+                typmod: Typmod(row.typtypmod),
+                not_null: row.typnotnull,
+                check_constraints: row.check_count,
+            }),
+            None => TypeKind::Base,
+        },
+        'r' => {
+            let subtype = row.rngsubtype.and_then(&mut handle_of);
+            let multirange = row.rngmultitypid.and_then(&mut handle_of);
+            match (subtype, multirange) {
+                (Some(subtype), Some(multirange)) => TypeKind::Range(RangeDetail {
+                    subtype,
+                    multirange,
+                }),
+                _ => TypeKind::Base,
+            }
+        }
+        'm' => match row.multirange_of.and_then(&mut handle_of) {
+            Some(range) => TypeKind::Multirange { range },
+            None => TypeKind::Base,
+        },
+        // The letter is `b`, because the kept set holds no other letter.
+        _ if row.is_array => match handle_of(row.typelem) {
+            Some(element) => TypeKind::Array { element },
+            None => TypeKind::Base,
+        },
+        _ => TypeKind::Base,
+    }
+}
+
 /// Turn the rows of every query into a catalog.
 ///
 /// `permit_missing_builtins` passes the same permission to the builder. The
@@ -593,18 +926,198 @@ pub(crate) fn assemble(
         database: input.database.clone(),
         search_path: input.search_path.clone(),
         loaded_at_unix_secs: now_unix_secs(),
-        format_version: crate::catalog::Catalog::FORMAT_VERSION,
+        format_version: Catalog::FORMAT_VERSION,
     };
+
+    // Step 1. Every schema stays.
+    let schema_handles: HashMap<Oid, Handle<Schema>> = input
+        .schemas
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.oid, Handle::new(index as u32)))
+        .collect();
+
+    // Step 2. An extension stays when its schema is loaded.
+    let mut extension_handles: HashMap<Oid, Handle<Extension>> = HashMap::new();
+    let mut extensions: Vec<Extension> = Vec::new();
+    for row in &input.extensions {
+        match schema_handles.get(&row.namespace) {
+            Some(schema) => {
+                extension_handles.insert(row.oid, Handle::new(extensions.len() as u32));
+                extensions.push(Extension {
+                    oid: row.oid,
+                    name: row.name.clone(),
+                    version: row.version.clone(),
+                    schema: *schema,
+                });
+            }
+            None => diagnostics.push(Diagnostic::MissingReference {
+                entity: EntityKind::Extension,
+                oid: row.oid,
+                name: row.name.clone(),
+                referenced: EntityKind::Schema,
+                referenced_oid: row.namespace,
+            }),
+        }
+    }
+
+    // Step 3. The map from one member object to the extension that owns it.
+    // A member of an extension that went away, and a member in a catalog
+    // that this model does not hold, are both absent from the map.
+    let members: HashMap<(MemberClass, Oid), Handle<Extension>> = input
+        .members
+        .iter()
+        .filter(|row| row.class != MemberClass::Other)
+        .filter_map(|row| {
+            extension_handles
+                .get(&row.extension)
+                .map(|handle| ((row.class, row.oid), *handle))
+        })
+        .collect();
+    let owner = |class: MemberClass, oid: Oid| members.get(&(class, oid)).copied();
+
+    // Steps 4 and 5. The kept sets.
+    let kept_type_set = kept_types(
+        &input.types,
+        &schema_handles,
+        &input.attributes,
+        &mut diagnostics,
+    );
+    let kept_relation_set = kept_relations(
+        &input.relations,
+        &schema_handles,
+        &kept_type_set,
+        &mut diagnostics,
+    );
+
+    // Step 6. A handle is the position of the row among the kept rows, and
+    // the rows are in OID order.
+    let type_handles = assign_handles(&input.types, &kept_type_set, |row| row.oid);
+    let relation_handles = assign_handles(&input.relations, &kept_relation_set, |row| row.oid);
+
+    // Step 7. Build the types and the relations. The cycles between a
+    // composite type and its relation, and between a type and its array,
+    // close through the handles of step 6.
+    let mut types: Vec<Type> = Vec::new();
+    for (index, row) in input.types.iter().enumerate() {
+        if !kept_type_set.keep[index] {
+            continue;
+        }
+        let kind = type_kind(
+            row,
+            &type_handles,
+            &relation_handles,
+            &input.labels,
+            &input.attributes,
+            &mut diagnostics,
+        );
+        types.push(Type {
+            oid: row.oid,
+            name: row.name.clone(),
+            schema: schema_handles[&row.namespace],
+            category: TypeCategory::from_char(row.category),
+            is_preferred: row.is_preferred,
+            is_collatable: row.collatable,
+            array: type_handles.get(&row.typarray).copied(),
+            kind,
+            extension: owner(MemberClass::Type, row.oid),
+        });
+    }
+
+    let mut relations: Vec<Relation> = Vec::new();
+    for (index, row) in input.relations.iter().enumerate() {
+        if !kept_relation_set.keep[index] {
+            continue;
+        }
+        let columns = columns_of(row, &input.attributes, &type_handles, &mut diagnostics);
+        relations.push(Relation {
+            oid: row.oid,
+            name: row.name.clone(),
+            schema: schema_handles[&row.namespace],
+            kind: relation_kind(row.relkind),
+            row_type: type_handles[&row.reltype],
+            columns,
+            extension: owner(MemberClass::Class, row.oid),
+        });
+    }
 
     let mut builder = CatalogBuilder::new(metadata);
     if permit_missing_builtins {
         builder.permit_missing_builtins();
     }
-    let _ = (&input, &mut diagnostics, EntityKind::Schema);
+    for row in &input.schemas {
+        builder.push_schema(Schema {
+            oid: row.oid,
+            name: row.name.clone(),
+            extension: owner(MemberClass::Namespace, row.oid),
+        });
+    }
+    for extension in extensions {
+        builder.push_extension(extension);
+    }
+    for ty in types {
+        builder.push_type(ty);
+    }
+    for relation in relations {
+        builder.push_relation(relation);
+    }
 
     let catalog = builder.finish()?;
     Ok(Loaded {
         catalog,
         diagnostics,
     })
+}
+
+/// The columns of one relation.
+fn columns_of(
+    row: &RelationRow,
+    attributes: &HashMap<Oid, Vec<AttributeRow>>,
+    types: &HashMap<Oid, Handle<Type>>,
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Vec<Column> {
+    attributes
+        .get(&row.oid)
+        .into_iter()
+        .flatten()
+        .filter_map(|attribute| {
+            let Some(ty) = types.get(&attribute.typid) else {
+                // The row type of the relation is a composite, and the
+                // fixpoint keeps every attribute type of a composite. This
+                // arm is here so that a hand-fed row cannot panic.
+                diagnostics.push(Diagnostic::MissingReference {
+                    entity: EntityKind::Column,
+                    oid: row.oid,
+                    name: attribute.name.clone(),
+                    referenced: EntityKind::Type,
+                    referenced_oid: attribute.typid,
+                });
+                return None;
+            };
+            Some(Column {
+                name: attribute.name.clone(),
+                position: attribute.num,
+                ty: *ty,
+                typmod: Typmod(attribute.typmod),
+                not_null: attribute.not_null,
+                has_default: attribute.has_default,
+                generated: attribute.generated,
+                identity: attribute.identity,
+            })
+        })
+        .collect()
+}
+
+/// The kind of a relation.
+///
+/// The kept set holds only the five letters of a relation, so the last arm
+/// never runs.
+fn relation_kind(relkind: char) -> RelationKind {
+    match relkind {
+        'v' => RelationKind::View,
+        'm' => RelationKind::MaterializedView,
+        'f' => RelationKind::ForeignTable,
+        'p' => RelationKind::PartitionedTable,
+        _ => RelationKind::Table,
+    }
 }
