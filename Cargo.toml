@@ -37,6 +37,10 @@ zstd = { version = "0.13", optional = true }
 postgres = { version = "0.19", optional = true }
 tokio-postgres = { version = "0.7", optional = true }
 
+[[example]]
+name = "inspect"
+required-features = ["fixture"]
+
 [dev-dependencies]
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
