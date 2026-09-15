@@ -36,10 +36,10 @@ use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
 use crate::relation::{Column, Relation, RelationKind};
 use crate::schema::Schema;
-use crate::typmod::Typmod;
 use crate::types::{
     CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type, TypeCategory, TypeKind,
 };
+use crate::typmod::Typmod;
 
 // ---------------------------------------------------------------------------
 // Raw rows
@@ -420,7 +420,10 @@ fn attribute_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<AttributeRow>>, LoadEr
             generated: row.bool(7)?,
             identity: row.bool(8)?,
         };
-        attributes.entry(attribute.relid).or_default().push(attribute);
+        attributes
+            .entry(attribute.relid)
+            .or_default()
+            .push(attribute);
     }
     Ok(attributes)
 }
@@ -1596,5 +1599,410 @@ fn relation_kind(relkind: char) -> RelationKind {
         'f' => RelationKind::ForeignTable,
         'p' => RelationKind::PartitionedTable,
         _ => RelationKind::Table,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assemble;
+    use crate::cast::{CastContext, CastMethod};
+    use crate::catalog::ServerVersion;
+    use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
+    use crate::function::{ArgMode, FunctionKind, Volatility};
+    use crate::loader::queries::QueryId;
+    use crate::loader::{Loaded, Rows};
+    use crate::name::{Name, QualifiedName};
+    use crate::oid::Oid;
+    use crate::relation::RelationKind;
+    use crate::types::{TypeCategory, TypeKind};
+    use crate::typmod::Typmod;
+    use std::collections::HashMap;
+
+    /// The cell text that stands for a SQL NULL in a hand-written row.
+    const NULL: &str = "\\N";
+
+    /// One hand-written row.
+    fn row(cells: &[&str]) -> Vec<Option<String>> {
+        cells
+            .iter()
+            .map(|cell| {
+                if *cell == NULL {
+                    None
+                } else {
+                    Some((*cell).to_owned())
+                }
+            })
+            .collect()
+    }
+
+    /// The rows of every query, with every query empty.
+    fn empty_rows() -> HashMap<QueryId, Rows> {
+        let mut rows: HashMap<QueryId, Rows> =
+            QueryId::ALL.iter().map(|id| (*id, Vec::new())).collect();
+        rows.insert(QueryId::Database, vec![row(&["testdb"])]);
+        rows.insert(
+            QueryId::SearchPath,
+            vec![row(&["pg_catalog"]), row(&["public"])],
+        );
+        rows
+    }
+
+    /// Assemble a catalog from hand-written rows.
+    ///
+    /// The rows hold no built-in type, so the builder must permit those to
+    /// be absent.
+    fn load(rows: HashMap<QueryId, Rows>) -> Loaded {
+        assemble(
+            ServerVersion {
+                major: 17,
+                minor: 4,
+            },
+            &rows,
+            true,
+        )
+        .expect("the rows assemble")
+    }
+
+    /// The rows of a small database: two schemas, one extension, four types,
+    /// one table, one function, two operators, and one cast.
+    fn sample_rows() -> HashMap<QueryId, Rows> {
+        let mut rows = empty_rows();
+        rows.insert(
+            QueryId::Schemas,
+            vec![row(&["11", "pg_catalog"]), row(&["2200", "public"])],
+        );
+        rows.insert(
+            QueryId::Extensions,
+            vec![row(&["100", "myext", "1.0", "2200"])],
+        );
+        rows.insert(
+            QueryId::ExtensionMembers,
+            vec![row(&["proc", "40000", "100"])],
+        );
+        rows.insert(
+            QueryId::Types,
+            vec![
+                // bool, with its array.
+                row(&[
+                    "16", "bool", "11", "b", "B", "t", "f", "1000", "0", "f", "0", NULL, "0", "-1",
+                    "f", NULL, NULL, NULL, "0",
+                ]),
+                // _bool, the array of bool.
+                row(&[
+                    "1000", "_bool", "11", "b", "A", "f", "f", "0", "16", "t", "0", NULL, "0",
+                    "-1", "f", NULL, NULL, NULL, "0",
+                ]),
+                // The row type of the table.
+                row(&[
+                    "16385", "t1", "2200", "c", "C", "f", "f", "0", "0", "f", "16384", "r", "0",
+                    "-1", "f", NULL, NULL, NULL, "0",
+                ]),
+                // An array whose element type is not in the catalog.
+                row(&[
+                    "16386", "_ghost", "2200", "b", "A", "f", "f", "0", "99999", "t", "0", NULL,
+                    "0", "-1", "f", NULL, NULL, NULL, "0",
+                ]),
+            ],
+        );
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&["16384", "t1", "2200", "r", "16385"])],
+        );
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", "f"]),
+                row(&["16384", "2", "flags", "1000", "-1", "f", "t", "f", "f"]),
+            ],
+        );
+        rows.insert(
+            QueryId::Functions,
+            vec![row(&[
+                "40000", "f1", "2200", "f", "0", "0", "16", "f", "t", "i",
+            ])],
+        );
+        rows.insert(
+            QueryId::FunctionArguments,
+            vec![row(&["40000", "1", "16", NULL, "x"])],
+        );
+        rows.insert(
+            QueryId::Operators,
+            vec![
+                row(&[
+                    "50000", "===", "2200", "b", "16", "16", "16", "40000", "0", "0",
+                ]),
+                // A shell operator: it has no function.
+                row(&["50001", "?!", "2200", "b", "16", "16", "16", "0", "0", "0"]),
+            ],
+        );
+        rows.insert(
+            QueryId::Casts,
+            vec![row(&["60000", "16", "16385", "40000", "e", "f"])],
+        );
+        rows
+    }
+
+    #[test]
+    fn it_reports_exactly_the_two_entities_that_it_could_not_keep() {
+        let loaded = load(sample_rows());
+        assert_eq!(
+            loaded.diagnostics,
+            vec![
+                Diagnostic::MissingReference {
+                    entity: EntityKind::Type,
+                    oid: Oid(16386),
+                    name: Name::new("_ghost"),
+                    referenced: EntityKind::Type,
+                    referenced_oid: Oid(99999),
+                },
+                Diagnostic::Skipped {
+                    entity: EntityKind::Operator,
+                    oid: Oid(50001),
+                    name: Name::new("?!"),
+                    reason: SkipReason::ShellOperator,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn it_keeps_every_other_entity() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        assert_eq!(catalog.schemas().count(), 2);
+        assert_eq!(catalog.extensions().count(), 1);
+        assert_eq!(catalog.types().count(), 3);
+        assert_eq!(catalog.relations().count(), 1);
+        assert_eq!(catalog.functions().count(), 1);
+        assert_eq!(catalog.operators().count(), 1);
+        assert_eq!(catalog.casts().count(), 1);
+    }
+
+    #[test]
+    fn it_records_the_metadata_of_the_load() {
+        let loaded = load(sample_rows());
+        let metadata = loaded.catalog.metadata();
+        assert_eq!(
+            metadata.server_version,
+            ServerVersion {
+                major: 17,
+                minor: 4
+            }
+        );
+        assert_eq!(metadata.database, Name::new("testdb"));
+        assert_eq!(
+            metadata.search_path,
+            vec![Name::new("pg_catalog"), Name::new("public")]
+        );
+        assert!(metadata.loaded_at_unix_secs > 1_600_000_000);
+    }
+
+    #[test]
+    fn a_handle_is_the_position_of_the_oid_in_order() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        let oids: Vec<Oid> = catalog.types().map(|(_, ty)| ty.oid).collect();
+        assert_eq!(oids, vec![Oid(16), Oid(1000), Oid(16385)]);
+        for (handle, ty) in catalog.types() {
+            assert_eq!(catalog.type_by_oid(ty.oid), Some(handle));
+        }
+    }
+
+    #[test]
+    fn the_cycle_between_a_type_and_its_array_closes() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let array = catalog.type_by_oid(Oid(1000)).unwrap();
+        assert_eq!(catalog[boolean].array, Some(array));
+        assert_eq!(catalog[boolean].kind, TypeKind::Base);
+        assert_eq!(catalog[boolean].category, TypeCategory::Boolean);
+        assert!(catalog[boolean].is_preferred);
+        assert_eq!(catalog[array].array, None);
+        assert_eq!(catalog[array].kind, TypeKind::Array { element: boolean });
+    }
+
+    #[test]
+    fn the_cycle_between_a_composite_and_its_relation_closes() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let array = catalog.type_by_oid(Oid(1000)).unwrap();
+        let row_type = catalog.type_by_oid(Oid(16385)).unwrap();
+        let relation = catalog.relation_by_oid(Oid(16384)).unwrap();
+
+        let TypeKind::Composite(detail) = &catalog[row_type].kind else {
+            panic!("the row type is a composite");
+        };
+        assert_eq!(detail.relation, Some(relation));
+        assert_eq!(detail.fields.len(), 2);
+        assert_eq!(detail.fields[0].name, Name::new("flag"));
+        assert_eq!(detail.fields[0].ty, boolean);
+        assert_eq!(detail.fields[0].typmod, Typmod::NONE);
+        assert_eq!(detail.fields[1].ty, array);
+
+        assert_eq!(catalog[relation].row_type, row_type);
+        assert_eq!(catalog[relation].kind, RelationKind::Table);
+        let column = catalog[relation].column("flag").unwrap();
+        assert_eq!(column.position, 1);
+        assert_eq!(column.ty, boolean);
+        assert!(column.not_null);
+        assert!(!column.has_default);
+        assert!(catalog[relation].column("flags").unwrap().has_default);
+    }
+
+    #[test]
+    fn a_function_keeps_its_argument_and_its_extension() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let extension = catalog.extension_named("myext").unwrap();
+        let handle = catalog.function_by_oid(Oid(40000)).unwrap();
+        let function = &catalog[handle];
+        assert_eq!(function.name, Name::new("f1"));
+        assert_eq!(function.kind, FunctionKind::Function);
+        assert_eq!(function.volatility, Volatility::Immutable);
+        assert!(function.strict);
+        assert!(!function.returns_set);
+        assert_eq!(function.returns, boolean);
+        assert_eq!(function.variadic, None);
+        assert_eq!(function.aggregate, None);
+        assert_eq!(function.extension, Some(extension));
+        assert_eq!(function.arguments.len(), 1);
+        assert_eq!(function.arguments[0].name, Some(Name::new("x")));
+        assert_eq!(function.arguments[0].ty, boolean);
+        assert_eq!(function.arguments[0].mode, ArgMode::In);
+        assert_eq!(
+            catalog.qualified_name_of_function(handle),
+            QualifiedName::new("public", "f1")
+        );
+    }
+
+    #[test]
+    fn an_operator_and_a_cast_point_at_the_function() {
+        let loaded = load(sample_rows());
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let row_type = catalog.type_by_oid(Oid(16385)).unwrap();
+        let function = catalog.function_by_oid(Oid(40000)).unwrap();
+
+        let handle = catalog.operator_by_oid(Oid(50000)).unwrap();
+        let operator = &catalog[handle];
+        assert_eq!(operator.name, Name::new("==="));
+        assert_eq!(operator.left, Some(boolean));
+        assert_eq!(operator.right, boolean);
+        assert_eq!(operator.result, boolean);
+        assert_eq!(operator.function, function);
+        assert_eq!(operator.commutator, None);
+        assert_eq!(operator.negator, None);
+        assert_eq!(catalog.operator_by_oid(Oid(50001)), None);
+
+        let handle = catalog.cast(boolean, row_type).unwrap();
+        let cast = &catalog[handle];
+        assert_eq!(cast.context, CastContext::Explicit);
+        assert_eq!(cast.method, CastMethod::Function(function));
+        assert_eq!(catalog.casts_from(boolean), &[handle]);
+    }
+
+    #[test]
+    fn a_missing_attribute_type_takes_the_composite_and_the_relation_with_it() {
+        let mut rows = empty_rows();
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(
+            QueryId::Types,
+            vec![
+                // The row type of the table. One attribute has a type that
+                // the catalog does not hold.
+                row(&[
+                    "16385", "t1", "2200", "c", "C", "f", "f", "16386", "0", "f", "16384", "r",
+                    "0", "-1", "f", NULL, NULL, NULL, "0",
+                ]),
+                // The array of that row type. It goes when the row type
+                // goes.
+                row(&[
+                    "16386", "_t1", "2200", "b", "A", "f", "f", "0", "16385", "t", "0", NULL, "0",
+                    "-1", "f", NULL, NULL, NULL, "0",
+                ]),
+            ],
+        );
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&["16384", "t1", "2200", "r", "16385"])],
+        );
+        rows.insert(
+            QueryId::Attributes,
+            vec![row(&[
+                "16384", "1", "ghost", "99999", "-1", "f", "f", "f", "f",
+            ])],
+        );
+
+        let loaded = load(rows);
+        assert_eq!(loaded.catalog.types().count(), 0);
+        assert_eq!(loaded.catalog.relations().count(), 0);
+        assert_eq!(
+            loaded.diagnostics,
+            vec![
+                Diagnostic::MissingReference {
+                    entity: EntityKind::Type,
+                    oid: Oid(16385),
+                    name: Name::new("t1"),
+                    referenced: EntityKind::Type,
+                    referenced_oid: Oid(99999),
+                },
+                Diagnostic::MissingReference {
+                    entity: EntityKind::Type,
+                    oid: Oid(16386),
+                    name: Name::new("_t1"),
+                    referenced: EntityKind::Type,
+                    referenced_oid: Oid(16385),
+                },
+                Diagnostic::MissingReference {
+                    entity: EntityKind::Relation,
+                    oid: Oid(16384),
+                    name: Name::new("t1"),
+                    referenced: EntityKind::Type,
+                    referenced_oid: Oid(16385),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unknown_typtype_is_reported_and_the_type_goes() {
+        let mut rows = empty_rows();
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(
+            QueryId::Types,
+            vec![row(&[
+                "16400", "odd", "2200", "q", "U", "f", "f", "0", "0", "f", "0", NULL, "0", "-1",
+                "f", NULL, NULL, NULL, "0",
+            ])],
+        );
+        let loaded = load(rows);
+        assert_eq!(loaded.catalog.types().count(), 0);
+        assert_eq!(
+            loaded.diagnostics,
+            vec![Diagnostic::UnknownTypeKind {
+                oid: Oid(16400),
+                name: Name::new("odd"),
+                typtype: 'q',
+            }]
+        );
+    }
+
+    #[test]
+    fn the_composite_of_a_sequence_goes_without_a_note() {
+        let mut rows = empty_rows();
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(
+            QueryId::Types,
+            vec![row(&[
+                "16410", "s1", "2200", "c", "C", "f", "f", "0", "0", "f", "16409", "S", "0", "-1",
+                "f", NULL, NULL, NULL, "0",
+            ])],
+        );
+        let loaded = load(rows);
+        assert_eq!(loaded.catalog.types().count(), 0);
+        assert_eq!(loaded.diagnostics, Vec::new());
     }
 }

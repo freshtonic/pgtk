@@ -28,12 +28,15 @@
 //! An [`Oid`] is the identifier of the server. The model keeps it for
 //! display and for correlation, and never uses it as its own identity.
 
+#[cfg(any(feature = "postgres", feature = "tokio-postgres"))]
+mod adapters;
 mod builder;
 mod builtin;
 mod cast;
 mod catalog;
 mod diagnostic;
 mod error;
+mod executor;
 mod extension;
 mod function;
 mod handle;
@@ -53,12 +56,15 @@ pub use cast::{Cast, CastContext, CastMethod};
 pub use catalog::{Catalog, Metadata, ServerVersion};
 pub use diagnostic::{Diagnostic, EntityKind, SkipReason};
 pub use error::LoadError;
+#[cfg(feature = "async")]
+pub use executor::{AsyncExecutor, load_async};
+pub use executor::{Executor, load};
 pub use extension::Extension;
 pub use function::{
     AggregateDetail, AggregateKind, ArgMode, Argument, Function, FunctionKind, Volatility,
 };
 pub use handle::Handle;
-pub use loader::QueryId;
+pub use loader::{Loaded, Loader, QueryId, Rows};
 pub use name::{Name, QualifiedName};
 pub use oid::Oid;
 pub use operator::{Operator, OperatorKind};
