@@ -622,9 +622,16 @@ struct KeptSet {
 impl KeptSet {
     /// Start with every row kept.
     fn all(oids: impl Iterator<Item = Oid>) -> Self {
-        let index_by_oid: HashMap<Oid, usize> =
-            oids.enumerate().map(|(index, oid)| (oid, index)).collect();
-        let keep = vec![true; index_by_oid.len()];
+        let oids: Vec<Oid> = oids.collect();
+        let index_by_oid: HashMap<Oid, usize> = oids
+            .iter()
+            .enumerate()
+            .map(|(index, oid)| (*oid, index))
+            .collect();
+        // One flag for each row, and not one for each OID that differs.
+        // Every caller reads a flag by the position of a row. A hand-fed
+        // row set that repeats an OID must not shorten the flags.
+        let keep = vec![true; oids.len()];
         KeptSet { index_by_oid, keep }
     }
 

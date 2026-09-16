@@ -7,6 +7,25 @@ use pg_catalog::{
     Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
+// These checks run when the test compiles, not when it runs.
+//
+// A catalog is `Send` and `Sync`, so a consumer shares one behind an `Arc`.
+// A handle is `Copy`, `Send`, and `Sync` whatever its marker type is, even a
+// marker type that is neither `Send` nor `Sync`, because a handle holds
+// `PhantomData<fn() -> T>` and never a `T`.
+const _: () = {
+    /// A type that is neither `Send` nor `Sync`.
+    type NotSend = std::rc::Rc<()>;
+
+    const fn assert_shared<T: Send + Sync>() {}
+    const fn assert_copy_shared<T: Copy + Send + Sync>() {}
+
+    assert_shared::<Catalog>();
+    assert_copy_shared::<Handle<NotSend>>();
+    assert_copy_shared::<Handle<Type>>();
+    assert_copy_shared::<Handle<Schema>>();
+};
+
 /// The handles of the entities that [`small_catalog`] builds.
 struct Handles {
     pg_catalog: Handle<Schema>,
@@ -453,6 +472,34 @@ fn visible_functions_follow_the_path_then_the_oid() {
 
     assert_eq!(catalog.operators_visible(&implicit, "+"), vec![h.plus]);
     assert!(catalog.operators_visible(&implicit, "-").is_empty());
+}
+
+#[test]
+fn one_signature_in_two_schemas_gives_two_candidates() {
+    // `pg_catalog.f(int4)` and `public.f(int4)` have the same signature.
+    // PostgreSQL hides the later one. The catalog applies no hiding rule, so
+    // both come back and the consumer decides.
+    let (catalog, h) = small_catalog();
+    let path = SearchPath::new(&catalog, ["public"]);
+
+    let signature = |handle: &Handle<Function>| {
+        let function = &catalog[*handle];
+        let arguments: Vec<Handle<Type>> = function.arguments.iter().map(|a| a.ty).collect();
+        (function.schema, arguments)
+    };
+
+    let visible = catalog.functions_visible(&path, "f");
+    let twins: Vec<&Handle<Function>> = visible
+        .iter()
+        .filter(|handle| signature(handle).1 == vec![h.int4])
+        .collect();
+    assert_eq!(
+        twins,
+        vec![&h.catalog_f_int4, &h.public_f_int4],
+        "both f(int4) overloads are candidates"
+    );
+    assert_eq!(catalog[*twins[0]].schema, h.pg_catalog);
+    assert_eq!(catalog[*twins[1]].schema, h.public);
 }
 
 #[test]

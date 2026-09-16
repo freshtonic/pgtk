@@ -229,6 +229,78 @@ mod tests {
         );
     }
 
+    /// The built-in types that take a type modifier.
+    const DECODERS: &[Builtin] = &[
+        Builtin::Bpchar,
+        Builtin::Varchar,
+        Builtin::Numeric,
+        Builtin::Bit,
+        Builtin::Varbit,
+        Builtin::Time,
+        Builtin::Timetz,
+        Builtin::Timestamp,
+        Builtin::Timestamptz,
+        Builtin::Interval,
+    ];
+
+    #[test]
+    fn only_the_listed_builtins_decode() {
+        for builtin in Builtin::ALL {
+            let decoded = Typmod(10).decode(*builtin).is_some();
+            assert_eq!(
+                decoded,
+                DECODERS.contains(builtin),
+                "builtin {builtin:?} decoded {decoded}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_listed_builtin_decodes_to_its_own_detail() {
+        assert_eq!(
+            Typmod(10).decode(Builtin::Bpchar),
+            Some(TypmodDetail::CharLength(6))
+        );
+        assert_eq!(
+            Typmod(10).decode(Builtin::Varchar),
+            Some(TypmodDetail::CharLength(6))
+        );
+        assert_eq!(
+            Typmod(10).decode(Builtin::Numeric),
+            Some(TypmodDetail::Numeric {
+                precision: 0,
+                scale: 6
+            })
+        );
+        assert_eq!(
+            Typmod(10).decode(Builtin::Bit),
+            Some(TypmodDetail::BitLength(10))
+        );
+        assert_eq!(
+            Typmod(10).decode(Builtin::Varbit),
+            Some(TypmodDetail::BitLength(10))
+        );
+        for builtin in [
+            Builtin::Time,
+            Builtin::Timetz,
+            Builtin::Timestamp,
+            Builtin::Timestamptz,
+        ] {
+            assert_eq!(
+                Typmod(4).decode(builtin),
+                Some(TypmodDetail::TimePrecision(4)),
+                "builtin {builtin:?}"
+            );
+        }
+        assert_eq!(
+            Typmod(10).decode(Builtin::Interval),
+            Some(TypmodDetail::Interval {
+                fields: Some(IntervalFields(0)),
+                precision: Some(10)
+            })
+        );
+    }
+
     #[test]
     fn a_type_with_no_modifier_decodes_to_nothing() {
         assert_eq!(Typmod(14).decode(Builtin::Int4), None);
