@@ -1,10 +1,10 @@
 //! Build a small catalog by hand, then exercise every lookup.
 
 use pg_catalog::{
-    ArgMode, Argument, BtreeOperators, Builtin, Cast, CastContext, CastMethod, Catalog,
+    ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
     CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, Function,
-    FunctionKind, Handle, Metadata, Name, Oid, Operator, OperatorKind, QualifiedName, Relation,
-    RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, Volatility,
+    FunctionKind, Handle, Metadata, Name, Oid, Operator, OperatorKind, PrimaryKey, QualifiedName,
+    Relation, RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -200,6 +200,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 identity: false,
             },
         ],
+        primary_key: None,
         extension: Some(widgets),
     });
     assert_eq!(pushed_relation, widget);
@@ -474,6 +475,7 @@ fn temporary_catalog() -> (Catalog, TemporaryHandles) {
             kind: RelationKind::Table,
             row_type: Some(row_type),
             columns: Vec::new(),
+            primary_key: None,
             extension: None,
         })
     };
@@ -736,6 +738,7 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
             sequence_column("log_cnt", 2, int8),
             sequence_column("is_called", 3, boolean),
         ],
+        primary_key: None,
         extension: None,
     });
     let catalog = builder.finish().expect("the catalog builds");
@@ -810,6 +813,59 @@ fn a_type_answers_with_its_btree_operators_and_its_hash_equality() {
     // A type with no operator class, as `json` and `xml` are on a server.
     assert_eq!(catalog.btree_ordering(h.text), None);
     assert_eq!(catalog.hash_equality(h.text), None);
+}
+
+#[test]
+fn a_relation_keeps_its_primary_key_in_key_order() {
+    let (catalog, h) = small_catalog();
+    assert_eq!(catalog[h.widget].primary_key, None);
+
+    // The key is `(label, id)`, which is not the order of the columns.
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    builder.relation_mut(h.widget).primary_key = Some(PrimaryKey {
+        columns: vec![2, 1],
+        deferrable: false,
+    });
+    let catalog = builder.finish().expect("the catalog builds");
+
+    let relation = &catalog[h.widget];
+    let key = relation.primary_key.as_ref().expect("widget has a key");
+    assert_eq!(key.grouping_columns(), Some(&[2, 1][..]));
+    let names: Vec<&str> = key
+        .columns
+        .iter()
+        .map(|position| relation.column_at(*position).unwrap().name.as_str())
+        .collect();
+    assert_eq!(names, vec!["label", "id"]);
+    assert!(relation.column_at(3).is_none());
+}
+
+#[test]
+fn a_deferrable_primary_key_proves_no_grouping() {
+    let key = PrimaryKey {
+        columns: vec![1],
+        deferrable: true,
+    };
+    assert_eq!(key.grouping_columns(), None);
+}
+
+#[test]
+fn a_primary_key_on_an_unknown_column_is_rejected() {
+    let (catalog, h) = small_catalog();
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    builder.relation_mut(h.widget).primary_key = Some(PrimaryKey {
+        columns: vec![1, 9],
+        deferrable: false,
+    });
+    assert!(matches!(
+        builder.finish(),
+        Err(BuildError::UnknownKeyColumn {
+            relation: Oid(20003),
+            position: 9,
+        })
+    ));
 }
 
 #[test]

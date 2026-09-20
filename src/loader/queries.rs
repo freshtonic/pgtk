@@ -83,6 +83,8 @@ pub enum QueryId {
     /// The same-type operators of every default btree and hash operator
     /// class.
     DefaultOperatorClasses,
+    /// One row per column of every primary key, in key order.
+    PrimaryKeys,
 }
 
 impl QueryId {
@@ -104,6 +106,7 @@ impl QueryId {
         QueryId::Operators,
         QueryId::Casts,
         QueryId::DefaultOperatorClasses,
+        QueryId::PrimaryKeys,
     ];
 }
 
@@ -128,6 +131,7 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Operators => OPERATORS,
         QueryId::Casts => CASTS,
         QueryId::DefaultOperatorClasses => DEFAULT_OPERATOR_CLASSES,
+        QueryId::PrimaryKeys => PRIMARY_KEYS,
     }
 }
 
@@ -580,4 +584,36 @@ WHERE c.opcdefault
   AND (n.nspname NOT LIKE 'pg\_temp%'
        OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY c.oid, o.amopstrategy
+"#;
+
+// One row per column of every primary key, in key order.
+//
+// A primary key is a `pg_constraint` row with `contype` `p`. A relation has
+// at most one. `conkey` holds the attribute numbers of the key columns. No
+// other constraint is here.
+//
+// The schema filter applies to the schema of the relation, as in the
+// Relations query.
+//
+// Columns:
+//   0  conrelid       OID of the relation
+//   1  condeferrable  `t` when the constraint is deferrable
+//   2  n              position of the column in the key, from 1
+//   3  attnum         attribute number of the column
+//@sql PrimaryKeys
+const PRIMARY_KEYS: &str = r#"
+SELECT
+    k.conrelid::text,
+    (CASE WHEN k.condeferrable THEN 't' ELSE 'f' END)::text AS condeferrable,
+    a.n::text,
+    a.attnum::text
+FROM pg_catalog.pg_constraint k
+JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS a(attnum, n)
+WHERE k.contype = 'p'
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY k.conrelid, a.n
 "#;

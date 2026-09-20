@@ -209,6 +209,16 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         Some(row_type) => println!("  row type  {}", type_name(catalog, row_type)),
         None => println!("  row type  none"),
     }
+    if let Some(key) = &relation.primary_key {
+        let names: Vec<&str> = key
+            .columns
+            .iter()
+            .filter_map(|position| relation.column_at(*position))
+            .map(|column| column.name.as_str())
+            .collect();
+        let note = if key.deferrable { " (deferrable)" } else { "" };
+        println!("  key       ({}){note}", names.join(", "));
+    }
     println!("  {} columns", relation.columns.len());
     for column in &relation.columns {
         let mut notes = Vec::new();

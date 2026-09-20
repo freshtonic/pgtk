@@ -123,6 +123,13 @@ One live attribute of a Relation, with its Type, Type Modifier, and
 nullability. Dropped attributes are not Columns.
 _Avoid_: Attribute, field (a Field belongs to a composite Type)
 
+**Primary Key**:
+The Columns that a Relation's `PRIMARY KEY` constraint names, in key order,
+with a flag that says if the constraint is deferrable. PostgreSQL reads it in
+its check of an ungrouped Column: when `GROUP BY` names each Column of a
+Primary Key that is not deferrable, each other Column of that Relation is
+grouped too. No other constraint is in the model.
+
 **Function**:
 A `pg_proc` row: a plain function, procedure, aggregate, or window function.
 _Avoid_: Routine, proc
@@ -185,8 +192,9 @@ These are deliberate exclusions, not omissions:
   Type are in scope.
 - Collations. A Type keeps a collatable flag so collation checking can be
   added later without reshaping the model.
-- Indexes, constraints (other than counts on Domains), triggers, rules,
-  policies, roles, and privileges.
+- Indexes, constraints (other than Primary Keys and counts on Domains),
+  triggers, rules, policies, roles, and privileges. Unique, foreign key,
+  check, and exclusion constraints on a Relation are out of scope.
 - Default and constraint expression text.
 - The temporary Schemas of other sessions, and the Entities in them. The
   temporary Schema of the Loader's own session is in scope.

@@ -48,8 +48,8 @@ fn lock_server() -> std::sync::MutexGuard<'static, ()> {
 mod sync_tests {
     use super::{lock_server, skip, url};
     use pg_catalog::{
-        ArgMode, Builtin, CastMethod, Catalog, FunctionKind, Loaded, Name, QualifiedName,
-        RelationKind, SearchPath, TypeKind,
+        ArgMode, Builtin, CastMethod, Catalog, FunctionKind, Loaded, Name, PrimaryKey,
+        QualifiedName, RelationKind, SearchPath, TypeKind,
     };
     use postgres::{Client, NoTls};
     use std::panic::AssertUnwindSafe;
@@ -232,7 +232,14 @@ mod sync_tests {
         client
             .batch_execute(
                 "CREATE TEMP TABLE catalog_live_nocols ();
-                 CREATE TEMP TABLE catalog_live_temp (id int4 NOT NULL, label text);",
+                 CREATE TEMP TABLE catalog_live_temp (id int4 NOT NULL, label text);
+                 CREATE TEMP TABLE catalog_live_keyed (id int PRIMARY KEY, name text);
+                 CREATE TEMP TABLE catalog_live_pair (
+                     a int, b int, c text, PRIMARY KEY (b, a)
+                 );
+                 CREATE TEMP TABLE catalog_live_deferred (
+                     id int PRIMARY KEY DEFERRABLE, name text
+                 );",
             )
             .expect("the setup runs");
 
@@ -279,6 +286,33 @@ mod sync_tests {
             )),
             Some(handle)
         );
+
+        // A primary key arrives in key order, with its deferrable flag. A
+        // table with no key has none.
+        let key_of = |name: &str| {
+            let handle = catalog
+                .relation_visible(&path, name)
+                .expect("pg_temp resolves the table");
+            catalog[handle].primary_key.clone()
+        };
+        assert_eq!(
+            key_of("catalog_live_keyed"),
+            Some(PrimaryKey {
+                columns: vec![1],
+                deferrable: false,
+            })
+        );
+        assert_eq!(
+            key_of("catalog_live_pair"),
+            Some(PrimaryKey {
+                columns: vec![2, 1],
+                deferrable: false,
+            })
+        );
+        let deferred = key_of("catalog_live_deferred").expect("the table has a key");
+        assert!(deferred.deferrable);
+        assert_eq!(deferred.grouping_columns(), None);
+        assert_eq!(key_of("catalog_live_temp"), None);
 
         // A table with no column loads, and has a row type with no field.
         let nocols = catalog

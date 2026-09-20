@@ -44,7 +44,12 @@ rest so that they are not re-decided.
 ## Relations and Columns
 
 - Relation: kind, name, Schema, `row_type: Option<Handle<Type>>` (`None` only
-  for a sequence, whose `reltype` is 0), ordered Columns.
+  for a sequence, whose `reltype` is 0), ordered Columns, and
+  `primary_key: Option<PrimaryKey { columns: Vec<i16>, deferrable }>`. The key
+  columns are attribute positions (`conkey`) in key order. This is what
+  `check_functional_grouping` reads. `PrimaryKey::grouping_columns` is `None`
+  for a deferrable key, which PostgreSQL does not accept as proof. No other
+  constraint is loaded; the check does not use a unique constraint.
 - Column: name, position, Type, Type Modifier, NOT NULL, has-default,
   generated, identity. Dropped attributes excluded. No default text.
 

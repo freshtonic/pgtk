@@ -61,6 +61,15 @@ pub enum BuildError {
         /// The fixed OID of that type.
         oid: Oid,
     },
+    /// A primary key names an attribute position that no column of the
+    /// relation has.
+    #[error("primary key of relation {relation} names position {position}, which is not a column")]
+    UnknownKeyColumn {
+        /// The OID of the relation.
+        relation: Oid,
+        /// The attribute position that the key names.
+        position: i16,
+    },
 }
 
 /// Check that one handle points inside an arena.
@@ -291,6 +300,16 @@ impl CatalogBuilder {
             for column in &entity.columns {
                 check(column.ty, types, "type")?;
             }
+            if let Some(key) = &entity.primary_key {
+                for position in &key.columns {
+                    if entity.column_at(*position).is_none() {
+                        return Err(BuildError::UnknownKeyColumn {
+                            relation: entity.oid,
+                            position: *position,
+                        });
+                    }
+                }
+            }
         }
         for entity in &self.functions {
             check(entity.schema, schemas, "schema")?;
@@ -354,7 +373,8 @@ impl CatalogBuilder {
     /// Validate the entities, then build the catalog and its indexes.
     ///
     /// The check runs in three steps. First, every handle must point inside
-    /// its arena. Second, the OIDs of each arena must be unique. Third, the
+    /// its arena, and every column of a primary key must be a column of its
+    /// relation. Second, the OIDs of each arena must be unique. Third, the
     /// catalog must hold every built-in type, unless
     /// [`permit_missing_builtins`](CatalogBuilder::permit_missing_builtins)
     /// says otherwise.

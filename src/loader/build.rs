@@ -34,7 +34,7 @@ use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
-use crate::relation::{Column, Relation, RelationKind};
+use crate::relation::{Column, PrimaryKey, Relation, RelationKind};
 use crate::schema::Schema;
 use crate::types::{
     BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
@@ -552,6 +552,28 @@ fn operator_class_rows(rows: &Rows) -> Result<Vec<OperatorClassRow>, LoadError> 
     })
 }
 
+/// Read [`QueryId::PrimaryKeys`] into the key of each relation.
+///
+/// The rows of one key are in key order after the sort.
+fn primary_key_rows(rows: &Rows) -> Result<HashMap<Oid, PrimaryKey>, LoadError> {
+    let mut cells: Vec<(Oid, bool, i32, i16)> = read(rows, QueryId::PrimaryKeys, |row| {
+        Ok((row.oid(0)?, row.bool(1)?, row.i32(2)?, row.i16(3)?))
+    })?;
+    cells.sort_by_key(|(relid, _, n, _)| (*relid, *n));
+
+    let mut keys: HashMap<Oid, PrimaryKey> = HashMap::new();
+    for (relid, deferrable, _, attnum) in cells {
+        keys.entry(relid)
+            .or_insert_with(|| PrimaryKey {
+                columns: Vec::new(),
+                deferrable,
+            })
+            .columns
+            .push(attnum);
+    }
+    Ok(keys)
+}
+
 /// Every query, read into typed rows.
 struct Input {
     /// The name of the database.
@@ -584,6 +606,8 @@ struct Input {
     casts: Vec<CastRow>,
     /// The operators of every default btree and hash operator class.
     operator_classes: Vec<OperatorClassRow>,
+    /// The primary key of each relation that has one.
+    primary_keys: HashMap<Oid, PrimaryKey>,
 }
 
 impl Input {
@@ -605,6 +629,7 @@ impl Input {
             operators: operator_rows(rows_of(rows, QueryId::Operators)?)?,
             casts: cast_rows(rows_of(rows, QueryId::Casts)?)?,
             operator_classes: operator_class_rows(rows_of(rows, QueryId::DefaultOperatorClasses)?)?,
+            primary_keys: primary_key_rows(rows_of(rows, QueryId::PrimaryKeys)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -1092,6 +1117,14 @@ pub(crate) fn assemble(
             continue;
         }
         let columns = columns_of(row, &input.attributes, &type_handles, &mut diagnostics);
+        // A key stays only when each of its columns stays. A column goes, with
+        // its own note, when its type is not kept. A part of a key would let
+        // a consumer accept a `GROUP BY` that the server rejects.
+        let primary_key = input.primary_keys.get(&row.oid).filter(|key| {
+            key.columns
+                .iter()
+                .all(|position| columns.iter().any(|column| column.position == *position))
+        });
         relations.push(Relation {
             oid: row.oid,
             name: row.name.clone(),
@@ -1099,6 +1132,7 @@ pub(crate) fn assemble(
             kind: relation_kind(row.relkind),
             row_type: type_handles.get(&row.reltype).copied(),
             columns,
+            primary_key: primary_key.cloned(),
             extension: owner(MemberClass::Class, row.oid),
         });
     }
@@ -1760,7 +1794,7 @@ mod tests {
     use crate::loader::{Loaded, Rows};
     use crate::name::{Name, QualifiedName};
     use crate::oid::Oid;
-    use crate::relation::RelationKind;
+    use crate::relation::{PrimaryKey, RelationKind};
     use crate::types::{TypeCategory, TypeKind};
     use crate::typmod::Typmod;
     use std::collections::HashMap;
@@ -2345,5 +2379,55 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn a_relation_takes_its_primary_key_in_key_order() {
+        let mut rows = sample_rows();
+        // The rows are out of order, to show that the loader sorts them.
+        rows.insert(
+            QueryId::PrimaryKeys,
+            vec![
+                row(&["16384", "f", "2", "1"]),
+                row(&["16384", "f", "1", "2"]),
+                // A key of a relation that is not in the catalog goes away.
+                row(&["99999", "f", "1", "1"]),
+            ],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        assert_eq!(
+            loaded.catalog[relation].primary_key,
+            Some(PrimaryKey {
+                columns: vec![2, 1],
+                deferrable: false,
+            })
+        );
+    }
+
+    #[test]
+    fn a_deferrable_primary_key_keeps_its_flag() {
+        let mut rows = sample_rows();
+        rows.insert(QueryId::PrimaryKeys, vec![row(&["16384", "t", "1", "1"])]);
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        let key = loaded.catalog[relation].primary_key.as_ref().unwrap();
+        assert!(key.deferrable);
+        assert_eq!(key.grouping_columns(), None);
+    }
+
+    #[test]
+    fn a_primary_key_with_a_lost_column_goes_away() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::PrimaryKeys,
+            vec![
+                row(&["16384", "f", "1", "1"]),
+                row(&["16384", "f", "2", "7"]),
+            ],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        assert_eq!(loaded.catalog[relation].primary_key, None);
     }
 }
