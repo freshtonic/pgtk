@@ -489,39 +489,43 @@ fn replay_one(
         return Verdict::Skipped(SkipReason::AbortedTransaction);
     }
 
-    if !subject.wants(shape) {
-        // The Oracle is still asked, so the report can show what it said
-        // once the Subject grows into this statement.
-        let verdict = match session.oracle.describe(sql) {
-            Ok(_) => Verdict::Unsupported,
-            Err(error) => {
-                session.recover(&error);
-                Verdict::Skipped(SkipReason::AbortedTransaction)
-            }
-        };
-        session.run(shape, sql);
-        return verdict;
-    }
-
-    if let Err(error) = session.ensure_catalog() {
+    // A statement the Subject reads the Catalog for gets a fresh one and
+    // the current search path; any other is analysed against whatever
+    // Catalog the session has, loading one only when it has none yet.
+    let wants = subject.wants(shape);
+    let load = if wants {
+        session.ensure_catalog()
+    } else if session.catalog.is_none() {
+        session.ensure_catalog()
+    } else {
+        Ok(())
+    };
+    if let Err(error) = load {
         eprintln!("{file} item {index}: cannot load the catalog: {error}");
         session.run(shape, sql);
         return Verdict::Skipped(SkipReason::CatalogUnavailable);
     }
-    let search_path = match session.oracle.search_path() {
-        Ok(path) => path,
-        Err(error) => {
-            // A failed transaction that the probe did not see, or a lost
-            // connection: either way this statement is not compared.
-            session.recover(&error);
-            session.run(shape, sql);
-            return Verdict::Skipped(SkipReason::AbortedTransaction);
+    let search_path = if wants {
+        match session.oracle.search_path() {
+            Ok(path) => path,
+            Err(error) => {
+                // A failed transaction that the probe did not see, or a lost
+                // connection: either way this statement is not compared.
+                session.recover(&error);
+                session.run(shape, sql);
+                return Verdict::Skipped(SkipReason::AbortedTransaction);
+            }
         }
+    } else {
+        Vec::new()
     };
     let oracle_outcome = match session.oracle.describe(sql) {
         Ok(outcome) => outcome,
         Err(error) => {
             session.recover(&error);
+            if !wants {
+                session.run(shape, sql);
+            }
             return Verdict::Skipped(SkipReason::AbortedTransaction);
         }
     };

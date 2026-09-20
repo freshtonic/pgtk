@@ -3,6 +3,10 @@
 use std::fmt;
 use std::ops::Range;
 
+/// The location of a node that has none, as PostgreSQL's `-1`: a
+/// diagnostic placed there reports no position.
+pub(crate) const NO_LOCATION: usize = usize::MAX;
+
 /// The severity PostgreSQL would use.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Severity {
@@ -64,7 +68,9 @@ impl Diagnostic {
 
     /// Set the cursor to a byte offset in the statement text.
     pub(crate) fn at(mut self, location: usize) -> Self {
-        self.location = Some(location);
+        if location != NO_LOCATION {
+            self.location = Some(location);
+        }
         self
     }
 
