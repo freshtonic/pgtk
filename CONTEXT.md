@@ -120,7 +120,9 @@ this model.
 
 **Column**:
 One live attribute of a Relation, with its Type, Type Modifier, and
-nullability. Dropped attributes are not Columns.
+nullability. An identity Column also has its kind, `ALWAYS` or `BY DEFAULT`,
+because only an `ALWAYS` Column rejects a value other than `DEFAULT`. Dropped
+attributes are not Columns.
 _Avoid_: Attribute, field (a Field belongs to a composite Type)
 
 **Primary Key**:

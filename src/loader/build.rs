@@ -34,7 +34,7 @@ use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
-use crate::relation::{Column, PrimaryKey, Relation, RelationKind};
+use crate::relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
 use crate::schema::Schema;
 use crate::types::{
     BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
@@ -177,8 +177,8 @@ struct AttributeRow {
     has_default: bool,
     /// True when the attribute is a generated column.
     generated: bool,
-    /// True when the attribute is an identity column.
-    identity: bool,
+    /// The `attidentity` letter, when the attribute is an identity column.
+    identity: Option<char>,
 }
 
 /// One row of [`QueryId::Relations`].
@@ -422,7 +422,7 @@ fn attribute_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<AttributeRow>>, LoadEr
             not_null: row.bool(5)?,
             has_default: row.bool(6)?,
             generated: row.bool(7)?,
-            identity: row.bool(8)?,
+            identity: row.opt_char(8)?,
         };
         attributes
             .entry(attribute.relid)
@@ -1241,6 +1241,22 @@ fn columns_of(
                 });
                 return None;
             };
+            let identity = match attribute.identity {
+                None => None,
+                Some('a') => Some(Identity::Always),
+                Some('d') => Some(Identity::ByDefault),
+                Some(letter) => {
+                    // The two kinds take different values in an `INSERT`, so
+                    // a guess is not safe. The column goes.
+                    diagnostics.push(unparsable(
+                        EntityKind::Column,
+                        row.oid,
+                        "attidentity",
+                        letter,
+                    ));
+                    return None;
+                }
+            };
             Some(Column {
                 name: attribute.name.clone(),
                 position: attribute.num,
@@ -1249,7 +1265,7 @@ fn columns_of(
                 not_null: attribute.not_null,
                 has_default: attribute.has_default,
                 generated: attribute.generated,
-                identity: attribute.identity,
+                identity,
             })
         })
         .collect()
@@ -1794,7 +1810,7 @@ mod tests {
     use crate::loader::{Loaded, Rows};
     use crate::name::{Name, QualifiedName};
     use crate::oid::Oid;
-    use crate::relation::{PrimaryKey, RelationKind};
+    use crate::relation::{Identity, PrimaryKey, RelationKind};
     use crate::types::{TypeCategory, TypeKind};
     use crate::typmod::Typmod;
     use std::collections::HashMap;
@@ -1895,8 +1911,8 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", "f"]),
-                row(&["16384", "2", "flags", "1000", "-1", "f", "t", "f", "f"]),
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL]),
+                row(&["16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL]),
             ],
         );
         rows.insert(
@@ -2215,9 +2231,9 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16409", "1", "last_value", "20", "-1", "t", "f", "f", "f"]),
-                row(&["16409", "2", "log_cnt", "20", "-1", "t", "f", "f", "f"]),
-                row(&["16409", "3", "is_called", "16", "-1", "t", "f", "f", "f"]),
+                row(&["16409", "1", "last_value", "20", "-1", "t", "f", "f", NULL]),
+                row(&["16409", "2", "log_cnt", "20", "-1", "t", "f", "f", NULL]),
+                row(&["16409", "3", "is_called", "16", "-1", "t", "f", "f", NULL]),
             ],
         );
         let loaded = load(rows);
@@ -2429,5 +2445,50 @@ mod tests {
         let loaded = load(rows);
         let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
         assert_eq!(loaded.catalog[relation].primary_key, None);
+    }
+
+    #[test]
+    fn a_column_keeps_the_kind_of_its_identity() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&["16384", "1", "always", "16", "-1", "t", "f", "f", "a"]),
+                row(&["16384", "2", "by_default", "16", "-1", "t", "f", "f", "d"]),
+                row(&["16384", "3", "plain", "16", "-1", "f", "f", "f", NULL]),
+            ],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        let identities: Vec<Option<Identity>> = loaded.catalog[relation]
+            .columns
+            .iter()
+            .map(|column| column.identity)
+            .collect();
+        assert_eq!(
+            identities,
+            vec![Some(Identity::Always), Some(Identity::ByDefault), None]
+        );
+    }
+
+    #[test]
+    fn a_column_with_an_unknown_identity_letter_goes_with_a_note() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL]),
+                row(&["16384", "2", "odd", "16", "-1", "t", "f", "f", "q"]),
+            ],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        assert_eq!(loaded.catalog[relation].columns.len(), 1);
+        assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+            entity: EntityKind::Column,
+            oid: Oid(16384),
+            column: "attidentity",
+            value: "q".to_owned(),
+        }));
     }
 }

@@ -3,8 +3,9 @@
 use pg_catalog::{
     ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
     CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, Function,
-    FunctionKind, Handle, Metadata, Name, Oid, Operator, OperatorKind, PrimaryKey, QualifiedName,
-    Relation, RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, Volatility,
+    FunctionKind, Handle, Identity, Metadata, Name, Oid, Operator, OperatorKind, PrimaryKey,
+    QualifiedName, Relation, RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind,
+    Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -187,7 +188,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 not_null: true,
                 has_default: false,
                 generated: false,
-                identity: true,
+                identity: Some(Identity::Always),
             },
             Column {
                 name: Name::new("label"),
@@ -197,7 +198,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 not_null: false,
                 has_default: true,
                 generated: false,
-                identity: false,
+                identity: None,
             },
         ],
         primary_key: None,
@@ -698,7 +699,7 @@ fn sequence_column(name: &str, position: i16, ty: Handle<Type>) -> Column {
         not_null: true,
         has_default: false,
         generated: false,
-        identity: false,
+        identity: None,
     }
 }
 
@@ -866,6 +867,18 @@ fn a_primary_key_on_an_unknown_column_is_rejected() {
             position: 9,
         })
     ));
+}
+
+#[test]
+fn a_column_keeps_the_kind_of_its_identity() {
+    let (catalog, h) = small_catalog();
+    let widget = &catalog[h.widget];
+    assert_eq!(
+        widget.column("id").map(|c| c.identity),
+        Some(Some(Identity::Always))
+    );
+    assert_eq!(widget.column("label").map(|c| c.identity), Some(None));
+    assert_ne!(Identity::Always, Identity::ByDefault);
 }
 
 #[test]

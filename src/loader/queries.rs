@@ -365,7 +365,8 @@ ORDER BY c.oid
 //   5  attnotnull `t` when the attribute has NOT NULL
 //   6  atthasdef  `t` when the attribute has a default
 //   7  generated  `t` when the attribute is a generated column
-//   8  identity   `t` when the attribute is an identity column
+//   8  identity   identity letter: a for ALWAYS, d for BY DEFAULT, NULL when
+//                 the attribute is not an identity column
 //@sql Attributes
 const ATTRIBUTES: &str = r#"
 SELECT
@@ -377,7 +378,7 @@ SELECT
     (CASE WHEN a.attnotnull THEN 't' ELSE 'f' END)::text AS attnotnull,
     (CASE WHEN a.atthasdef THEN 't' ELSE 'f' END)::text AS atthasdef,
     (CASE WHEN a.attgenerated <> '' THEN 't' ELSE 'f' END)::text AS generated,
-    (CASE WHEN a.attidentity <> '' THEN 't' ELSE 'f' END)::text AS identity
+    NULLIF(a.attidentity, '')::text AS identity
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

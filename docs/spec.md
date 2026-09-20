@@ -191,8 +191,13 @@ pub enum RelationKind { Table, View, MaterializedView, ForeignTable, Partitioned
 // The model holds no pg_sequence detail (start, increment, cycle).
 pub struct Column {
     pub name: Name, pub position: i16, pub ty: Handle<Type>, pub typmod: Typmod,
-    pub not_null: bool, pub has_default: bool, pub generated: bool, pub identity: bool,
+    pub not_null: bool, pub has_default: bool, pub generated: bool,
+    pub identity: Option<Identity>,   // attidentity: None for ''
 }
+/// attidentity. An INSERT or UPDATE of a non-DEFAULT value into an Always
+/// column is SQLSTATE 428C9 (without OVERRIDING SYSTEM VALUE); ByDefault
+/// accepts each value.
+pub enum Identity { Always, ByDefault }   // a d
 impl Relation { pub fn column(&self, name: &str) -> Option<&Column>; }
 
 pub struct Function {
@@ -325,6 +330,7 @@ pub struct Catalog { /* private: arenas, metadata, builtins, indexes */ }
 impl Catalog {
     pub const FORMAT_VERSION: u32 = 3;   // 2: Type gained btree and hash_equality
                                          // 3: Relation gained primary_key
+                                         // 4: Column.identity became Option<Identity>
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -576,7 +582,7 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `pg_class` joined with the filter, `WHERE relkind IN ('r','v','m','f','p','S')`
   `ORDER BY oid`.
 - **Attributes**: `attrelid, attnum, attname, atttypid, atttypmod, attnotnull,
-  atthasdef, (attgenerated <> '') AS generated, (attidentity <> '') AS identity`
+  atthasdef, (attgenerated <> '') AS generated, NULLIF(attidentity, '') AS identity`
   from `pg_attribute a JOIN pg_class c ON c.oid = a.attrelid` with the filter,
   `WHERE attnum > 0 AND NOT attisdropped AND relkind IN ('r','v','m','f','p','S','c')`
   `ORDER BY attrelid, attnum`.
@@ -636,7 +642,9 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
    schema decides, and its `row_type` is `None`. A relation's columns are the
    Attributes rows for its OID; all their types are kept by step 4, since the
    row type is a composite. The columns of a sequence are `int8` and `bool`;
-   a column whose type is not kept gives `MissingReference` and goes.
+   a column whose type is not kept gives `MissingReference` and goes. A
+   column whose `attidentity` is not `a`, `d`, or NULL gives `UnparsableValue`
+   and goes: the two kinds accept different values, so a guess is not safe.
 6. Assign handles: sort each kept set by OID; handle = position.
 7. Build types and relations. A composite type gets
    `relation = Some(h)` when `relkind` in `r v m f p` and that relation is

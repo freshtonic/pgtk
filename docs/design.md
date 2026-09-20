@@ -51,7 +51,11 @@ rest so that they are not re-decided.
   for a deferrable key, which PostgreSQL does not accept as proof. No other
   constraint is loaded; the check does not use a unique constraint.
 - Column: name, position, Type, Type Modifier, NOT NULL, has-default,
-  generated, identity. Dropped attributes excluded. No default text.
+  generated, `identity: Option<Identity { Always, ByDefault }>`. The kind is
+  necessary because the rewriter rejects a non-DEFAULT value only for a
+  `GENERATED ALWAYS` identity column (428C9). `generated` stays a flag:
+  PostgreSQL 14 to 17 have only stored generated columns. Dropped attributes
+  excluded. No default text.
 
 ## Functions, Operators, Casts
 
