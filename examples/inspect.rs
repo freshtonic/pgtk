@@ -295,7 +295,16 @@ fn print_functions(catalog: &Catalog, handles: &[Handle<Function>]) {
             notes.push(format!("variadic over {}", type_name(catalog, variadic)));
         }
         if function.default_count > 0 {
-            notes.push(format!("{} defaults", function.default_count));
+            let types: Vec<String> = function
+                .default_types
+                .iter()
+                .map(|ty| ty.map_or_else(|| "?".to_owned(), |ty| type_name(catalog, ty)))
+                .collect();
+            notes.push(format!(
+                "{} defaults ({})",
+                function.default_count,
+                types.join(", ")
+            ));
         }
         if let Some(aggregate) = &function.aggregate {
             notes.push(format!(

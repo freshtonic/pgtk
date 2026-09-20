@@ -156,6 +156,51 @@ fn pg_class_has_its_oid_as_the_primary_key() {
 }
 
 #[test]
+fn make_interval_has_the_type_of_each_default() {
+    let catalog = pg17();
+    let int4 = catalog.builtin(Builtin::Int4);
+    let float8 = catalog.builtin(Builtin::Float8);
+    let overloads = catalog.functions_named(&QualifiedName::new("pg_catalog", "make_interval"));
+    assert_eq!(overloads.len(), 1);
+    let function = &catalog[overloads[0]];
+
+    // Each of the seven arguments has a default: six `int4` and one `float8`.
+    assert_eq!(function.default_count, 7);
+    let mut expected = vec![Some(int4); 6];
+    expected.push(Some(float8));
+    assert_eq!(function.default_types, expected);
+    assert_eq!(function.default_type_of(0), Some(int4));
+    assert_eq!(function.default_type_of(6), Some(float8));
+}
+
+#[test]
+fn each_function_has_one_default_type_for_each_default() {
+    let catalog = pg17();
+    let mut with_defaults = 0;
+    for (_, function) in catalog.functions() {
+        assert_eq!(
+            function.default_types.len(),
+            usize::from(function.default_count),
+            "{}",
+            function.name
+        );
+        if function.default_count > 0 {
+            with_defaults += 1;
+            // A stock server has no default that the loader cannot read.
+            assert!(
+                function.default_types.iter().all(Option::is_some),
+                "{}",
+                function.name
+            );
+        }
+    }
+    assert!(
+        with_defaults > 20,
+        "{with_defaults} functions have a default"
+    );
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -289,6 +334,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             generated: false,
             identity: None,
         }],
+        parents: Vec::new(),
         primary_key: None,
         extension: None,
     });

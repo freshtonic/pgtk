@@ -85,6 +85,8 @@ pub enum QueryId {
     DefaultOperatorClasses,
     /// One row per column of every primary key, in key order.
     PrimaryKeys,
+    /// One row per direct parent of every relation, in `inhseqno` order.
+    Inherits,
 }
 
 impl QueryId {
@@ -107,6 +109,7 @@ impl QueryId {
         QueryId::Casts,
         QueryId::DefaultOperatorClasses,
         QueryId::PrimaryKeys,
+        QueryId::Inherits,
     ];
 }
 
@@ -132,6 +135,7 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Casts => CASTS,
         QueryId::DefaultOperatorClasses => DEFAULT_OPERATOR_CLASSES,
         QueryId::PrimaryKeys => PRIMARY_KEYS,
+        QueryId::Inherits => INHERITS,
     }
 }
 
@@ -404,6 +408,8 @@ ORDER BY a.attrelid, a.attnum
 //   7  proretset       `t` when the function returns a set
 //   8  proisstrict     `t` when the function is strict
 //   9  provolatile     volatility letter: i s v
+//  10  proargdefaults  text of the node tree of the default expressions, NULL
+//                      when no argument has a default
 //@sql Functions
 const FUNCTIONS: &str = r#"
 SELECT
@@ -416,7 +422,8 @@ SELECT
     p.prorettype::text,
     (CASE WHEN p.proretset THEN 't' ELSE 'f' END)::text AS proretset,
     (CASE WHEN p.proisstrict THEN 't' ELSE 'f' END)::text AS proisstrict,
-    p.provolatile::text
+    p.provolatile::text,
+    p.proargdefaults::text
 FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname NOT LIKE 'pg\_toast%'
@@ -617,4 +624,32 @@ WHERE k.contype = 'p'
   AND (n.nspname NOT LIKE 'pg\_temp%'
        OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY k.conrelid, a.n
+"#;
+
+// One row per direct parent of every relation, in `inhseqno` order.
+//
+// `pg_inherits` holds a row for a table that inherits and for a partition.
+// It also holds a row for a partition of an index. The filter on `relkind`
+// keeps that row out, because an index is not a relation in this model.
+//
+// The schema filter applies to the schema of the child.
+//
+// Columns:
+//   0  inhrelid   OID of the child relation
+//   1  inhseqno   position of the parent among the parents, from 1
+//   2  inhparent  OID of the parent relation
+//@sql Inherits
+const INHERITS: &str = r#"
+SELECT
+    i.inhrelid::text,
+    i.inhseqno::text,
+    i.inhparent::text
+FROM pg_catalog.pg_inherits i
+JOIN pg_catalog.pg_class c ON c.oid = i.inhrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY i.inhrelid, i.inhseqno
 "#;

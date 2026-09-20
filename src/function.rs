@@ -28,6 +28,25 @@ pub struct Function {
     pub variadic: Option<Handle<Type>>,
     /// The number of arguments that have a default, from `pronargdefaults`.
     pub default_count: u16,
+    /// The type of each default expression, from `proargdefaults`.
+    ///
+    /// There is one entry for each default, so the length is
+    /// [`default_count`](Function::default_count). The defaults belong to
+    /// the last input arguments, in order: see
+    /// [`default_type_of`](Function::default_type_of).
+    ///
+    /// An entry is the result type of the expression, which the server gets
+    /// from `exprType()`. It can be different from the type of the argument.
+    /// For an argument `anyelement = 'World'::text` it is `text`. For
+    /// `anyelement = 'World'` it is the pseudo-type `unknown`, because the
+    /// server does not coerce a default to a polymorphic type. PostgreSQL
+    /// reads these types when a call leaves out a polymorphic argument.
+    ///
+    /// An entry is `None` when the loader cannot tell the type: the
+    /// expression is a node kind that the loader does not know, or its type
+    /// is not in the catalog.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub default_types: Vec<Option<Handle<Type>>>,
     /// The return type.
     pub returns: Handle<Type>,
     /// True when the function returns a set of rows.
@@ -43,6 +62,19 @@ pub struct Function {
 }
 
 impl Function {
+    /// The type of the default expression of one input argument.
+    ///
+    /// The index counts the input arguments, as
+    /// [`input_arguments`](Function::input_arguments) gives them. The result
+    /// is `None` when that argument has no default, and when the loader
+    /// cannot tell the type of the default.
+    pub fn default_type_of(&self, input_index: usize) -> Option<Handle<Type>> {
+        let inputs = self.input_arguments().count();
+        let first_default = inputs.checked_sub(self.default_types.len())?;
+        let offset = input_index.checked_sub(first_default)?;
+        self.default_types.get(offset).copied().flatten()
+    }
+
     /// The arguments with mode `In`, `InOut`, or `Variadic`, in order.
     ///
     /// These are the arguments that a call site supplies.

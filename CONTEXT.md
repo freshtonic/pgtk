@@ -118,6 +118,12 @@ one Relation without one. The model holds no parameter of a sequence, such as
 the start or the increment. Indexes and TOAST tables are not Relations in
 this model.
 
+**Parent**:
+A Relation that another Relation inherits from, or the partitioned table of a
+partition: a `pg_inherits` row. A Relation holds its direct Parents, in
+order. PostgreSQL accepts the row Type of a Relation where it expects the row
+Type of one of its ancestors.
+
 **Column**:
 One live attribute of a Relation, with its Type, Type Modifier, and
 nullability. An identity Column also has its kind, `ALWAYS` or `BY DEFAULT`,
@@ -134,6 +140,9 @@ grouped too. No other constraint is in the model.
 
 **Function**:
 A `pg_proc` row: a plain function, procedure, aggregate, or window function.
+A Function that has defaults holds the Type of each default expression, and
+not the expression. PostgreSQL reads that Type when a call leaves out a
+polymorphic argument.
 _Avoid_: Routine, proc
 
 **Aggregate**:
@@ -197,7 +206,8 @@ These are deliberate exclusions, not omissions:
 - Indexes, constraints (other than Primary Keys and counts on Domains),
   triggers, rules, policies, roles, and privileges. Unique, foreign key,
   check, and exclusion constraints on a Relation are out of scope.
-- Default and constraint expression text.
+- Default and constraint expression text. The Type of the default expression
+  of a Function argument is in scope; the expression is not.
 - The temporary Schemas of other sessions, and the Entities in them. The
   temporary Schema of the Loader's own session is in scope.
 - Function bodies, languages, cost, and execution detail of Aggregates.

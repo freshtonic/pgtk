@@ -29,6 +29,17 @@ pub struct Relation {
     pub row_type: Option<Handle<Type>>,
     /// The live columns, in attribute order.
     pub columns: Vec<Column>,
+    /// The direct parents of the relation, in `inhseqno` order.
+    ///
+    /// This is `pg_inherits`. A table that inherits names its parents here,
+    /// and a partition names its partitioned table. The list is empty for a
+    /// relation with no parent. It holds only the direct parents: a consumer
+    /// that needs each ancestor follows the chain.
+    ///
+    /// PostgreSQL accepts the row type of a relation where it expects the row
+    /// type of an ancestor of that relation.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub parents: Vec<Handle<Relation>>,
     /// The primary key of the relation, when it has one.
     ///
     /// No other constraint is in the model.

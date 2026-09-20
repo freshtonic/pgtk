@@ -147,6 +147,19 @@ mod sync_tests {
         assert_eq!(catalog.btree_ordering(json), None);
         assert_eq!(catalog.hash_equality(json), None);
 
+        // The loader reads the type of each default of each stock function.
+        for (_, function) in catalog.functions() {
+            assert_eq!(
+                function.default_types.len(),
+                usize::from(function.default_count)
+            );
+            assert!(
+                function.default_types.iter().all(Option::is_some),
+                "a default of {} has no type",
+                function.name
+            );
+        }
+
         // `text` to `varchar` is a binary cast.
         let text = catalog.builtin(Builtin::Text);
         let varchar = catalog.builtin(Builtin::Varchar);
@@ -368,6 +381,22 @@ mod sync_tests {
                  tags text[]
              );
              CREATE SEQUENCE {schema}.reading_id_seq;
+             CREATE TABLE {schema}.p1 (a int4);
+             CREATE TABLE {schema}.p2 (b text);
+             CREATE TABLE {schema}.c1 (c int4) INHERITS ({schema}.p2, {schema}.p1);
+             CREATE TABLE {schema}.measured (at date) PARTITION BY RANGE (at);
+             CREATE TABLE {schema}.measured_2026 PARTITION OF {schema}.measured
+                 FOR VALUES FROM ('2026-01-01') TO ('2027-01-01');
+             CREATE INDEX ON {schema}.measured (at);
+             CREATE FUNCTION {schema}.dfunc(
+                 a int4,
+                 b anyelement = 'World'::text,
+                 c anyelement = 'x',
+                 d timestamptz = now(),
+                 e int4[] = ARRAY[1, 2],
+                 f int4 = 1 + 1,
+                 g text = NULL
+             ) RETURNS int4 AS $$ SELECT 1 $$ LANGUAGE sql;
              CREATE FUNCTION {schema}.split(IN a int4, OUT lo int4, OUT hi int4)
                  AS $$ SELECT a - 1, a + 1 $$ LANGUAGE sql;
              CREATE FUNCTION {schema}.total(VARIADIC arr int4[]) RETURNS int4
@@ -465,6 +494,46 @@ mod sync_tests {
         );
         assert!(relation.columns.iter().all(|column| column.not_null));
         assert_eq!(relation.row_type, None, "a sequence has no row type");
+
+        // A table names its direct parents, in the order of `INHERITS`. A
+        // partition names its partitioned table. The partition of the index
+        // is in `pg_inherits` too, and gives no note.
+        let relation = |name: &str| {
+            catalog
+                .relation_named(&named(name))
+                .expect("the relation is there")
+        };
+        assert_eq!(
+            catalog[relation("c1")].parents,
+            vec![relation("p2"), relation("p1")]
+        );
+        assert_eq!(catalog[relation("p1")].parents, Vec::new());
+        assert_eq!(
+            catalog[relation("measured_2026")].parents,
+            vec![relation("measured")]
+        );
+
+        // A function keeps the type of each default expression. An untyped
+        // literal for a polymorphic argument stays `unknown`.
+        let dfunc = catalog.functions_named(&named("dfunc"));
+        assert_eq!(dfunc.len(), 1, "dfunc has one overload");
+        let dfunc = &catalog[dfunc[0]];
+        let builtin = |builtin| Some(catalog.builtin(builtin));
+        assert_eq!(dfunc.default_count, 6);
+        assert_eq!(
+            dfunc.default_types,
+            vec![
+                builtin(Builtin::Text),
+                builtin(Builtin::Unknown),
+                builtin(Builtin::Timestamptz),
+                builtin(Builtin::Int4Array),
+                builtin(Builtin::Int4),
+                builtin(Builtin::Text),
+            ]
+        );
+        assert_eq!(dfunc.default_type_of(0), None, "a has no default");
+        assert_eq!(dfunc.default_type_of(1), builtin(Builtin::Text));
+        assert_eq!(dfunc.default_type_of(2), builtin(Builtin::Unknown));
 
         // The function with OUT arguments keeps every argument, and only
         // one of them is an input.

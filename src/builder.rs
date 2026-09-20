@@ -70,6 +70,16 @@ pub enum BuildError {
         /// The attribute position that the key names.
         position: i16,
     },
+    /// A function does not have one default type for each default.
+    #[error("function {function} has {default_count} defaults and {default_types} default types")]
+    DefaultTypesLength {
+        /// The OID of the function.
+        function: Oid,
+        /// The `default_count` of the function.
+        default_count: u16,
+        /// The length of the `default_types` of the function.
+        default_types: usize,
+    },
 }
 
 /// Check that one handle points inside an arena.
@@ -300,6 +310,9 @@ impl CatalogBuilder {
             for column in &entity.columns {
                 check(column.ty, types, "type")?;
             }
+            for parent in &entity.parents {
+                check(*parent, relations, "relation")?;
+            }
             if let Some(key) = &entity.primary_key {
                 for position in &key.columns {
                     if entity.column_at(*position).is_none() {
@@ -313,6 +326,16 @@ impl CatalogBuilder {
         }
         for entity in &self.functions {
             check(entity.schema, schemas, "schema")?;
+            if entity.default_types.len() != usize::from(entity.default_count) {
+                return Err(BuildError::DefaultTypesLength {
+                    function: entity.oid,
+                    default_count: entity.default_count,
+                    default_types: entity.default_types.len(),
+                });
+            }
+            for ty in entity.default_types.iter().flatten() {
+                check(*ty, types, "type")?;
+            }
             check(entity.returns, types, "type")?;
             check_opt(entity.variadic, types, "type")?;
             check_opt(entity.extension, extensions, "extension")?;
