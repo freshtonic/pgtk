@@ -387,6 +387,7 @@ mod tests {
         Schema {
             oid: Oid(oid),
             name: Name::new(name),
+            is_temporary: false,
             extension: None,
         }
     }
