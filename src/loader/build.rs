@@ -600,13 +600,19 @@ const KEPT_TYPE_KINDS: &[char] = &['b', 'c', 'd', 'e', 'p', 'r', 'm'];
 
 /// The `relkind` letters that back a composite type that this model keeps.
 ///
-/// A relation keeps `r v m f p`. A standalone composite type keeps `c`. A
-/// sequence, an index, and a TOAST table are not here, so the composite type
-/// of one of those goes away without a diagnostic.
+/// A relation with a row type keeps `r v m f p`. A standalone composite type
+/// keeps `c`. A sequence, an index, and a TOAST table are not here. The
+/// server gives those classes no row type from version 14, so this filter
+/// is a guard only, and the type goes away without a diagnostic.
 const KEPT_COMPOSITE_RELKINDS: &[char] = &['r', 'v', 'm', 'f', 'p', 'c'];
 
 /// The `relkind` letters of a relation.
-const RELATION_RELKINDS: &[char] = &['r', 'v', 'm', 'f', 'p'];
+///
+/// A sequence, `S`, is a relation that has no row type: its `reltype` is 0.
+const RELATION_RELKINDS: &[char] = &['r', 'v', 'm', 'f', 'p', 'S'];
+
+/// The `relkind` letter of a sequence.
+const SEQUENCE_RELKIND: char = 'S';
 
 /// Which rows of one arena the loader keeps.
 ///
@@ -735,8 +741,8 @@ fn kept_types(
             continue;
         }
         // The composite type of a sequence, of an index, or of a TOAST
-        // table goes away without a note. The model does not hold those
-        // classes, so the type has no place either.
+        // table goes away without a note. The model gives those classes no
+        // row type, so the type has no place.
         if row.typtype == 'c'
             && !row
                 .relkind
@@ -775,7 +781,8 @@ fn kept_types(
 /// Compute the set of relations to keep.
 ///
 /// A relation stays when its schema is loaded and its row type is a type
-/// that the loader keeps.
+/// that the loader keeps. A sequence has no row type, so only its schema
+/// decides.
 fn kept_relations(
     relations: &[RelationRow],
     schemas: &HashMap<Oid, Handle<Schema>>,
@@ -805,7 +812,7 @@ fn kept_relations(
             });
             continue;
         }
-        if !types.alive(row.reltype) {
+        if row.relkind != SEQUENCE_RELKIND && !types.alive(row.reltype) {
             kept.drop_at(index);
             diagnostics.push(Diagnostic::MissingReference {
                 entity: EntityKind::Relation,
@@ -1050,7 +1057,7 @@ pub(crate) fn assemble(
             name: row.name.clone(),
             schema: schema_handles[&row.namespace],
             kind: relation_kind(row.relkind),
-            row_type: type_handles[&row.reltype],
+            row_type: type_handles.get(&row.reltype).copied(),
             columns,
             extension: owner(MemberClass::Class, row.oid),
         });
@@ -1597,7 +1604,7 @@ fn one_cast(
 
 /// The kind of a relation.
 ///
-/// The kept set holds only the five letters of a relation, so the last arm
+/// The kept set holds only the six letters of a relation, so the last arm
 /// never runs.
 fn relation_kind(relkind: char) -> RelationKind {
     match relkind {
@@ -1605,6 +1612,7 @@ fn relation_kind(relkind: char) -> RelationKind {
         'm' => RelationKind::MaterializedView,
         'f' => RelationKind::ForeignTable,
         'p' => RelationKind::PartitionedTable,
+        SEQUENCE_RELKIND => RelationKind::Sequence,
         _ => RelationKind::Table,
     }
 }
@@ -1848,7 +1856,7 @@ mod tests {
         assert_eq!(detail.fields[0].typmod, Typmod::NONE);
         assert_eq!(detail.fields[1].ty, array);
 
-        assert_eq!(catalog[relation].row_type, row_type);
+        assert_eq!(catalog[relation].row_type, Some(row_type));
         assert_eq!(catalog[relation].kind, RelationKind::Table);
         let column = catalog[relation].column("flag").unwrap();
         assert_eq!(column.position, 1);
@@ -2011,5 +2019,60 @@ mod tests {
         let loaded = load(rows);
         assert_eq!(loaded.catalog.types().count(), 0);
         assert_eq!(loaded.diagnostics, Vec::new());
+    }
+
+    #[test]
+    fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
+        let mut rows = empty_rows();
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(
+            QueryId::Types,
+            vec![
+                row(&[
+                    "16", "bool", "2200", "b", "B", "t", "f", "0", "0", "f", "0", NULL, "0", "-1",
+                    "f", NULL, NULL, NULL, "0",
+                ]),
+                row(&[
+                    "20", "int8", "2200", "b", "N", "f", "f", "0", "0", "f", "0", NULL, "0", "-1",
+                    "f", NULL, NULL, NULL, "0",
+                ]),
+            ],
+        );
+        // The server gives a sequence a `reltype` of 0.
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&["16409", "s1", "2200", "S", "0"])],
+        );
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&["16409", "1", "last_value", "20", "-1", "t", "f", "f", "f"]),
+                row(&["16409", "2", "log_cnt", "20", "-1", "t", "f", "f", "f"]),
+                row(&["16409", "3", "is_called", "16", "-1", "t", "f", "f", "f"]),
+            ],
+        );
+        let loaded = load(rows);
+        assert_eq!(loaded.diagnostics, Vec::new());
+
+        let catalog = &loaded.catalog;
+        let int8 = catalog.type_by_oid(Oid(20)).unwrap();
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let relation = catalog.relation_by_oid(Oid(16409)).unwrap();
+
+        assert_eq!(catalog[relation].kind, RelationKind::Sequence);
+        assert_eq!(catalog[relation].row_type, None);
+        let columns: Vec<_> = catalog[relation]
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.ty))
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                ("last_value", int8),
+                ("log_cnt", int8),
+                ("is_called", boolean)
+            ]
+        );
     }
 }

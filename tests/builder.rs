@@ -173,7 +173,7 @@ fn small_catalog() -> (Catalog, Handles) {
         name: Name::new("widget"),
         schema: public,
         kind: RelationKind::Table,
-        row_type: widget_row,
+        row_type: Some(widget_row),
         columns: vec![
             Column {
                 name: Name::new("id"),
@@ -545,12 +545,92 @@ fn the_composite_and_its_relation_point_at_each_other() {
     };
     assert_eq!(detail.relation, Some(h.widget));
     assert_eq!(detail.fields.len(), 2);
-    assert_eq!(catalog[h.widget].row_type, h.widget_row);
+    assert_eq!(catalog[h.widget].row_type, Some(h.widget_row));
     assert_eq!(
         catalog[h.widget].column("label").map(|c| c.typmod),
         Some(Typmod(14))
     );
     assert!(catalog[h.widget].column("nothing").is_none());
+}
+
+/// A column of a sequence. Each one is NOT NULL and has no default.
+fn sequence_column(name: &str, position: i16, ty: Handle<Type>) -> Column {
+    Column {
+        name: Name::new(name),
+        position,
+        ty,
+        typmod: Typmod::NONE,
+        not_null: true,
+        has_default: false,
+        generated: false,
+        identity: false,
+    }
+}
+
+#[test]
+fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
+    let mut builder = CatalogBuilder::new(Metadata {
+        search_path: vec![Name::new("public")],
+        ..Metadata::placeholder()
+    });
+    builder.permit_missing_builtins();
+
+    let pg_catalog = builder.push_schema(Schema {
+        oid: Oid(11),
+        name: Name::new("pg_catalog"),
+        extension: None,
+    });
+    let public = builder.push_schema(Schema {
+        oid: Oid(2200),
+        name: Name::new("public"),
+        extension: None,
+    });
+    let boolean = builder.push_type(base_type(16, "bool", pg_catalog, TypeCategory::Boolean));
+    let int8 = builder.push_type(base_type(20, "int8", pg_catalog, TypeCategory::Numeric));
+
+    // A sequence has no row type, so no composite goes in beside it.
+    let sequence = builder.next_relation_handle();
+    builder.push_relation(Relation {
+        oid: Oid(20010),
+        name: Name::new("widget_id_seq"),
+        schema: public,
+        kind: RelationKind::Sequence,
+        row_type: None,
+        columns: vec![
+            sequence_column("last_value", 1, int8),
+            sequence_column("log_cnt", 2, int8),
+            sequence_column("is_called", 3, boolean),
+        ],
+        extension: None,
+    });
+    let catalog = builder.finish().expect("the catalog builds");
+
+    assert_eq!(
+        catalog.relation_named(&QualifiedName::new("public", "widget_id_seq")),
+        Some(sequence)
+    );
+    let path = SearchPath::new(&catalog, ["public"]);
+    assert_eq!(
+        catalog.relation_visible(&path, "widget_id_seq"),
+        Some(sequence)
+    );
+
+    let relation = &catalog[sequence];
+    assert_eq!(relation.kind, RelationKind::Sequence);
+    assert_eq!(relation.row_type, None);
+    let columns: Vec<_> = relation
+        .columns
+        .iter()
+        .map(|column| (column.position, column.name.as_str(), column.ty))
+        .collect();
+    assert_eq!(
+        columns,
+        vec![
+            (1, "last_value", int8),
+            (2, "log_cnt", int8),
+            (3, "is_called", boolean),
+        ]
+    );
 }
 
 #[test]
