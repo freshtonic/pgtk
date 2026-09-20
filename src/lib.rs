@@ -56,8 +56,10 @@ mod name;
 mod oid;
 mod operator;
 mod relation;
+mod rule;
 mod schema;
 mod search_path;
+mod trigger;
 mod types;
 mod typmod;
 
@@ -80,8 +82,10 @@ pub use name::{Name, QualifiedName};
 pub use oid::Oid;
 pub use operator::{Operator, OperatorKind};
 pub use relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
+pub use rule::{FiresWhen, Rule, RuleEvent};
 pub use schema::Schema;
 pub use search_path::SearchPath;
+pub use trigger::{Trigger, TriggerTiming};
 pub use types::{
     BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
     TypeCategory, TypeKind,

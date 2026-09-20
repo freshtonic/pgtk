@@ -83,6 +83,10 @@ pub enum EntityKind {
     Cast,
     /// A default operator class.
     OperatorClass,
+    /// A rewrite rule.
+    Rule,
+    /// A trigger.
+    Trigger,
 }
 
 impl EntityKind {
@@ -98,6 +102,8 @@ impl EntityKind {
             EntityKind::Operator => "operator",
             EntityKind::Cast => "cast",
             EntityKind::OperatorClass => "operator class",
+            EntityKind::Rule => "rule",
+            EntityKind::Trigger => "trigger",
         }
     }
 }

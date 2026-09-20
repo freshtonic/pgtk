@@ -54,6 +54,17 @@ rest so that they are not re-decided.
   `check_functional_grouping` reads. `PrimaryKey::grouping_columns` is `None`
   for a deferrable key, which PostgreSQL does not accept as proof. No other
   constraint is loaded; the check does not use a unique constraint.
+- DML on a view. The rewriter runs at Parse time, so a consumer needs three
+  more facts about a Relation: `view_definition: Option<String>`
+  (`pg_get_viewdef(oid, true)`, not parsed here), `rules: Vec<Rule>`, and
+  `triggers: Vec<Trigger>`. A Rule has name, event (Update, Insert, Delete),
+  `instead`, `unconditional`, and `fires`. A Trigger has name, timing (Before,
+  After, InsteadOf), the four event flags, `row_level`, and `fires`.
+  `FiresWhen` is `ev_enabled` / `tgenabled` (Origin, Replica, Always,
+  Disabled): the rewriter skips a rule that does not fire, but a disabled
+  INSTEAD OF trigger still makes a view updatable. The `_RETURN` rule and the
+  internal triggers are not loaded. Both lists are in name order, which is
+  the order that PostgreSQL applies them in.
 - Column: name, position, Type, Type Modifier, NOT NULL, has-default,
   generated, `identity: Option<Identity { Always, ByDefault }>`. The kind is
   necessary because the rewriter rejects a non-DEFAULT value only for a

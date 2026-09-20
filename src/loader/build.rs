@@ -36,7 +36,9 @@ use crate::name::Name;
 use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
 use crate::relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
+use crate::rule::{FiresWhen, Rule, RuleEvent};
 use crate::schema::Schema;
+use crate::trigger::Trigger;
 use crate::types::{
     BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
     TypeCategory, TypeKind,
@@ -197,6 +199,8 @@ struct RelationRow {
     reltype: Oid,
     /// The OID of the composite type of a typed table, or 0.
     reloftype: Oid,
+    /// The SQL text of the query of a view.
+    viewdef: Option<String>,
 }
 
 /// One row of [`QueryId::Functions`].
@@ -407,6 +411,7 @@ fn relation_rows(rows: &Rows) -> Result<Vec<RelationRow>, LoadError> {
             relkind: row.char(3)?,
             reltype: row.oid(4)?,
             reloftype: row.oid(5)?,
+            viewdef: row.opt_text(6)?.map(str::to_owned),
         })
     })
 }
@@ -581,6 +586,152 @@ fn primary_key_rows(rows: &Rows) -> Result<HashMap<Oid, PrimaryKey>, LoadError> 
     Ok(keys)
 }
 
+/// One row of [`QueryId::Rules`].
+#[derive(Debug, Clone)]
+struct RuleRow {
+    /// The OID of the rule.
+    oid: Oid,
+    /// The OID of the relation.
+    relid: Oid,
+    /// The name of the rule.
+    name: Name,
+    /// The `ev_type` digit.
+    event: char,
+    /// True for a `DO INSTEAD` rule.
+    instead: bool,
+    /// True when the rule has no condition.
+    unconditional: bool,
+    /// The `ev_enabled` letter.
+    enabled: char,
+}
+
+/// Read [`QueryId::Rules`].
+fn rule_rows(rows: &Rows) -> Result<Vec<RuleRow>, LoadError> {
+    read(rows, QueryId::Rules, |row| {
+        Ok(RuleRow {
+            oid: row.oid(0)?,
+            relid: row.oid(1)?,
+            name: row.name(2)?,
+            event: row.char(3)?,
+            instead: row.bool(4)?,
+            unconditional: row.bool(5)?,
+            enabled: row.char(6)?,
+        })
+    })
+}
+
+/// One row of [`QueryId::Triggers`].
+#[derive(Debug, Clone)]
+struct TriggerRow {
+    /// The OID of the trigger.
+    oid: Oid,
+    /// The OID of the relation.
+    relid: Oid,
+    /// The name of the trigger.
+    name: Name,
+    /// The `tgtype` bit mask.
+    tgtype: i16,
+    /// The `tgenabled` letter.
+    enabled: char,
+}
+
+/// Read [`QueryId::Triggers`].
+fn trigger_rows(rows: &Rows) -> Result<Vec<TriggerRow>, LoadError> {
+    read(rows, QueryId::Triggers, |row| {
+        Ok(TriggerRow {
+            oid: row.oid(0)?,
+            relid: row.oid(1)?,
+            name: row.name(2)?,
+            tgtype: row.i16(3)?,
+            enabled: row.char(4)?,
+        })
+    })
+}
+
+/// When a rule or a trigger fires, from its letter.
+fn fires_when(letter: char) -> Option<FiresWhen> {
+    match letter {
+        'O' => Some(FiresWhen::Origin),
+        'R' => Some(FiresWhen::Replica),
+        'A' => Some(FiresWhen::Always),
+        'D' => Some(FiresWhen::Disabled),
+        _ => None,
+    }
+}
+
+/// The rules of each relation, in name order.
+///
+/// A rule goes, with a note, when the loader cannot read its event or its
+/// firing letter. A rule of a relation that the catalog does not hold goes
+/// with no note, because the relation already has one.
+fn rules_by_relation(
+    rows: &[RuleRow],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HashMap<Oid, Vec<Rule>> {
+    let mut rules: HashMap<Oid, Vec<Rule>> = HashMap::new();
+    for row in rows {
+        let event = match row.event {
+            '2' => RuleEvent::Update,
+            '3' => RuleEvent::Insert,
+            '4' => RuleEvent::Delete,
+            other => {
+                diagnostics.push(unparsable(EntityKind::Rule, row.oid, "ev_type", other));
+                continue;
+            }
+        };
+        let Some(fires) = fires_when(row.enabled) else {
+            diagnostics.push(unparsable(
+                EntityKind::Rule,
+                row.oid,
+                "ev_enabled",
+                row.enabled,
+            ));
+            continue;
+        };
+        rules.entry(row.relid).or_default().push(Rule {
+            name: row.name.clone(),
+            event,
+            instead: row.instead,
+            unconditional: row.unconditional,
+            fires,
+        });
+    }
+    for group in rules.values_mut() {
+        group.sort_by(|a, b| a.name.as_str().as_bytes().cmp(b.name.as_str().as_bytes()));
+    }
+    rules
+}
+
+/// The triggers of each relation, in name order.
+///
+/// A trigger goes, with a note, when the loader cannot read its firing
+/// letter.
+fn triggers_by_relation(
+    rows: &[TriggerRow],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HashMap<Oid, Vec<Trigger>> {
+    let mut triggers: HashMap<Oid, Vec<Trigger>> = HashMap::new();
+    for row in rows {
+        let Some(fires) = fires_when(row.enabled) else {
+            diagnostics.push(unparsable(
+                EntityKind::Trigger,
+                row.oid,
+                "tgenabled",
+                row.enabled,
+            ));
+            continue;
+        };
+        triggers
+            .entry(row.relid)
+            .or_default()
+            .push(Trigger::from_tgtype(row.name.clone(), row.tgtype, fires));
+    }
+    for group in triggers.values_mut() {
+        group.sort_by(|a, b| a.name.as_str().as_bytes().cmp(b.name.as_str().as_bytes()));
+    }
+    triggers
+}
+
 /// Read [`QueryId::Inherits`] into the parents of each relation.
 ///
 /// The parents of one relation are in `inhseqno` order after the sort.
@@ -633,6 +784,10 @@ struct Input {
     primary_keys: HashMap<Oid, PrimaryKey>,
     /// The OIDs of the direct parents of each relation that has one.
     parents: HashMap<Oid, Vec<Oid>>,
+    /// Every rule.
+    rules: Vec<RuleRow>,
+    /// Every trigger.
+    triggers: Vec<TriggerRow>,
 }
 
 impl Input {
@@ -656,6 +811,8 @@ impl Input {
             operator_classes: operator_class_rows(rows_of(rows, QueryId::DefaultOperatorClasses)?)?,
             primary_keys: primary_key_rows(rows_of(rows, QueryId::PrimaryKeys)?)?,
             parents: inherits_rows(rows_of(rows, QueryId::Inherits)?)?,
+            rules: rule_rows(rows_of(rows, QueryId::Rules)?)?,
+            triggers: trigger_rows(rows_of(rows, QueryId::Triggers)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -1137,6 +1294,8 @@ pub(crate) fn assemble(
         });
     }
 
+    let mut rules = rules_by_relation(&input.rules, &mut diagnostics);
+    let mut triggers = triggers_by_relation(&input.triggers, &mut diagnostics);
     let mut relations: Vec<Relation> = Vec::new();
     for (index, row) in input.relations.iter().enumerate() {
         if !kept_relation_set.keep[index] {
@@ -1194,6 +1353,9 @@ pub(crate) fn assemble(
             of_type,
             parents,
             primary_key: primary_key.cloned(),
+            view_definition: row.viewdef.clone(),
+            rules: rules.remove(&row.oid).unwrap_or_default(),
+            triggers: triggers.remove(&row.oid).unwrap_or_default(),
             extension: owner(MemberClass::Class, row.oid),
         });
     }
@@ -1895,6 +2057,8 @@ mod tests {
     use crate::name::{Name, QualifiedName};
     use crate::oid::Oid;
     use crate::relation::{Identity, PrimaryKey, RelationKind};
+    use crate::rule::{FiresWhen, Rule, RuleEvent};
+    use crate::trigger::TriggerTiming;
     use crate::types::{TypeCategory, TypeKind};
     use crate::typmod::Typmod;
     use std::collections::HashMap;
@@ -1990,7 +2154,7 @@ mod tests {
         );
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385", "0"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "0", NULL])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2211,7 +2375,7 @@ mod tests {
         );
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385", "0"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "0", NULL])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2310,7 +2474,7 @@ mod tests {
         // The server gives a sequence a `reltype` of 0.
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16409", "s1", "2200", "S", "0", "0"])],
+            vec![row(&["16409", "s1", "2200", "S", "0", "0", NULL])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2592,8 +2756,8 @@ mod tests {
             ]),
         ]);
         rows.get_mut(&QueryId::Relations).unwrap().extend([
-            row(&["16500", "p1", "2200", "r", "16501", "0"]),
-            row(&["16502", "p2", "2200", "r", "16503", "0"]),
+            row(&["16500", "p1", "2200", "r", "16501", "0", NULL]),
+            row(&["16502", "p2", "2200", "r", "16503", "0", NULL]),
         ]);
         // The rows are out of order, to show that the loader sorts them. One
         // parent is not in the catalog.
@@ -2677,7 +2841,7 @@ mod tests {
         // the only kind that a server permits, but the loader does not care.
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385", "16"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "16", NULL])],
         );
         let loaded = load(rows);
         let catalog = &loaded.catalog;
@@ -2691,7 +2855,7 @@ mod tests {
         let mut rows = sample_rows();
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385", "99999"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "99999", NULL])],
         );
         let loaded = load(rows);
         let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
@@ -2703,5 +2867,112 @@ mod tests {
             referenced: EntityKind::Type,
             referenced_oid: Oid(99999),
         }));
+    }
+
+    #[test]
+    fn a_relation_takes_its_view_text_its_rules_and_its_triggers() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&[
+                "16384",
+                "t1",
+                "2200",
+                "v",
+                "16385",
+                "0",
+                " SELECT 1 AS flag;",
+            ])],
+        );
+        // The rows are out of name order, to show that the loader sorts them.
+        rows.insert(
+            QueryId::Rules,
+            vec![
+                row(&["70001", "16384", "r_upd", "2", "f", "f", "D"]),
+                row(&["70000", "16384", "r_ins", "3", "t", "t", "O"]),
+                // A rule of a relation that is not in the catalog goes away.
+                row(&["70002", "99999", "r_lost", "4", "t", "t", "O"]),
+            ],
+        );
+        rows.insert(
+            QueryId::Triggers,
+            vec![
+                row(&["71001", "16384", "trg_b", "11", "O"]),
+                row(&["71000", "16384", "trg_a", "85", "A"]),
+            ],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let relation = &catalog[catalog.relation_by_oid(Oid(16384)).unwrap()];
+
+        assert_eq!(
+            relation.view_definition.as_deref(),
+            Some(" SELECT 1 AS flag;")
+        );
+        assert_eq!(
+            relation.rules,
+            vec![
+                Rule {
+                    name: Name::new("r_ins"),
+                    event: RuleEvent::Insert,
+                    instead: true,
+                    unconditional: true,
+                    fires: FiresWhen::Origin,
+                },
+                Rule {
+                    name: Name::new("r_upd"),
+                    event: RuleEvent::Update,
+                    instead: false,
+                    unconditional: false,
+                    fires: FiresWhen::Disabled,
+                },
+            ]
+        );
+        assert!(relation.rules[0].replaces(RuleEvent::Insert));
+        assert!(!relation.rules[0].replaces(RuleEvent::Update));
+        assert!(!relation.rules[1].replaces(RuleEvent::Update));
+
+        let names: Vec<&str> = relation
+            .triggers
+            .iter()
+            .map(|trigger| trigger.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["trg_a", "trg_b"]);
+        assert!(relation.triggers[0].is_instead_of_row());
+        assert_eq!(relation.triggers[0].fires, FiresWhen::Always);
+        assert_eq!(relation.triggers[1].timing, TriggerTiming::Before);
+    }
+
+    #[test]
+    fn a_rule_or_a_trigger_with_an_unknown_letter_goes_with_a_note() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Rules,
+            vec![
+                row(&["70000", "16384", "r_odd_event", "9", "t", "t", "O"]),
+                row(&["70001", "16384", "r_odd_firing", "3", "t", "t", "q"]),
+            ],
+        );
+        rows.insert(
+            QueryId::Triggers,
+            vec![row(&["71000", "16384", "trg_odd", "85", "q"])],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let relation = &catalog[catalog.relation_by_oid(Oid(16384)).unwrap()];
+        assert_eq!(relation.rules, Vec::new());
+        assert_eq!(relation.triggers, Vec::new());
+        for (entity, oid, column, value) in [
+            (EntityKind::Rule, 70000, "ev_type", "9"),
+            (EntityKind::Rule, 70001, "ev_enabled", "q"),
+            (EntityKind::Trigger, 71000, "tgenabled", "q"),
+        ] {
+            assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+                entity,
+                oid: Oid(oid),
+                column,
+                value: value.to_owned(),
+            }));
+        }
     }
 }

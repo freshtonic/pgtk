@@ -9,9 +9,9 @@
 #![cfg(feature = "fixture")]
 
 use pg_catalog::{
-    Builtin, CastContext, Catalog, CatalogBuilder, Column, CompositeDetail, Field, FunctionKind,
-    Name, Oid, QualifiedName, Relation, RelationKind, Schema, SearchPath, Type, TypeCategory,
-    TypeKind, Typmod, fixture::pg17,
+    Builtin, CastContext, Catalog, CatalogBuilder, Column, CompositeDetail, Field, FiresWhen,
+    FunctionKind, Name, Oid, QualifiedName, Relation, RelationKind, RuleEvent, Schema, SearchPath,
+    Type, TypeCategory, TypeKind, Typmod, fixture::pg17,
 };
 
 #[test]
@@ -201,6 +201,66 @@ fn each_function_has_one_default_type_for_each_default() {
 }
 
 #[test]
+fn pg_settings_is_a_view_with_two_update_rules() {
+    let catalog = pg17();
+    let handle = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_settings"))
+        .expect("pg_settings is a relation");
+    let view = &catalog[handle];
+    assert_eq!(view.kind, RelationKind::View);
+    let text = view
+        .view_definition
+        .as_deref()
+        .expect("a view has its text");
+    assert!(text.contains("pg_show_all_settings"), "{text}");
+
+    // The `_RETURN` rule is not here. The two other rules are in name order.
+    let rules: Vec<(&str, RuleEvent, bool, bool)> = view
+        .rules
+        .iter()
+        .map(|rule| {
+            (
+                rule.name.as_str(),
+                rule.event,
+                rule.instead,
+                rule.unconditional,
+            )
+        })
+        .collect();
+    assert_eq!(
+        rules,
+        vec![
+            ("pg_settings_n", RuleEvent::Update, true, true),
+            ("pg_settings_u", RuleEvent::Update, false, false),
+        ]
+    );
+    assert!(view.rules[0].replaces(RuleEvent::Update));
+    assert!(
+        view.rules
+            .iter()
+            .all(|rule| rule.fires == FiresWhen::Origin)
+    );
+    assert_eq!(view.triggers, Vec::new());
+}
+
+#[test]
+fn only_a_view_has_view_text() {
+    let catalog = pg17();
+    for (_, relation) in catalog.relations() {
+        let is_view = matches!(
+            relation.kind,
+            RelationKind::View | RelationKind::MaterializedView
+        );
+        assert_eq!(
+            relation.view_definition.is_some(),
+            is_view,
+            "{}",
+            relation.name
+        );
+    }
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -337,6 +397,9 @@ fn the_builder_adds_a_table_to_the_fixture() {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        view_definition: None,
+        rules: Vec::new(),
+        triggers: Vec::new(),
         extension: None,
     });
 

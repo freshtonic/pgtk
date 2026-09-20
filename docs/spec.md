@@ -172,8 +172,45 @@ pub struct Relation {
     /// INHERITS and partitions. The consumer walks the chain (typeInheritsFrom).
     pub parents: Vec<Handle<Relation>>,    // #[serde(default)]
     pub primary_key: Option<PrimaryKey>,   // #[serde(default)]
+    /// pg_get_viewdef(oid, true) for relkind v and m, else None. Not parsed.
+    /// The text depends on the search_path of the loader's session.
+    pub view_definition: Option<String>,   // #[serde(default)]
+    /// pg_rewrite without the _RETURN rule, in name order.
+    pub rules: Vec<Rule>,                  // #[serde(default)]
+    /// pg_trigger without internal triggers, in name order.
+    pub triggers: Vec<Trigger>,            // #[serde(default)]
     pub extension: Option<Handle<Extension>>,
 }
+
+pub struct Rule {
+    pub name: Name, pub event: RuleEvent, pub instead: bool,
+    pub unconditional: bool,   // ev_qual::text = '<>' (ev_qual is never NULL)
+    pub fires: FiresWhen,      // ev_enabled
+}
+impl Rule {
+    /// event matches, instead, unconditional, and fires.in_origin().
+    pub fn replaces(&self, event: RuleEvent) -> bool;
+}
+/// ev_type 2 3 4. No Select: _RETURN is the only ON SELECT rule the server
+/// permits, and view_definition carries it.
+pub enum RuleEvent { Update, Insert, Delete }
+/// ev_enabled / tgenabled: O R A D.
+pub enum FiresWhen { Origin, Replica, Always, Disabled }
+impl FiresWhen { pub fn in_origin(self) -> bool; }   // Origin | Always
+
+pub struct Trigger {
+    pub name: Name, pub timing: TriggerTiming,
+    pub insert: bool, pub update: bool, pub delete: bool, pub truncate: bool,
+    pub row_level: bool,
+    pub fires: FiresWhen,      // tgenabled; not read by the updatable-view check
+}
+impl Trigger {
+    /// tgtype bits: 1 row, 2 before, 4 insert, 8 delete, 16 update,
+    /// 32 truncate, 64 instead.
+    pub fn from_tgtype(name: Name, tgtype: i16, fires: FiresWhen) -> Self;
+    pub fn is_instead_of_row(&self) -> bool;
+}
+pub enum TriggerTiming { Before, After, InsteadOf }
 impl Relation {
     pub fn column(&self, name: &str) -> Option<&Column>;
     /// By `Column::position` (attnum), not by index: a dropped attribute leaves a gap.
@@ -345,6 +382,7 @@ impl Catalog {
                                          // 4: Column.identity became Option<Identity>
                                          // 5: Relation gained parents, Function gained default_types
                                          // 6: Relation gained of_type
+                                         // 7: Relation gained view_definition, rules, triggers
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -499,7 +537,7 @@ pub enum Diagnostic {
     /// Skipped for a stated reason (e.g. shell operator with no function).
     Skipped { entity: EntityKind, oid: Oid, name: Name, reason: SkipReason },
 }
-pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass }
+pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger }
 #[non_exhaustive]
 pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char), IncompleteOperatorClass }
 impl Display for Diagnostic;
@@ -536,7 +574,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
-    Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits }
+    Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits, Rules, Triggers }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -594,7 +632,8 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   (SELECT count(*) FROM pg_constraint k WHERE k.contypid = t.oid AND k.contype = 'c') AS check_count`.
   `ORDER BY oid`.
 - **EnumLabels**: `enumtypid, enumsortorder, enumlabel` `ORDER BY enumtypid, enumsortorder`.
-- **Relations**: `oid, relname, relnamespace, relkind, reltype, reloftype` from
+- **Relations**: `oid, relname, relnamespace, relkind, reltype, reloftype,
+  (CASE WHEN relkind IN ('v','m') THEN pg_get_viewdef(oid, true) END) AS viewdef` from
   `pg_class` joined with the filter, `WHERE relkind IN ('r','v','m','f','p','S')`
   `ORDER BY oid`.
 - **Attributes**: `attrelid, attnum, attname, atttypid, atttypmod, attnotnull,
@@ -637,6 +676,15 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   pg_class c ON c.oid = i.inhrelid` with the filter on `relnamespace`,
   `WHERE c.relkind IN ('r','v','m','f','p','S')` (this drops the partitions of
   an index) `ORDER BY inhrelid, inhseqno`.
+- **Rules**: `oid, ev_class, rulename, ev_type, is_instead,
+  (ev_qual::text = '<>') AS unconditional, ev_enabled` from `pg_rewrite r JOIN
+  pg_class c ON c.oid = r.ev_class` with the filter on `relnamespace`,
+  `WHERE NOT (rulename = '_RETURN' AND ev_type = '1')` and the relation
+  relkinds, `ORDER BY ev_class, rulename`.
+- **Triggers**: `oid, tgrelid, tgname, tgtype, tgenabled` from `pg_trigger t
+  JOIN pg_class c ON c.oid = t.tgrelid` with the filter on `relnamespace`,
+  `WHERE NOT tgisinternal` and the relation relkinds,
+  `ORDER BY tgrelid, tgname`.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -712,6 +760,11 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
     When the text does not parse, or does not hold `pronargdefaults`
     expressions, each entry is `None`. No diagnostic: `None` already says
     that the type is not known.
+10f. Rules and triggers: a relation takes its rows in step 7, sorted by the
+    bytes of the name. A rule with an `ev_type` other than `2 3 4`, and a rule
+    or a trigger with a firing letter other than `O R A D`, gives
+    `UnparsableValue` (entity `Rule` or `Trigger`) and goes. A row of a
+    relation that is not kept goes with no note.
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.
