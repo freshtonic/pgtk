@@ -20,7 +20,11 @@
 //!   `search_path`.
 //! - A query that reads entities in a schema joins `pg_catalog.pg_namespace`
 //!   and applies the schema filter:
-//!   `nspname NOT LIKE 'pg\_toast%' AND nspname NOT LIKE 'pg\_temp%'`.
+//!   `nspname NOT LIKE 'pg\_toast%' AND (nspname NOT LIKE 'pg\_temp%' OR
+//!   oid = pg_catalog.pg_my_temp_schema())`. The filter keeps the temporary
+//!   schema of this session and drops that of each other session.
+//!   `pg_my_temp_schema()` gives 0 when the session has no temporary schema.
+//!   The name `pg_toast_temp_N` matches `pg\_toast%`, so it stays out.
 //! - A column of type `regproc`, such as `pg_operator.oprcode` or
 //!   `pg_aggregate.aggfnoid`, is cast to `oid` before `text`. A direct cast
 //!   to `text` gives the function name, not the OID.
@@ -151,19 +155,25 @@ FROM unnest(current_schemas(true)) WITH ORDINALITY AS t(s, n)
 ORDER BY n
 "#;
 
-// One row per schema, except the TOAST and the temporary schemas.
+// One row per schema, except the TOAST schemas and the temporary schemas of
+// other sessions. The temporary schema of this session is here, when the
+// session has one.
 //
 // Columns:
-//   0  oid       schema OID
-//   1  nspname   schema name
+//   0  oid           schema OID
+//   1  nspname       schema name
+//   2  is_temporary  `t` for the temporary schema of this session
 //@sql Schemas
 const SCHEMAS: &str = r#"
 SELECT
     n.oid::text,
-    n.nspname::text
+    n.nspname::text,
+    (CASE WHEN n.oid = pg_catalog.pg_my_temp_schema() THEN 't' ELSE 'f' END)::text
+        AS is_temporary
 FROM pg_catalog.pg_namespace n
 WHERE n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY n.oid
 "#;
 
@@ -280,7 +290,8 @@ LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid
 LEFT JOIN pg_catalog.pg_range r ON r.rngtypid = t.oid
 LEFT JOIN pg_catalog.pg_range mr ON mr.rngmultitypid = t.oid
 WHERE n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY t.oid
 "#;
 
@@ -324,7 +335,8 @@ FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
   AND n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY c.oid
 "#;
 
@@ -364,7 +376,8 @@ WHERE a.attnum > 0
   AND NOT a.attisdropped
   AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S', 'c')
   AND n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY a.attrelid, a.attnum
 "#;
 
@@ -397,7 +410,8 @@ SELECT
 FROM pg_catalog.pg_proc p
 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
 WHERE n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY p.oid
 "#;
 
@@ -435,7 +449,8 @@ LEFT JOIN LATERAL unnest(p.proargmodes)
 LEFT JOIN LATERAL unnest(p.proargnames)
     WITH ORDINALITY AS nm(name, n) ON nm.n = a.n
 WHERE ns.nspname NOT LIKE 'pg\_toast%'
-  AND ns.nspname NOT LIKE 'pg\_temp%'
+  AND (ns.nspname NOT LIKE 'pg\_temp%'
+       OR ns.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY p.oid, a.n
 "#;
 
@@ -491,7 +506,8 @@ SELECT
 FROM pg_catalog.pg_operator o
 JOIN pg_catalog.pg_namespace n ON n.oid = o.oprnamespace
 WHERE n.nspname NOT LIKE 'pg\_toast%'
-  AND n.nspname NOT LIKE 'pg\_temp%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY o.oid
 "#;
 

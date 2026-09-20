@@ -101,11 +101,13 @@ fn small_catalog() -> (Catalog, Handles) {
     let pg_catalog = builder.push_schema(Schema {
         oid: Oid(11),
         name: Name::new("pg_catalog"),
+        is_temporary: false,
         extension: None,
     });
     let public = builder.push_schema(Schema {
         oid: Oid(2200),
         name: Name::new("public"),
+        is_temporary: false,
         extension: None,
     });
 
@@ -424,6 +426,135 @@ fn an_unknown_schema_leaves_the_search_path() {
     assert_eq!(path.schemas(), &[h.pg_catalog, h.public]);
 }
 
+/// The handles of the entities that [`temporary_catalog`] builds.
+struct TemporaryHandles {
+    pg_catalog: Handle<Schema>,
+    public: Handle<Schema>,
+    temporary: Handle<Schema>,
+    public_widget: Handle<Relation>,
+    temporary_widget: Handle<Relation>,
+    public_f: Handle<Function>,
+    temporary_f: Handle<Function>,
+}
+
+/// A catalog with a temporary schema. A relation `widget` and a function `f`
+/// are in both `public` and the temporary schema.
+fn temporary_catalog() -> (Catalog, TemporaryHandles) {
+    let mut builder = CatalogBuilder::new(Metadata::placeholder());
+    builder.permit_missing_builtins();
+
+    let schema = |oid: u32, name: &str, is_temporary: bool| Schema {
+        oid: Oid(oid),
+        name: Name::new(name),
+        is_temporary,
+        extension: None,
+    };
+    let pg_catalog = builder.push_schema(schema(11, "pg_catalog", false));
+    let public = builder.push_schema(schema(2200, "public", false));
+    let temporary = builder.push_schema(schema(16500, "pg_temp_3", true));
+    let int4 = builder.push_type(base_type(23, "int4", pg_catalog, TypeCategory::Numeric));
+
+    // A table with no column, as `CREATE TEMP TABLE nocols()` makes.
+    let mut widget = |oid: u32, schema: Handle<Schema>| {
+        let row_type = builder.next_type_handle();
+        let relation = builder.next_relation_handle();
+        builder.push_type(Type {
+            kind: TypeKind::Composite(CompositeDetail {
+                fields: Vec::new(),
+                relation: Some(relation),
+            }),
+            ..base_type(oid + 1, "widget", schema, TypeCategory::Composite)
+        });
+        builder.push_relation(Relation {
+            oid: Oid(oid),
+            name: Name::new("widget"),
+            schema,
+            kind: RelationKind::Table,
+            row_type: Some(row_type),
+            columns: Vec::new(),
+            extension: None,
+        })
+    };
+    let public_widget = widget(20000, public);
+    let temporary_widget = widget(20010, temporary);
+
+    let public_f = builder.push_function(function(30000, "f", public, int4, int4));
+    let temporary_f = builder.push_function(function(30001, "f", temporary, int4, int4));
+
+    let catalog = builder.finish().expect("the catalog builds");
+    (
+        catalog,
+        TemporaryHandles {
+            pg_catalog,
+            public,
+            temporary,
+            public_widget,
+            temporary_widget,
+            public_f,
+            temporary_f,
+        },
+    )
+}
+
+#[test]
+fn a_catalog_names_its_temporary_schema() {
+    let (catalog, h) = temporary_catalog();
+    assert_eq!(catalog.temporary_schema(), Some(h.temporary));
+    assert!(catalog[h.temporary].is_temporary);
+    assert!(!catalog[h.public].is_temporary);
+
+    let (catalog, _) = small_catalog();
+    assert_eq!(catalog.temporary_schema(), None);
+}
+
+#[test]
+fn the_search_path_adds_the_temporary_schema_before_pg_catalog() {
+    let (catalog, h) = temporary_catalog();
+    let path = SearchPath::new(&catalog, ["public"]);
+    assert_eq!(path.schemas(), &[h.temporary, h.pg_catalog, h.public]);
+    assert_eq!(
+        catalog.relation_visible(&path, "widget"),
+        Some(h.temporary_widget)
+    );
+}
+
+#[test]
+fn an_explicit_pg_temp_keeps_its_place() {
+    let (catalog, h) = temporary_catalog();
+    let path = SearchPath::new(&catalog, ["public", "pg_temp"]);
+    assert_eq!(path.schemas(), &[h.pg_catalog, h.public, h.temporary]);
+    assert_eq!(
+        catalog.relation_visible(&path, "widget"),
+        Some(h.public_widget)
+    );
+
+    // The name that the server gives the schema does the same.
+    let concrete = SearchPath::new(&catalog, ["public", "pg_temp_3"]);
+    assert_eq!(concrete, path);
+
+    // The two names together are one schema, at its first place.
+    let both = SearchPath::new(&catalog, ["pg_temp", "public", "pg_temp_3"]);
+    assert_eq!(both.schemas(), &[h.pg_catalog, h.temporary, h.public]);
+}
+
+#[test]
+fn pg_temp_matches_nothing_without_a_temporary_schema() {
+    let (catalog, h) = small_catalog();
+    let path = SearchPath::new(&catalog, ["pg_temp", "public"]);
+    assert_eq!(path.schemas(), &[h.pg_catalog, h.public]);
+}
+
+#[test]
+fn a_function_lookup_skips_the_temporary_schema() {
+    let (catalog, h) = temporary_catalog();
+    let path = SearchPath::new(&catalog, ["pg_temp", "public"]);
+    assert_eq!(catalog.functions_visible(&path, "f"), vec![h.public_f]);
+    assert_eq!(
+        catalog.functions_named(&QualifiedName::new("pg_temp_3", "f")),
+        &[h.temporary_f]
+    );
+}
+
 #[test]
 fn the_search_path_comes_from_the_metadata() {
     let (catalog, h) = small_catalog();
@@ -578,11 +709,13 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
     let pg_catalog = builder.push_schema(Schema {
         oid: Oid(11),
         name: Name::new("pg_catalog"),
+        is_temporary: false,
         extension: None,
     });
     let public = builder.push_schema(Schema {
         oid: Oid(2200),
         name: Name::new("public"),
+        is_temporary: false,
         extension: None,
     });
     let boolean = builder.push_type(base_type(16, "bool", pg_catalog, TypeCategory::Boolean));
@@ -679,11 +812,13 @@ mod serde_tests {
         let pg_catalog = builder.push_schema(Schema {
             oid: Oid(11),
             name: Name::new("pg_catalog"),
+            is_temporary: false,
             extension: None,
         });
         let public = builder.push_schema(Schema {
             oid: Oid(2200),
             name: Name::new("public"),
+            is_temporary: false,
             extension: None,
         });
         let mut text = None;

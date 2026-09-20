@@ -12,8 +12,10 @@ rest so that they are not re-decided.
   tables, sequences. A sequence is a Relation with its three columns
   (`last_value`, `log_cnt`, `is_called`), no row type, and no `pg_sequence`
   detail. Not indexes, TOAST, or composite-backing classes.
-- Schemas: all except `pg_toast*` and `pg_temp*`; Entities inside those are
-  skipped.
+- Schemas: all except `pg_toast*` and the `pg_temp*` of other sessions;
+  Entities inside those are skipped. The temporary schema of the loader's own
+  session (`pg_my_temp_schema()`) is loaded and flagged `is_temporary`, so a
+  consumer on the same connection can resolve a `CREATE TEMP TABLE`.
 - Server versions: 14 through 17, one binary, version detected at load.
 - Data source: `pg_catalog` only. `information_schema` is never read.
 - Out of scope: see `CONTEXT.md`.

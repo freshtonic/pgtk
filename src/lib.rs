@@ -19,6 +19,7 @@
 //! let handle = builder.push_schema(Schema {
 //!     oid: Oid(11),
 //!     name: Name::new("pg_catalog"),
+//!     is_temporary: false,
 //!     extension: None,
 //! });
 //! let catalog: Catalog = builder.finish().unwrap();

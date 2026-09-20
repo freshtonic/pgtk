@@ -149,7 +149,9 @@ assignment to a Column), or explicit (applied only when written).
 _Avoid_: Cast kind, coercion level
 
 **Schema**:
-A `pg_namespace` row. The container that qualifies an Entity's name.
+A `pg_namespace` row. The container that qualifies an Entity's name. At most
+one Schema in a Catalog is temporary: the `pg_temp_N` Schema of the session
+that the Loader used.
 _Avoid_: Namespace (in prose)
 
 **Extension**:
@@ -158,8 +160,11 @@ from `pg_depend`.
 
 **Search Path**:
 An ordered list of Schemas used to resolve an unqualified name, with
-PostgreSQL's implicit `pg_catalog` rule already applied. A Catalog does not
-hold a Search Path; lookups take one as an argument.
+PostgreSQL's implicit rules already applied: the temporary Schema first, then
+`pg_catalog`, unless the list names them. The name `pg_temp` is an alias for
+the temporary Schema. A lookup of a Function or of an Operator skips the
+temporary Schema, as PostgreSQL does. A Catalog does not hold a Search Path;
+lookups take one as an argument.
 
 ## Out of scope
 
@@ -171,5 +176,6 @@ These are deliberate exclusions, not omissions:
 - Indexes, constraints (other than counts on Domains), triggers, rules,
   policies, roles, and privileges.
 - Default and constraint expression text.
-- Temporary Schemas and the Entities in them.
+- The temporary Schemas of other sessions, and the Entities in them. The
+  temporary Schema of the Loader's own session is in scope.
 - Function bodies, languages, cost, and execution detail of Aggregates.

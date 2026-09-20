@@ -49,7 +49,7 @@ mod sync_tests {
     use super::{lock_server, skip, url};
     use pg_catalog::{
         ArgMode, Builtin, CastMethod, Catalog, FunctionKind, Loaded, Name, QualifiedName,
-        RelationKind, TypeKind,
+        RelationKind, SearchPath, TypeKind,
     };
     use postgres::{Client, NoTls};
     use std::panic::AssertUnwindSafe;
@@ -204,6 +204,88 @@ mod sync_tests {
 
         if let Err(payload) = outcome {
             std::panic::resume_unwind(payload);
+        }
+    }
+
+    #[test]
+    fn it_loads_the_temporary_schema_of_the_session() {
+        let Some(url) = url() else {
+            skip("it_loads_the_temporary_schema_of_the_session");
+            return;
+        };
+        let _guard = lock_server();
+        let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
+
+        // A temporary table lives as long as the session, so the same client
+        // makes it and loads it. The server drops it when the client goes.
+        client
+            .batch_execute(
+                "CREATE TEMP TABLE catalog_live_nocols ();
+                 CREATE TEMP TABLE catalog_live_temp (id int4 NOT NULL, label text);",
+            )
+            .expect("the setup runs");
+
+        let loaded = load(&mut client);
+        assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+        let catalog = &loaded.catalog;
+
+        // The catalog holds one temporary schema, with the name that the
+        // server gave it. The TOAST schema beside it is not here.
+        let temporary = catalog
+            .temporary_schema()
+            .expect("the session has a temporary schema");
+        let schema_name = catalog[temporary].name.as_str().to_owned();
+        assert!(schema_name.starts_with("pg_temp_"), "{schema_name}");
+        let flagged = catalog
+            .schemas()
+            .filter(|(_, schema)| schema.is_temporary)
+            .count();
+        assert_eq!(flagged, 1, "one schema is temporary");
+        assert!(
+            catalog
+                .schemas()
+                .all(|(_, schema)| !schema.name.as_str().starts_with("pg_toast")),
+            "no TOAST schema is here"
+        );
+
+        // `pg_temp` on a search path is the temporary schema.
+        let int4 = catalog.builtin(Builtin::Int4);
+        let path = SearchPath::new(catalog, ["pg_temp", "public"]);
+        let handle = catalog
+            .relation_visible(&path, "catalog_live_temp")
+            .expect("pg_temp resolves the temporary table");
+        let relation = &catalog[handle];
+        assert_eq!(relation.schema, temporary);
+        assert_eq!(relation.kind, RelationKind::Table);
+        assert_eq!(relation.columns.len(), 2);
+        assert_eq!(relation.column("id").expect("id is there").ty, int4);
+
+        // The name that the server gave the schema finds the same relation.
+        assert_eq!(
+            catalog.relation_named(&QualifiedName::new(
+                schema_name.as_str(),
+                "catalog_live_temp"
+            )),
+            Some(handle)
+        );
+
+        // A table with no column loads, and has a row type with no field.
+        let nocols = catalog
+            .relation_visible(&path, "catalog_live_nocols")
+            .expect("pg_temp resolves the table with no column");
+        assert_eq!(catalog[nocols].columns, Vec::new());
+
+        // The path of the session holds the temporary schema too, and so
+        // does a path that does not name it.
+        for path in [
+            SearchPath::from_metadata(catalog),
+            SearchPath::new(catalog, ["public"]),
+        ] {
+            assert_eq!(path.schemas().first(), Some(&temporary));
+            assert_eq!(
+                catalog.relation_visible(&path, "catalog_live_temp"),
+                Some(handle)
+            );
         }
     }
 
