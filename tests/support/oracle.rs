@@ -138,6 +138,11 @@ impl Oracle {
         Ok(client)
     }
 
+    /// Whether the server has ended the session.
+    pub fn is_closed(&self) -> bool {
+        self.client.is_closed()
+    }
+
     /// Drop the connection and make a new one to the same database. Used
     /// after the server ends the session, which some corpus statements do on
     /// purpose.
@@ -208,6 +213,21 @@ impl Oracle {
     pub fn search_path(&mut self) -> Result<Vec<String>, postgres::Error> {
         let row = self.client.query_one("SELECT current_schemas(true)", &[])?;
         Ok(row.get::<_, Vec<String>>(0))
+    }
+
+    /// A cheap summary of the catalogs the loader reads, to notice a
+    /// change made by a statement whose kind does not announce DDL.
+    pub fn catalog_fingerprint(&mut self) -> Result<String, postgres::Error> {
+        let row = self.client.query_one(
+            "SELECT (SELECT count(*) || ':' || coalesce(max(oid), 0) FROM pg_catalog.pg_class)
+                 || '/' || (SELECT count(*) || ':' || coalesce(max(oid), 0) FROM pg_catalog.pg_type)
+                 || '/' || (SELECT count(*) || ':' || coalesce(max(oid), 0) FROM pg_catalog.pg_proc)
+                 || '/' || (SELECT count(*) || ':' || coalesce(max(oid), 0) FROM pg_catalog.pg_operator)
+                 || '/' || (SELECT count(*) || ':' || coalesce(sum(atttypid::bigint), 0) FROM pg_catalog.pg_attribute)
+                 || '/' || (SELECT count(*) || ':' || coalesce(max(oid), 0) FROM pg_catalog.pg_namespace)",
+            &[],
+        )?;
+        Ok(row.get::<_, String>(0))
     }
 
     /// Load a Catalog from the session, seeing whatever the session sees,

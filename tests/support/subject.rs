@@ -18,10 +18,15 @@ pub struct SubjectColumn {
 /// What the Subject said about one statement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubjectOutcome {
-    /// Analysis succeeded; this is its Result Descriptor.
+    /// Analysis succeeded; this is its Result Descriptor, in the terms a
+    /// Describe message uses: a domain is reported as its base type.
     Analysed {
         params: Vec<u32>,
         columns: Vec<SubjectColumn>,
+        /// An `unknown` literal was read as a `reg*` type, whose input
+        /// function looks the text up in the catalog and raises a
+        /// catalog error, not a data error, when it is missing.
+        reg_literals: bool,
     },
     /// Analysis raised the Diagnostic PostgreSQL would raise.
     Diagnostic {
@@ -65,27 +70,49 @@ impl Subject for AnalyzerSubject {
             search_path.iter().map(String::as_str),
         );
         let analyzer = Analyzer::new(catalog, settings);
+        // getBaseTypeAndTypmod, as SendRowDescriptionMessage applies it.
+        let base = |mut ty: pg_catalog::Handle<pg_catalog::Type>, mut typmod: i32| {
+            while let pg_catalog::TypeKind::Domain(d) = &catalog[ty].kind {
+                if typmod == -1 {
+                    typmod = d.typmod.0;
+                }
+                ty = d.base;
+            }
+            (catalog[ty].oid.0, typmod)
+        };
         match analyzer.analyze_sql(sql, &[]) {
-            Ok(analysis) => SubjectOutcome::Analysed {
-                params: analysis
-                    .result
-                    .params
-                    .iter()
-                    .map(|&t| catalog[t].oid.0)
-                    .collect(),
-                columns: analysis
-                    .result
-                    .columns
-                    .iter()
-                    .map(|c| SubjectColumn {
-                        name: c.name.clone(),
-                        type_oid: catalog[c.ty].oid.0,
-                        typmod: c.typmod,
-                        table_oid: c.origin.map(|(r, _)| catalog[r].oid.0),
-                        column_id: c.origin.map(|(_, attnum)| attnum),
+            Ok(analysis) => {
+                let reg_literals = analysis.coercions.iter().any(|(_, steps)| {
+                    steps.iter().any(|step| {
+                        step.path == pg_analyze::CoercionPath::UnknownLiteral
+                            && catalog[step.target].name.starts_with("reg")
                     })
-                    .collect(),
-            },
+                });
+                SubjectOutcome::Analysed {
+                    params: analysis
+                        .result
+                        .params
+                        .iter()
+                        .map(|&t| catalog[t].oid.0)
+                        .collect(),
+                    columns: analysis
+                        .result
+                        .columns
+                        .iter()
+                        .map(|c| {
+                            let (type_oid, typmod) = base(c.ty, c.typmod);
+                            SubjectColumn {
+                                name: c.name.clone(),
+                                type_oid,
+                                typmod,
+                                table_oid: c.origin.map(|(r, _)| catalog[r].oid.0),
+                                column_id: c.origin.map(|(_, attnum)| attnum),
+                            }
+                        })
+                        .collect(),
+                    reg_literals,
+                }
+            }
             Err(AnalyzeError::Diagnostic(d)) => SubjectOutcome::Diagnostic {
                 sqlstate: d.sqlstate.to_owned(),
                 message: d.message,

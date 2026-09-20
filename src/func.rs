@@ -79,10 +79,17 @@ impl<'c> FuncResolver<'c> {
     fn pathpos(&self, schema: Handle<pg_catalog::Schema>) -> Option<usize> {
         self.search_path.schemas().iter().position(|s| *s == schema)
     }
-
-    /// `LookupExplicitNamespace` with `missing_ok = false`.
-    pub fn lookup_schema(&self, name: &str, location: usize) -> Result<Handle<pg_catalog::Schema>> {
-        self.catalog().schema_named(name).ok_or_else(|| {
+    /// `LookupExplicitNamespace` with `missing_ok = false`. Returns the
+    /// schema and its real name, which for `pg_temp` is `pg_temp_N`.
+    pub fn lookup_schema(
+        &self,
+        name: &str,
+        location: usize,
+    ) -> Result<(Handle<pg_catalog::Schema>, String)> {
+        let catalog = self.catalog();
+        let real = crate::relation::resolve_schema_name(catalog, name);
+        let found = real.and_then(|real| catalog.schema_named(real).map(|h| (h, real.to_owned())));
+        found.ok_or_else(|| {
             Diagnostic::new("3F000", format!("schema \"{name}\" does not exist"))
                 .at(location)
                 .into()
@@ -99,7 +106,7 @@ impl<'c> FuncResolver<'c> {
         let catalog = self.catalog();
         match &name.schema {
             Some(schema) => {
-                self.lookup_schema(schema, location)?;
+                let (_, schema) = self.lookup_schema(schema, location)?;
                 Ok(catalog
                     .functions_named(&QualifiedName::new(schema.as_str(), name.name.as_str()))
                     .iter()
@@ -398,11 +405,20 @@ impl<'c> FuncResolver<'c> {
     /// `FuncNameAsType`: the type a function name could be a cast to.
     fn func_name_as_type(&self, name: &ObjectName) -> Option<TypeRef> {
         let catalog = self.catalog();
+        // LookupTypeNameExtended with temp_ok = false: a type in the
+        // temporary schema is found only by its qualified name.
         let t = match &name.schema {
             Some(schema) => {
-                catalog.type_named(&QualifiedName::new(schema.as_str(), name.name.as_str()))?
+                let schema = crate::relation::resolve_schema_name(catalog, schema)?;
+                catalog.type_named(&QualifiedName::new(schema, name.name.as_str()))?
             }
-            None => catalog.type_visible(self.search_path, &name.name)?,
+            None => {
+                let t = catalog.type_visible(self.search_path, &name.name)?;
+                if Some(catalog[t].schema) == catalog.temporary_schema() {
+                    return None;
+                }
+                t
+            }
         };
         if self.coercer.types.is_complex(t) {
             return None;
@@ -543,6 +559,7 @@ impl<'c> FuncResolver<'c> {
         name: &ObjectName,
         fargs: &[Typed],
         location: usize,
+        projection: Option<Projection>,
     ) -> Result<ResolvedFunc> {
         let types = &self.coercer.types;
         if fargs.len() > 100 {
@@ -586,6 +603,9 @@ impl<'c> FuncResolver<'c> {
                 .into());
             }
             FuncDetail::NotFound => {
+                if let Some(projection) = projection {
+                    return Ok(ResolvedFunc::Projection(projection));
+                }
                 return Err(Diagnostic::new(
                     "42883",
                     format!(
@@ -630,7 +650,14 @@ impl<'c> FuncResolver<'c> {
             && let Some(va) = found.vatype
             && !matches!(types.pseudo(va), Some(PseudoType::Any))
         {
-            let elem = declared[fargs.len() - found.nvargs];
+            // The array's element type is the first variadic argument's
+            // actual type once polymorphism is resolved.
+            let k = fargs.len() - found.nvargs;
+            let elem = if types.is_polymorphic(declared[k]) {
+                fargs[k].ty
+            } else {
+                declared[k]
+            };
             if types.array_type(elem).is_none() {
                 return Err(Diagnostic::new(
                     "42704",
@@ -652,8 +679,18 @@ impl<'c> FuncResolver<'c> {
     }
 }
 
+/// A field of a composite value selected with function-call syntax,
+/// `ParseComplexProjection`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Projection {
+    pub ty: TypeRef,
+    pub typmod: crate::types::Typmod,
+}
+
 /// What a function call resolved to.
 pub(crate) enum ResolvedFunc {
+    /// A field of the composite argument, not a function at all.
+    Projection(Projection),
     /// A real function: coerce each argument to its declared type.
     Function {
         func: Handle<Function>,

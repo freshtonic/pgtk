@@ -68,14 +68,28 @@ impl Scope {
 fn system_attribute(types: &Types<'_>, name: &str) -> Option<(i16, TypeRef)> {
     let (attnum, b) = match name {
         "ctid" => (-1, Builtin::Tid),
-        "xmin" => (-3, Builtin::Xid),
-        "cmin" => (-4, Builtin::Cid),
-        "xmax" => (-5, Builtin::Xid),
-        "cmax" => (-6, Builtin::Cid),
-        "tableoid" => (-7, Builtin::Oid),
+        "xmin" => (-2, Builtin::Xid),
+        "cmin" => (-3, Builtin::Cid),
+        "xmax" => (-4, Builtin::Xid),
+        "cmax" => (-5, Builtin::Cid),
+        "tableoid" => (-6, Builtin::Oid),
         _ => return None,
     };
     Some((attnum, types.builtin(b)))
+}
+
+/// `pg_temp` names the session's temporary schema; every other name is
+/// itself. `None` when `pg_temp` is named but the session has none.
+pub(crate) fn resolve_schema_name<'a>(
+    catalog: &'a pg_catalog::Catalog,
+    name: &'a str,
+) -> Option<&'a str> {
+    if name == "pg_temp" {
+        let temp = catalog.temporary_schema()?;
+        Some(catalog[temp].name.as_str())
+    } else {
+        Some(name)
+    }
 }
 
 /// Relation lookups over one Catalog and Search Path.
@@ -93,7 +107,10 @@ impl<'c> Relations<'c> {
     pub fn lookup(&self, schema: Option<&str>, name: &str) -> Option<Handle<Relation>> {
         let catalog = self.catalog();
         match schema {
-            Some(schema) => catalog.relation_named(&pg_catalog::QualifiedName::new(schema, name)),
+            Some(schema) => {
+                let schema = resolve_schema_name(catalog, schema)?;
+                catalog.relation_named(&pg_catalog::QualifiedName::new(schema, name))
+            }
             None => catalog.relation_visible(self.search_path, name),
         }
     }
@@ -248,10 +265,10 @@ impl<'c> Relations<'c> {
         } else {
             let name = match attnum {
                 -1 => "ctid",
-                -3 => "xmin",
-                -4 => "cmin",
-                -5 => "xmax",
-                -6 => "cmax",
+                -2 => "xmin",
+                -3 => "cmin",
+                -4 => "xmax",
+                -5 => "cmax",
                 _ => "tableoid",
             };
             let (_, ty) = system_attribute(&self.types, name).expect("system column");
@@ -319,9 +336,7 @@ impl<'c> Relations<'c> {
         let catalog = self.catalog();
         let relid = match schema {
             Some(schema) => {
-                let Some(r) =
-                    catalog.relation_named(&pg_catalog::QualifiedName::new(schema, refname))
-                else {
+                let Some(r) = self.lookup(Some(schema), refname) else {
                     return Ok(None);
                 };
                 Some(r)
