@@ -381,6 +381,7 @@ mod sync_tests {
                  tags text[]
              );
              CREATE SEQUENCE {schema}.reading_id_seq;
+             CREATE TABLE {schema}.points OF {schema}.point2d;
              CREATE TABLE {schema}.p1 (a int4);
              CREATE TABLE {schema}.p2 (b text);
              CREATE TABLE {schema}.c1 (c int4) INHERITS ({schema}.p2, {schema}.p1);
@@ -512,6 +513,14 @@ mod sync_tests {
             catalog[relation("measured_2026")].parents,
             vec![relation("measured")]
         );
+
+        // A typed table names the type that it is `OF`. Its row type is
+        // another type, with the same fields.
+        let points = &catalog[relation("points")];
+        assert_eq!(points.of_type, Some(point2d));
+        assert_ne!(points.row_type, Some(point2d));
+        assert_eq!(points.columns.len(), 2);
+        assert_eq!(catalog[relation("reading")].of_type, None);
 
         // A function keeps the type of each default expression. An untyped
         // literal for a polymorphic argument stays `unknown`.

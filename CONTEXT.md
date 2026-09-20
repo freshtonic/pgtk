@@ -118,6 +118,11 @@ one Relation without one. The model holds no parameter of a sequence, such as
 the start or the increment. Indexes and TOAST tables are not Relations in
 this model.
 
+**Typed Table**:
+A Relation made with `CREATE TABLE ... OF` a composite Type. It holds that
+Type, which is not its own row Type. PostgreSQL accepts the row Type of a
+Typed Table where it expects the Type that the table is `OF`.
+
 **Parent**:
 A Relation that another Relation inherits from, or the partitioned table of a
 partition: a `pg_inherits` row. A Relation holds its direct Parents, in

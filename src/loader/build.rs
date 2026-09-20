@@ -195,6 +195,8 @@ struct RelationRow {
     relkind: char,
     /// The OID of the row type.
     reltype: Oid,
+    /// The OID of the composite type of a typed table, or 0.
+    reloftype: Oid,
 }
 
 /// One row of [`QueryId::Functions`].
@@ -404,6 +406,7 @@ fn relation_rows(rows: &Rows) -> Result<Vec<RelationRow>, LoadError> {
             namespace: row.oid(2)?,
             relkind: row.char(3)?,
             reltype: row.oid(4)?,
+            reloftype: row.oid(5)?,
         })
     })
 }
@@ -1148,6 +1151,24 @@ pub(crate) fn assemble(
                 .iter()
                 .all(|position| columns.iter().any(|column| column.position == *position))
         });
+        // The type of a typed table. The relation stays without it, with a
+        // note, when the catalog does not hold the type.
+        let of_type = match row.reloftype {
+            Oid(0) => None,
+            oid => {
+                let handle = type_handles.get(&oid).copied();
+                if handle.is_none() {
+                    diagnostics.push(missing(
+                        EntityKind::Relation,
+                        row.oid,
+                        &row.name,
+                        EntityKind::Type,
+                        oid,
+                    ));
+                }
+                handle
+            }
+        };
         // A parent that the catalog does not hold goes, with a note. The
         // other parents stay.
         let mut parents = Vec::new();
@@ -1170,6 +1191,7 @@ pub(crate) fn assemble(
             kind: relation_kind(row.relkind),
             row_type: type_handles.get(&row.reltype).copied(),
             columns,
+            of_type,
             parents,
             primary_key: primary_key.cloned(),
             extension: owner(MemberClass::Class, row.oid),
@@ -1968,7 +1990,7 @@ mod tests {
         );
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "0"])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2189,7 +2211,7 @@ mod tests {
         );
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16384", "t1", "2200", "r", "16385"])],
+            vec![row(&["16384", "t1", "2200", "r", "16385", "0"])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2288,7 +2310,7 @@ mod tests {
         // The server gives a sequence a `reltype` of 0.
         rows.insert(
             QueryId::Relations,
-            vec![row(&["16409", "s1", "2200", "S", "0"])],
+            vec![row(&["16409", "s1", "2200", "S", "0", "0"])],
         );
         rows.insert(
             QueryId::Attributes,
@@ -2570,8 +2592,8 @@ mod tests {
             ]),
         ]);
         rows.get_mut(&QueryId::Relations).unwrap().extend([
-            row(&["16500", "p1", "2200", "r", "16501"]),
-            row(&["16502", "p2", "2200", "r", "16503"]),
+            row(&["16500", "p1", "2200", "r", "16501", "0"]),
+            row(&["16502", "p2", "2200", "r", "16503", "0"]),
         ]);
         // The rows are out of order, to show that the loader sorts them. One
         // parent is not in the catalog.
@@ -2646,5 +2668,40 @@ mod tests {
         let catalog = &loaded.catalog;
         let function = &catalog[catalog.function_by_oid(Oid(40000)).unwrap()];
         assert_eq!(function.default_types, vec![None, None]);
+    }
+
+    #[test]
+    fn a_typed_table_names_the_type_that_it_is_of() {
+        let mut rows = sample_rows();
+        // The sample table is now `OF` the type `bool`. A composite type is
+        // the only kind that a server permits, but the loader does not care.
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&["16384", "t1", "2200", "r", "16385", "16"])],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let relation = catalog.relation_by_oid(Oid(16384)).unwrap();
+        assert_eq!(catalog[relation].of_type, catalog.type_by_oid(Oid(16)));
+        assert_ne!(catalog[relation].of_type, catalog[relation].row_type);
+    }
+
+    #[test]
+    fn a_typed_table_of_a_missing_type_stays_with_a_note() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Relations,
+            vec![row(&["16384", "t1", "2200", "r", "16385", "99999"])],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        assert_eq!(loaded.catalog[relation].of_type, None);
+        assert!(loaded.diagnostics.contains(&Diagnostic::MissingReference {
+            entity: EntityKind::Relation,
+            oid: Oid(16384),
+            name: Name::new("t1"),
+            referenced: EntityKind::Type,
+            referenced_oid: Oid(99999),
+        }));
     }
 }

@@ -334,6 +334,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             generated: false,
             identity: None,
         }],
+        of_type: None,
         parents: Vec::new(),
         primary_key: None,
         extension: None,
