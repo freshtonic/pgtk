@@ -23,7 +23,10 @@ pub struct Relation {
     /// The kind of the relation.
     pub kind: RelationKind,
     /// The composite type of one row of this relation.
-    pub row_type: Handle<Type>,
+    ///
+    /// A sequence has no row type in `pg_type`, so this is `None` for a
+    /// [`RelationKind::Sequence`]. It is `Some` for each other kind.
+    pub row_type: Option<Handle<Type>>,
     /// The live columns, in attribute order.
     pub columns: Vec<Column>,
     /// The extension that owns this relation, when one does.
@@ -51,6 +54,13 @@ pub enum RelationKind {
     ForeignTable,
     /// A partitioned table. `relkind` is `p`.
     PartitionedTable,
+    /// A sequence. `relkind` is `S`.
+    ///
+    /// The columns are `last_value`, `log_cnt`, and `is_called`. The server
+    /// gives a sequence no row type, so [`Relation::row_type`] is `None`. The
+    /// model holds no parameter of the sequence, such as the start or the
+    /// increment.
+    Sequence,
 }
 
 /// One live attribute of a relation.

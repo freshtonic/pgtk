@@ -164,7 +164,8 @@ mod sync_tests {
             Name::new("name")
         );
         // The row type of pg_class names the relation back.
-        let TypeKind::Composite(detail) = &catalog[relation.row_type].kind else {
+        let row_type = relation.row_type.expect("a table has a row type");
+        let TypeKind::Composite(detail) = &catalog[row_type].kind else {
             panic!("the row type of a relation is a composite");
         };
         assert_eq!(detail.relation, Some(pg_class));
@@ -220,6 +221,7 @@ mod sync_tests {
                  place {schema}.point2d,
                  tags text[]
              );
+             CREATE SEQUENCE {schema}.reading_id_seq;
              CREATE FUNCTION {schema}.split(IN a int4, OUT lo int4, OUT hi int4)
                  AS $$ SELECT a - 1, a + 1 $$ LANGUAGE sql;
              CREATE FUNCTION {schema}.total(VARIADIC arr int4[]) RETURNS int4
@@ -288,10 +290,35 @@ mod sync_tests {
         assert!(column("amount").has_default);
         assert_eq!(column("place").ty, point2d);
         assert_eq!(column("tags").ty, text_array);
-        let TypeKind::Composite(row_type) = &catalog[relation.row_type].kind else {
+        let row_type = relation.row_type.expect("a table has a row type");
+        let TypeKind::Composite(row_type) = &catalog[row_type].kind else {
             panic!("the row type of the table is a composite");
         };
         assert_eq!(row_type.relation, Some(reading));
+
+        // The sequence is a relation with its three fixed columns.
+        let int8 = catalog.builtin(Builtin::Int8);
+        let boolean = catalog.builtin(Builtin::Bool);
+        let sequence = catalog
+            .relation_named(&named("reading_id_seq"))
+            .expect("reading_id_seq is a relation");
+        let relation = &catalog[sequence];
+        assert_eq!(relation.kind, RelationKind::Sequence);
+        let columns: Vec<_> = relation
+            .columns
+            .iter()
+            .map(|column| (column.position, column.name.as_str(), column.ty))
+            .collect();
+        assert_eq!(
+            columns,
+            vec![
+                (1, "last_value", int8),
+                (2, "log_cnt", int8),
+                (3, "is_called", boolean),
+            ]
+        );
+        assert!(relation.columns.iter().all(|column| column.not_null));
+        assert_eq!(relation.row_type, None, "a sequence has no row type");
 
         // The function with OUT arguments keeps every argument, and only
         // one of them is an input.

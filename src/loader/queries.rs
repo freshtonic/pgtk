@@ -60,8 +60,8 @@ pub enum QueryId {
     Types,
     /// The labels of every enum type.
     EnumLabels,
-    /// Every table, view, materialized view, foreign table, and partitioned
-    /// table in a loaded schema.
+    /// Every table, view, materialized view, foreign table, partitioned
+    /// table, and sequence in a loaded schema.
     Relations,
     /// The live attributes of every relation and of every composite type.
     Attributes,
@@ -302,15 +302,15 @@ ORDER BY e.enumtypid, e.enumsortorder
 
 // One row per relation in a loaded schema.
 //
-// A relation is a table, a view, a materialized view, a foreign table, or a
-// partitioned table. A sequence, an index, and a TOAST table are not
+// A relation is a table, a view, a materialized view, a foreign table, a
+// partitioned table, or a sequence. An index and a TOAST table are not
 // relations in this model.
 //
 // Columns:
 //   0  oid           relation OID
 //   1  relname       relation name
 //   2  relnamespace  OID of the schema that holds the relation
-//   3  relkind       kind letter: r v m f p
+//   3  relkind       kind letter: r v m f p S
 //   4  reltype       OID of the row type of the relation
 //@sql Relations
 const RELATIONS: &str = r#"
@@ -322,7 +322,7 @@ SELECT
     c.reltype::text
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
-WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p')
+WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
   AND n.nspname NOT LIKE 'pg\_toast%'
   AND n.nspname NOT LIKE 'pg\_temp%'
 ORDER BY c.oid
@@ -331,8 +331,9 @@ ORDER BY c.oid
 // One row per live attribute, in attribute order.
 //
 // The rows cover both relations and the classes that back composite types,
-// so `relkind` also allows `c`. A dropped attribute and a system attribute
-// are not here.
+// so `relkind` also allows `c`. A sequence gives its three attributes:
+// `last_value`, `log_cnt`, and `is_called`. A dropped attribute and a system
+// attribute are not here.
 //
 // Columns:
 //   0  attrelid   OID of the relation or of the composite class
@@ -361,7 +362,7 @@ JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE a.attnum > 0
   AND NOT a.attisdropped
-  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'c')
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S', 'c')
   AND n.nspname NOT LIKE 'pg\_toast%'
   AND n.nspname NOT LIKE 'pg\_temp%'
 ORDER BY a.attrelid, a.attnum

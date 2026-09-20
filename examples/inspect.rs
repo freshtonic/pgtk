@@ -205,7 +205,10 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         relation.oid
     );
     println!("  kind      {:?}", relation.kind);
-    println!("  row type  {}", type_name(catalog, relation.row_type));
+    match relation.row_type {
+        Some(row_type) => println!("  row type  {}", type_name(catalog, row_type)),
+        None => println!("  row type  none"),
+    }
     println!("  {} columns", relation.columns.len());
     for column in &relation.columns {
         let mut notes = Vec::new();
