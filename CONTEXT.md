@@ -24,8 +24,12 @@ The immutable snapshot of one database's system catalog, as defined by `pg-catal
 The ordered list of schemas used to resolve an unqualified name, as defined by `pg-catalog`.
 
 **Settings**:
-The session state that changes what a Statement means, supplied by the caller for every Analysis. The Search Path is the one mandatory member.
+The session state that changes what a Statement means, supplied by the caller for every Analysis. The Search Path is the one mandatory member, given as already-resolved schema names; substituting `$user` and temporary schemas is the caller's job.
 _Avoid_: GUCs, config, options, session
+
+**Target Version**:
+The PostgreSQL major version, 14 through 17, whose analysis rules and diagnostic wording an Analysis applies. The caller chooses it by entry point; the Catalog's own version does not choose it.
+_Avoid_: Compatibility mode, dialect
 
 **Analyzer**:
 The value a caller builds once from a Catalog, Settings and an optional Literal Validator, and then asks to analyse Statements.
