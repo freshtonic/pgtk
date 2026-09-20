@@ -1,6 +1,7 @@
-//! The regression corpus: PostgreSQL's `src/test/regress/sql/*.sql`, split
-//! into statements by the byte ranges `pg-sql` froze when it captured its own
-//! differential baseline.
+//! The regression corpus: PostgreSQL's `src/test/regress/sql/*.sql` from the
+//! `vendor/postgres` submodule, split into statements by the byte ranges
+//! `pg-sql` froze when it captured its own differential baseline, copied to
+//! `baselines/postgresql-17.9-statements.json`.
 //!
 //! The files are psql documents, and 97 of them use meta-commands such as
 //! `\set` and `\d` that neither `pg-sql` nor `pg-psql` model, so the strict
@@ -10,15 +11,36 @@
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// The `pg-sql` checkout that vendors PostgreSQL and holds the frozen ranges.
-pub fn pg_sql_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../pg-sql")
+/// This crate's root.
+fn root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
+}
+
+/// The vendored PostgreSQL source.
+pub fn postgres_dir() -> PathBuf {
+    root().join("vendor/postgres")
 }
 
 /// The directory of the regression SQL files.
 pub fn corpus_dir() -> PathBuf {
-    pg_sql_root().join("vendor/postgres/src/test/regress/sql")
+    postgres_dir().join("src/test/regress/sql")
+}
+
+/// The commit the vendored PostgreSQL is checked out at, or why that could
+/// not be learned.
+fn vendored_commit() -> Result<String, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(postgres_dir())
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .map_err(|error| format!("cannot run git: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// What one frozen item is.
@@ -63,9 +85,10 @@ pub struct FrozenSplit {
 }
 
 impl FrozenSplit {
-    /// Read `pg-sql`'s frozen statement ranges.
+    /// Read the frozen statement ranges, after checking that the vendored
+    /// PostgreSQL is checked out at the commit they were frozen from.
     pub fn load() -> Self {
-        let path = pg_sql_root().join("baselines/postgresql-17.9-statements.json");
+        let path = root().join("baselines/postgresql-17.9-statements.json");
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let document: serde_json::Value = serde_json::from_str(&text).expect("frozen split JSON");
@@ -74,6 +97,19 @@ impl FrozenSplit {
             Some("comma-separated-byte-ranges-v1"),
             "frozen split encoding changed"
         );
+        let gitlink = document["postgres"]["gitlink"]
+            .as_str()
+            .expect("frozen split records the PostgreSQL commit");
+        match vendored_commit() {
+            Ok(commit) => assert_eq!(
+                commit, gitlink,
+                "vendor/postgres is not at the commit the statement ranges were frozen from; \
+                 run `git submodule update --init`"
+            ),
+            Err(error) => panic!(
+                "cannot read the vendor/postgres commit ({error}); run `git submodule update --init`"
+            ),
+        }
         let files = document["files"]
             .as_array()
             .expect("frozen split files")
@@ -150,7 +186,7 @@ impl FrozenSplit {
 /// follow this order. Files in one parallel group run in the listed order,
 /// which is one valid serialisation of the group.
 pub fn schedule() -> Vec<String> {
-    let path = pg_sql_root().join("vendor/postgres/src/test/regress/parallel_schedule");
+    let path = postgres_dir().join("src/test/regress/parallel_schedule");
     let text = std::fs::read_to_string(&path)
         .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
     text.lines()

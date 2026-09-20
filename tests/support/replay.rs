@@ -118,17 +118,26 @@ impl Session {
 
 /// What the replay needs to know about a statement's syntax.
 #[derive(Clone, Copy, Debug)]
-struct Shape {
+pub struct Shape {
     /// Running it leaves the catalog as it was.
     keeps_catalog: bool,
     /// The harness may run it.
     runnable: bool,
 }
 
+/// Render one frozen item as psql would send it to the server: psql's own
+/// terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) are client
+/// syntax the server never sees, and `pg-psql` strips them. No variables are
+/// bound; the corpus sets its own with `\set`, which nothing models yet.
+pub fn render(item: &str) -> Option<String> {
+    let rendered = pg_psql::render(item, &pg_psql::Variables::new()).ok()?;
+    Some(rendered.sql().trim().to_owned())
+}
+
 /// Parse one statement with `pg-sql`, dropping the terminator the frozen
 /// range keeps, the way `pg-sql`'s own harness does. `None` when `pg-sql`
 /// rejects it.
-fn parse(sql: &str) -> Option<Shape> {
+pub fn parse(sql: &str) -> Option<Shape> {
     let lexed = pg_sql::lex(sql);
     if lexed.errors().next().is_some() {
         return None;
@@ -270,16 +279,13 @@ pub fn replay(session: &mut Session, file: &CorpusFile, subject: &mut dyn Subjec
     let loads_before = session.catalog_loads;
 
     for (index, item) in file.items.iter().enumerate() {
-        let sql = file.text_of(item);
-        let verdict = replay_one(
-            session,
-            subject,
-            sql,
-            item.kind,
-            &mut report,
-            &file.name,
-            index,
-        );
+        let verdict = match (item.kind, render(file.text_of(item))) {
+            (ItemKind::Statement, Some(sql)) => {
+                replay_one(session, subject, &sql, &mut report, &file.name, index)
+            }
+            (ItemKind::Statement, None) => Verdict::Skipped(SkipReason::ParseFailed),
+            _ => Verdict::Skipped(SkipReason::NotAStatement),
+        };
         counts.record(&verdict);
     }
 
@@ -294,14 +300,10 @@ fn replay_one(
     session: &mut Session,
     subject: &mut dyn Subject,
     sql: &str,
-    kind: ItemKind,
     report: &mut String,
     file: &str,
     index: usize,
 ) -> Verdict {
-    if kind != ItemKind::Statement {
-        return Verdict::Skipped(SkipReason::NotAStatement);
-    }
     let Some(shape) = parse(sql) else {
         return Verdict::Skipped(SkipReason::ParseFailed);
     };
