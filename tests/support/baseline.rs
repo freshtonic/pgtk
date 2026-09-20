@@ -95,6 +95,31 @@ impl Baseline {
         }
     }
 
+    /// The pinned baseline with the given files' counts replaced, for a run
+    /// that replayed only some files.
+    pub fn with_files(mut self, files: BTreeMap<String, FileCounts>) -> Self {
+        self.files.extend(files);
+        self.totals = self
+            .files
+            .values()
+            .fold(FileCounts::ZERO, |acc, file| acc.add(file));
+        self
+    }
+
+    /// The pinned counts for just these files, for comparison with a partial
+    /// run.
+    pub fn restricted_to<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> Self {
+        let files = names
+            .into_iter()
+            .filter_map(|name| {
+                self.files
+                    .get(name)
+                    .map(|counts| (name.to_owned(), *counts))
+            })
+            .collect();
+        Self::from_results(self.postgres_major, files)
+    }
+
     pub fn load(postgres_major: u32) -> Option<Self> {
         let path = Self::path(postgres_major);
         let text = std::fs::read_to_string(&path).ok()?;
