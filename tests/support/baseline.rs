@@ -19,6 +19,7 @@ pub struct FileCounts {
     pub skipped_catalog_unavailable: usize,
     pub unsupported: usize,
     pub agree: usize,
+    pub known_divergence: usize,
     pub disagree: usize,
 }
 
@@ -32,6 +33,7 @@ impl FileCounts {
         skipped_catalog_unavailable: 0,
         unsupported: 0,
         agree: 0,
+        known_divergence: 0,
         disagree: 0,
     };
 
@@ -47,6 +49,7 @@ impl FileCounts {
                 + other.skipped_catalog_unavailable,
             unsupported: self.unsupported + other.unsupported,
             agree: self.agree + other.agree,
+            known_divergence: self.known_divergence + other.known_divergence,
             disagree: self.disagree + other.disagree,
         }
     }
@@ -63,6 +66,7 @@ impl From<Counts> for FileCounts {
             skipped_catalog_unavailable: counts.skipped_catalog_unavailable,
             unsupported: counts.unsupported,
             agree: counts.agree,
+            known_divergence: counts.known_divergence,
             disagree: counts.disagree,
         }
     }

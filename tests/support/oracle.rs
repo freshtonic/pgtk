@@ -202,12 +202,11 @@ impl Oracle {
         }
     }
 
-    /// The effective search path, with `$user` resolved and missing schemas
-    /// dropped, as `current_schemas(false)` reports it.
+    /// The effective search path, with `$user` resolved, missing schemas
+    /// dropped, and the session's temporary schema and `pg_catalog` in the
+    /// places PostgreSQL puts them, as `current_schemas(true)` reports it.
     pub fn search_path(&mut self) -> Result<Vec<String>, postgres::Error> {
-        let row = self
-            .client
-            .query_one("SELECT current_schemas(false)", &[])?;
+        let row = self.client.query_one("SELECT current_schemas(true)", &[])?;
         Ok(row.get::<_, Vec<String>>(0))
     }
 

@@ -40,6 +40,10 @@ pub enum Verdict {
     Skipped(SkipReason),
     Unsupported,
     Agree,
+    /// The Oracle rejected for a reason this crate never checks by design:
+    /// literal text (SQLSTATE class 22) or scanner-level syntax the parser
+    /// accepts (`42601`, `0A000`), while the Subject analysed the statement.
+    KnownDivergence,
     Disagree,
 }
 
@@ -54,6 +58,7 @@ pub struct Counts {
     pub skipped_catalog_unavailable: usize,
     pub unsupported: usize,
     pub agree: usize,
+    pub known_divergence: usize,
     pub disagree: usize,
 }
 
@@ -72,6 +77,7 @@ impl Counts {
             }
             Verdict::Unsupported => self.unsupported += 1,
             Verdict::Agree => self.agree += 1,
+            Verdict::KnownDivergence => self.known_divergence += 1,
             Verdict::Disagree => self.disagree += 1,
         }
     }
@@ -281,6 +287,13 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
                 Verdict::Disagree
             }
         }
+        (OracleOutcome::Rejected(error), SubjectOutcome::Analysed { .. })
+            if error.sqlstate.starts_with("22")
+                || error.sqlstate == "42601"
+                || error.sqlstate == "0A000" =>
+        {
+            Verdict::KnownDivergence
+        }
         (
             OracleOutcome::Rejected(error),
             SubjectOutcome::Diagnostic {
@@ -382,6 +395,8 @@ pub fn replay_file(
     let mut session = Session::open(server, database);
     let mut counts = Counts::default();
     let mut report = String::new();
+    let mut unsupported: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
 
     for (index, item) in file.items.iter().enumerate() {
         let verdict = match (&item.sql, item.shape) {
@@ -391,6 +406,7 @@ pub fn replay_file(
                 sql,
                 shape,
                 &mut report,
+                &mut unsupported,
                 &file.name,
                 index,
             ),
@@ -398,6 +414,12 @@ pub fn replay_file(
             (None, _) => Verdict::Skipped(SkipReason::NotAStatement),
         };
         counts.record(&verdict);
+    }
+    if !unsupported.is_empty() {
+        let _ = writeln!(report, "--- unsupported in {}", file.name);
+        for (reason, n) in &unsupported {
+            let _ = writeln!(report, "  {n:5}  {reason}");
+        }
     }
 
     FileResult {
@@ -413,6 +435,7 @@ fn replay_one(
     sql: &str,
     shape: Shape,
     report: &mut String,
+    unsupported: &mut std::collections::BTreeMap<String, usize>,
     file: &str,
     index: usize,
 ) -> Verdict {
@@ -462,6 +485,9 @@ fn replay_one(
     let catalog = session.catalog.as_ref().expect("catalog loaded above");
     let subject_outcome = subject.analyze(catalog, &search_path, sql);
     let verdict = compare(&oracle_outcome, &subject_outcome);
+    if let SubjectOutcome::Unsupported(reason) = &subject_outcome {
+        *unsupported.entry(reason.clone()).or_default() += 1;
+    }
 
     if verdict == Verdict::Disagree {
         let _ = writeln!(

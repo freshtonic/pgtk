@@ -38,7 +38,7 @@ use support::oracle::Server;
 use support::plan::Plan;
 use support::scheduler;
 use support::snapshots::Snapshots;
-use support::subject::{Stub, Subject};
+use support::subject::{AnalyzerSubject, Subject};
 
 const URL_VARIABLE: &str = "PG_ANALYZE_ORACLE_URL";
 const JOBS_VARIABLE: &str = "PG_ANALYZE_ORACLE_JOBS";
@@ -120,7 +120,7 @@ fn regression_corpus_matches_the_pinned_baseline() {
 
     let replay_started = Instant::now();
     let results = scheduler::run(server.config(), &snapshots, &plan, &selected, jobs, || {
-        Box::new(Stub) as Box<dyn Subject>
+        Box::new(AnalyzerSubject) as Box<dyn Subject>
     });
     let loads = results
         .values()

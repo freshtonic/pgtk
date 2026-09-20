@@ -3,14 +3,15 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 338,
+    "skipped": 336,
     "skipped_not_a_statement": 125,
     "skipped_parse_failed": 8,
-    "skipped_aborted_transaction": 205,
+    "skipped_aborted_transaction": 203,
     "skipped_catalog_unavailable": 0,
-    "unsupported": 42564,
-    "agree": 0,
-    "disagree": 0
+    "unsupported": 34024,
+    "agree": 7907,
+    "known_divergence": 384,
+    "disagree": 251
   },
   "files": {
     "advisory_lock.sql": {
@@ -20,8 +21,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 23,
-      "agree": 0,
+      "unsupported": 8,
+      "agree": 15,
+      "known_divergence": 0,
       "disagree": 0
     },
     "aggregates.sql": {
@@ -31,8 +33,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 513,
-      "agree": 0,
+      "unsupported": 488,
+      "agree": 25,
+      "known_divergence": 0,
       "disagree": 0
     },
     "alter_generic.sql": {
@@ -42,8 +45,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 12,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 319,
-      "agree": 0,
+      "unsupported": 317,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "alter_operator.sql": {
@@ -53,8 +57,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 65,
-      "agree": 0,
+      "unsupported": 58,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "alter_table.sql": {
@@ -64,9 +69,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 3,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1649,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 1563,
+      "agree": 84,
+      "known_divergence": 0,
+      "disagree": 2
     },
     "amutils.sql": {
       "items": 10,
@@ -77,6 +83,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 9,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "arrays.sql": {
@@ -86,9 +93,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 483,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 359,
+      "agree": 93,
+      "known_divergence": 28,
+      "disagree": 3
     },
     "async.sql": {
       "items": 11,
@@ -97,8 +105,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 11,
-      "agree": 0,
+      "unsupported": 4,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "bit.sql": {
@@ -108,8 +117,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 132,
-      "agree": 0,
+      "unsupported": 95,
+      "agree": 33,
+      "known_divergence": 4,
       "disagree": 0
     },
     "bitmapops.sql": {
@@ -121,6 +131,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 10,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "boolean.sql": {
@@ -130,8 +141,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 98,
-      "agree": 0,
+      "unsupported": 24,
+      "agree": 64,
+      "known_divergence": 10,
       "disagree": 0
     },
     "box.sql": {
@@ -141,8 +153,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 101,
-      "agree": 0,
+      "unsupported": 69,
+      "agree": 32,
+      "known_divergence": 0,
       "disagree": 0
     },
     "brin.sql": {
@@ -152,8 +165,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 66,
-      "agree": 0,
+      "unsupported": 49,
+      "agree": 17,
+      "known_divergence": 0,
       "disagree": 0
     },
     "brin_bloom.sql": {
@@ -163,8 +177,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 38,
-      "agree": 0,
+      "unsupported": 24,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "brin_multi.sql": {
@@ -174,8 +189,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 170,
-      "agree": 0,
+      "unsupported": 156,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "btree_index.sql": {
@@ -185,8 +201,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 92,
-      "agree": 0,
+      "unsupported": 76,
+      "agree": 16,
+      "known_divergence": 0,
       "disagree": 0
     },
     "case.sql": {
@@ -196,8 +213,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 64,
-      "agree": 0,
+      "unsupported": 55,
+      "agree": 9,
+      "known_divergence": 0,
       "disagree": 0
     },
     "char.sql": {
@@ -207,8 +225,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 32,
-      "agree": 0,
+      "unsupported": 12,
+      "agree": 20,
+      "known_divergence": 0,
       "disagree": 0
     },
     "circle.sql": {
@@ -218,8 +237,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 22,
-      "agree": 0,
+      "unsupported": 16,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "cluster.sql": {
@@ -229,8 +249,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 204,
-      "agree": 0,
+      "unsupported": 193,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "collate.sql": {
@@ -240,8 +261,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 144,
-      "agree": 0,
+      "unsupported": 137,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "combocid.sql": {
@@ -251,9 +273,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 62,
+      "unsupported": 52,
       "agree": 0,
-      "disagree": 0
+      "known_divergence": 0,
+      "disagree": 10
     },
     "comments.sql": {
       "items": 6,
@@ -262,8 +285,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 6,
-      "agree": 0,
+      "unsupported": 0,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "compression.sql": {
@@ -273,9 +297,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 87,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 60,
+      "agree": 26,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "constraints.sql": {
       "items": 317,
@@ -284,8 +309,9 @@
       "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 4,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 311,
-      "agree": 0,
+      "unsupported": 280,
+      "agree": 31,
+      "known_divergence": 0,
       "disagree": 0
     },
     "conversion.sql": {
@@ -297,6 +323,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 63,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "copy.sql": {
@@ -306,8 +333,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 77,
-      "agree": 0,
+      "unsupported": 75,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "copy2.sql": {
@@ -317,9 +345,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 41,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 158,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 132,
+      "agree": 25,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "copydml.sql": {
       "items": 59,
@@ -330,6 +359,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 59,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "copyselect.sql": {
@@ -339,8 +369,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 38,
-      "agree": 0,
+      "unsupported": 32,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_aggregate.sql": {
@@ -350,8 +381,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 59,
-      "agree": 0,
+      "unsupported": 56,
+      "agree": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_am.sql": {
@@ -361,8 +393,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 141,
-      "agree": 0,
+      "unsupported": 123,
+      "agree": 18,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_cast.sql": {
@@ -372,8 +405,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 24,
-      "agree": 0,
+      "unsupported": 16,
+      "agree": 8,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_function_c.sql": {
@@ -385,6 +419,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 2,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_function_sql.sql": {
@@ -394,9 +429,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 148,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 124,
+      "agree": 19,
+      "known_divergence": 0,
+      "disagree": 5
     },
     "create_index.sql": {
       "items": 608,
@@ -405,8 +441,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 598,
-      "agree": 0,
+      "unsupported": 570,
+      "agree": 28,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_index_spgist.sql": {
@@ -418,6 +455,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 202,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_misc.sql": {
@@ -427,8 +465,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 88,
-      "agree": 0,
+      "unsupported": 77,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_operator.sql": {
@@ -438,8 +477,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 79,
-      "agree": 0,
+      "unsupported": 73,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_procedure.sql": {
@@ -449,9 +489,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 107,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 101,
+      "agree": 5,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "create_role.sql": {
       "items": 137,
@@ -462,6 +503,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 137,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_schema.sql": {
@@ -473,6 +515,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 27,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_table.sql": {
@@ -482,8 +525,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 327,
-      "agree": 0,
+      "unsupported": 321,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_table_like.sql": {
@@ -493,8 +537,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 144,
-      "agree": 0,
+      "unsupported": 126,
+      "agree": 18,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_type.sql": {
@@ -504,9 +549,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 80,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 64,
+      "agree": 15,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "create_view.sql": {
       "items": 305,
@@ -515,9 +561,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 2,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 301,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 219,
+      "agree": 81,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "database.sql": {
       "items": 16,
@@ -528,6 +575,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 16,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "date.sql": {
@@ -537,8 +585,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 270,
-      "agree": 0,
+      "unsupported": 98,
+      "agree": 132,
+      "known_divergence": 40,
       "disagree": 0
     },
     "dbsize.sql": {
@@ -548,8 +597,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 25,
-      "agree": 0,
+      "unsupported": 8,
+      "agree": 17,
+      "known_divergence": 0,
       "disagree": 0
     },
     "delete.sql": {
@@ -559,8 +609,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 10,
-      "agree": 0,
+      "unsupported": 8,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "dependency.sql": {
@@ -572,6 +623,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 62,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "domain.sql": {
@@ -581,9 +633,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 461,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 383,
+      "agree": 26,
+      "known_divergence": 0,
+      "disagree": 52
     },
     "drop_if_exists.sql": {
       "items": 161,
@@ -594,6 +647,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 161,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "drop_operator.sql": {
@@ -605,6 +659,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 12,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "encoding.sql": {
@@ -614,8 +669,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 60,
-      "agree": 0,
+      "unsupported": 38,
+      "agree": 22,
+      "known_divergence": 0,
       "disagree": 0
     },
     "enum.sql": {
@@ -625,9 +681,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 4,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 166,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 131,
+      "agree": 29,
+      "known_divergence": 1,
+      "disagree": 5
     },
     "equivclass.sql": {
       "items": 79,
@@ -638,6 +695,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 79,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "errors.sql": {
@@ -647,8 +705,9 @@
       "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 46,
-      "agree": 0,
+      "unsupported": 29,
+      "agree": 17,
+      "known_divergence": 0,
       "disagree": 0
     },
     "euc_kr.sql": {
@@ -660,6 +719,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 2,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "event_trigger.sql": {
@@ -669,8 +729,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 230,
-      "agree": 0,
+      "unsupported": 225,
+      "agree": 5,
+      "known_divergence": 0,
       "disagree": 0
     },
     "event_trigger_login.sql": {
@@ -682,6 +743,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 10,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "explain.sql": {
@@ -691,8 +753,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 2,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 48,
-      "agree": 0,
+      "unsupported": 24,
+      "agree": 24,
+      "known_divergence": 0,
       "disagree": 0
     },
     "expressions.sql": {
@@ -702,9 +765,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 71,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 55,
+      "agree": 9,
+      "known_divergence": 0,
+      "disagree": 7
     },
     "fast_default.sql": {
       "items": 269,
@@ -713,9 +777,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 269,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 234,
+      "agree": 34,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "float4.sql": {
       "items": 100,
@@ -724,8 +789,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 100,
-      "agree": 0,
+      "unsupported": 39,
+      "agree": 58,
+      "known_divergence": 3,
       "disagree": 0
     },
     "float8.sql": {
@@ -735,8 +801,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 169,
-      "agree": 0,
+      "unsupported": 42,
+      "agree": 120,
+      "known_divergence": 7,
       "disagree": 0
     },
     "foreign_data.sql": {
@@ -746,8 +813,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 528,
-      "agree": 0,
+      "unsupported": 516,
+      "agree": 12,
+      "known_divergence": 0,
       "disagree": 0
     },
     "foreign_key.sql": {
@@ -757,8 +825,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1143,
-      "agree": 0,
+      "unsupported": 1065,
+      "agree": 78,
+      "known_divergence": 0,
       "disagree": 0
     },
     "functional_deps.sql": {
@@ -770,6 +839,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 40,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "generated.sql": {
@@ -779,8 +849,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 119,
-      "agree": 0,
+      "unsupported": 112,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "geometry.sql": {
@@ -790,8 +861,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 162,
-      "agree": 0,
+      "unsupported": 22,
+      "agree": 140,
+      "known_divergence": 0,
       "disagree": 0
     },
     "gin.sql": {
@@ -801,8 +873,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 59,
-      "agree": 0,
+      "unsupported": 55,
+      "agree": 4,
+      "known_divergence": 0,
       "disagree": 0
     },
     "gist.sql": {
@@ -812,8 +885,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 62,
-      "agree": 0,
+      "unsupported": 57,
+      "agree": 5,
+      "known_divergence": 0,
       "disagree": 0
     },
     "groupingsets.sql": {
@@ -823,8 +897,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 171,
-      "agree": 0,
+      "unsupported": 170,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "guc.sql": {
@@ -834,8 +909,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 214,
-      "agree": 0,
+      "unsupported": 155,
+      "agree": 59,
+      "known_divergence": 0,
       "disagree": 0
     },
     "hash_func.sql": {
@@ -845,8 +921,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 41,
-      "agree": 0,
+      "unsupported": 36,
+      "agree": 5,
+      "known_divergence": 0,
       "disagree": 0
     },
     "hash_index.sql": {
@@ -856,8 +933,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 96,
-      "agree": 0,
+      "unsupported": 79,
+      "agree": 17,
+      "known_divergence": 0,
       "disagree": 0
     },
     "hash_part.sql": {
@@ -867,8 +945,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 28,
-      "agree": 0,
+      "unsupported": 14,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "horology.sql": {
@@ -878,8 +957,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 330,
-      "agree": 0,
+      "unsupported": 213,
+      "agree": 102,
+      "known_divergence": 15,
       "disagree": 0
     },
     "identity.sql": {
@@ -889,9 +969,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 269,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 233,
+      "agree": 35,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "incremental_sort.sql": {
       "items": 119,
@@ -900,8 +981,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 119,
-      "agree": 0,
+      "unsupported": 113,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "index_including.sql": {
@@ -911,8 +993,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 135,
-      "agree": 0,
+      "unsupported": 124,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "index_including_gist.sql": {
@@ -922,8 +1005,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 50,
-      "agree": 0,
+      "unsupported": 48,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "indexing.sql": {
@@ -933,8 +1017,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 560,
-      "agree": 0,
+      "unsupported": 556,
+      "agree": 4,
+      "known_divergence": 0,
       "disagree": 0
     },
     "indirect_toast.sql": {
@@ -946,6 +1031,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 27,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "inet.sql": {
@@ -955,8 +1041,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 109,
-      "agree": 0,
+      "unsupported": 70,
+      "agree": 39,
+      "known_divergence": 0,
       "disagree": 0
     },
     "infinite_recurse.sql": {
@@ -966,8 +1053,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 3,
-      "agree": 0,
+      "unsupported": 1,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "inherit.sql": {
@@ -977,9 +1065,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 677,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 629,
+      "agree": 47,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "init_privs.sql": {
       "items": 4,
@@ -990,6 +1079,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 4,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "insert.sql": {
@@ -999,9 +1089,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 387,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 372,
+      "agree": 13,
+      "known_divergence": 0,
+      "disagree": 2
     },
     "insert_conflict.sql": {
       "items": 257,
@@ -1010,8 +1101,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 3,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 254,
-      "agree": 0,
+      "unsupported": 244,
+      "agree": 10,
+      "known_divergence": 0,
       "disagree": 0
     },
     "int2.sql": {
@@ -1021,8 +1113,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 76,
-      "agree": 0,
+      "unsupported": 14,
+      "agree": 50,
+      "known_divergence": 12,
       "disagree": 0
     },
     "int4.sql": {
@@ -1032,8 +1125,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 94,
-      "agree": 0,
+      "unsupported": 13,
+      "agree": 69,
+      "known_divergence": 12,
       "disagree": 0
     },
     "int8.sql": {
@@ -1043,8 +1137,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 167,
-      "agree": 0,
+      "unsupported": 17,
+      "agree": 136,
+      "known_divergence": 14,
       "disagree": 0
     },
     "interval.sql": {
@@ -1054,8 +1149,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 442,
-      "agree": 0,
+      "unsupported": 390,
+      "agree": 47,
+      "known_divergence": 5,
       "disagree": 0
     },
     "join.sql": {
@@ -1065,8 +1161,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 716,
-      "agree": 0,
+      "unsupported": 704,
+      "agree": 12,
+      "known_divergence": 0,
       "disagree": 0
     },
     "join_hash.sql": {
@@ -1078,6 +1175,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 279,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "json.sql": {
@@ -1087,9 +1185,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 406,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 228,
+      "agree": 152,
+      "known_divergence": 24,
+      "disagree": 2
     },
     "json_encoding.sql": {
       "items": 44,
@@ -1098,8 +1197,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 44,
-      "agree": 0,
+      "unsupported": 2,
+      "agree": 29,
+      "known_divergence": 13,
       "disagree": 0
     },
     "jsonb.sql": {
@@ -1109,9 +1209,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 855,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 465,
+      "agree": 364,
+      "known_divergence": 24,
+      "disagree": 2
     },
     "jsonb_jsonpath.sql": {
       "items": 766,
@@ -1120,8 +1221,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 766,
-      "agree": 0,
+      "unsupported": 119,
+      "agree": 638,
+      "known_divergence": 9,
       "disagree": 0
     },
     "jsonpath.sql": {
@@ -1131,8 +1233,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 224,
-      "agree": 0,
+      "unsupported": 1,
+      "agree": 187,
+      "known_divergence": 36,
       "disagree": 0
     },
     "jsonpath_encoding.sql": {
@@ -1142,8 +1245,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 32,
-      "agree": 0,
+      "unsupported": 1,
+      "agree": 13,
+      "known_divergence": 18,
       "disagree": 0
     },
     "largeobject.sql": {
@@ -1153,8 +1257,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 102,
-      "agree": 0,
+      "unsupported": 43,
+      "agree": 59,
+      "known_divergence": 0,
       "disagree": 0
     },
     "limit.sql": {
@@ -1164,8 +1269,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 80,
-      "agree": 0,
+      "unsupported": 77,
+      "agree": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "line.sql": {
@@ -1175,8 +1281,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 35,
-      "agree": 0,
+      "unsupported": 28,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "lock.sql": {
@@ -1186,8 +1293,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 4,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 126,
-      "agree": 0,
+      "unsupported": 125,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "lseg.sql": {
@@ -1197,8 +1305,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 16,
-      "agree": 0,
+      "unsupported": 14,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "macaddr.sql": {
@@ -1208,8 +1317,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 30,
-      "agree": 0,
+      "unsupported": 19,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "macaddr8.sql": {
@@ -1219,8 +1329,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 63,
-      "agree": 0,
+      "unsupported": 27,
+      "agree": 22,
+      "known_divergence": 14,
       "disagree": 0
     },
     "maintain_every.sql": {
@@ -1230,8 +1341,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 16,
-      "agree": 0,
+      "unsupported": 14,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "matview.sql": {
@@ -1241,9 +1353,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 178,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 157,
+      "agree": 19,
+      "known_divergence": 0,
+      "disagree": 2
     },
     "md5.sql": {
       "items": 14,
@@ -1252,8 +1365,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 14,
-      "agree": 0,
+      "unsupported": 0,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "memoize.sql": {
@@ -1263,8 +1377,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 69,
-      "agree": 0,
+      "unsupported": 58,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "merge.sql": {
@@ -1274,9 +1389,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 11,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 557,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 522,
+      "agree": 34,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "misc.sql": {
       "items": 55,
@@ -1285,9 +1401,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 55,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 45,
+      "agree": 2,
+      "known_divergence": 0,
+      "disagree": 8
     },
     "misc_functions.sql": {
       "items": 115,
@@ -1296,8 +1413,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 115,
-      "agree": 0,
+      "unsupported": 52,
+      "agree": 63,
+      "known_divergence": 0,
       "disagree": 0
     },
     "misc_sanity.sql": {
@@ -1309,6 +1427,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 5,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "money.sql": {
@@ -1318,8 +1437,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 109,
-      "agree": 0,
+      "unsupported": 16,
+      "agree": 85,
+      "known_divergence": 8,
       "disagree": 0
     },
     "multirangetypes.sql": {
@@ -1329,8 +1449,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 605,
-      "agree": 0,
+      "unsupported": 239,
+      "agree": 352,
+      "known_divergence": 14,
       "disagree": 0
     },
     "mvcc.sql": {
@@ -1340,8 +1461,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 10,
-      "agree": 0,
+      "unsupported": 9,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "name.sql": {
@@ -1351,8 +1473,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 40,
-      "agree": 0,
+      "unsupported": 12,
+      "agree": 28,
+      "known_divergence": 0,
       "disagree": 0
     },
     "namespace.sql": {
@@ -1362,8 +1485,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 41,
-      "agree": 0,
+      "unsupported": 38,
+      "agree": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "numeric.sql": {
@@ -1373,8 +1497,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1018,
-      "agree": 0,
+      "unsupported": 676,
+      "agree": 342,
+      "known_divergence": 0,
       "disagree": 0
     },
     "numerology.sql": {
@@ -1384,8 +1509,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 62,
-      "agree": 0,
+      "unsupported": 25,
+      "agree": 37,
+      "known_divergence": 0,
       "disagree": 0
     },
     "object_address.sql": {
@@ -1395,8 +1521,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 81,
-      "agree": 0,
+      "unsupported": 51,
+      "agree": 30,
+      "known_divergence": 0,
       "disagree": 0
     },
     "oid.sql": {
@@ -1406,8 +1533,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 37,
-      "agree": 0,
+      "unsupported": 24,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "oidjoins.sql": {
@@ -1419,6 +1547,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 1,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "opr_sanity.sql": {
@@ -1428,8 +1557,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 130,
-      "agree": 0,
+      "unsupported": 70,
+      "agree": 60,
+      "known_divergence": 0,
       "disagree": 0
     },
     "partition_aggregate.sql": {
@@ -1441,6 +1571,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 135,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "partition_info.sql": {
@@ -1450,8 +1581,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 73,
-      "agree": 0,
+      "unsupported": 58,
+      "agree": 15,
+      "known_divergence": 0,
       "disagree": 0
     },
     "partition_join.sql": {
@@ -1463,6 +1595,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 600,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "partition_prune.sql": {
@@ -1472,8 +1605,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 697,
-      "agree": 0,
+      "unsupported": 662,
+      "agree": 35,
+      "known_divergence": 0,
       "disagree": 0
     },
     "password.sql": {
@@ -1483,8 +1617,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 45,
-      "agree": 0,
+      "unsupported": 44,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "path.sql": {
@@ -1494,8 +1629,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 23,
-      "agree": 0,
+      "unsupported": 17,
+      "agree": 6,
+      "known_divergence": 0,
       "disagree": 0
     },
     "pg_lsn.sql": {
@@ -1505,8 +1641,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 31,
-      "agree": 0,
+      "unsupported": 13,
+      "agree": 18,
+      "known_divergence": 0,
       "disagree": 0
     },
     "plancache.sql": {
@@ -1516,8 +1653,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 97,
-      "agree": 0,
+      "unsupported": 82,
+      "agree": 15,
+      "known_divergence": 0,
       "disagree": 0
     },
     "plpgsql.sql": {
@@ -1527,9 +1665,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 2,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 939,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 787,
+      "agree": 146,
+      "known_divergence": 0,
+      "disagree": 6
     },
     "point.sql": {
       "items": 43,
@@ -1538,8 +1677,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 43,
-      "agree": 0,
+      "unsupported": 30,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "polygon.sql": {
@@ -1549,8 +1689,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 62,
-      "agree": 0,
+      "unsupported": 59,
+      "agree": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "polymorphism.sql": {
@@ -1560,9 +1701,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 423,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 344,
+      "agree": 72,
+      "known_divergence": 0,
+      "disagree": 7
     },
     "portals.sql": {
       "items": 349,
@@ -1571,8 +1713,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 20,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 329,
-      "agree": 0,
+      "unsupported": 301,
+      "agree": 28,
+      "known_divergence": 0,
       "disagree": 0
     },
     "portals_p2.sql": {
@@ -1584,6 +1727,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 41,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "predicate.sql": {
@@ -1595,6 +1739,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 42,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "prepare.sql": {
@@ -1604,8 +1749,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 33,
-      "agree": 0,
+      "unsupported": 26,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "prepared_xacts.sql": {
@@ -1615,8 +1761,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 83,
-      "agree": 0,
+      "unsupported": 67,
+      "agree": 16,
+      "known_divergence": 0,
       "disagree": 0
     },
     "privileges.sql": {
@@ -1626,9 +1773,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 4,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1212,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 1010,
+      "agree": 197,
+      "known_divergence": 1,
+      "disagree": 4
     },
     "psql.sql": {
       "items": 177,
@@ -1637,8 +1785,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 175,
-      "agree": 0,
+      "unsupported": 161,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "psql_crosstab.sql": {
@@ -1648,8 +1797,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 29,
-      "agree": 0,
+      "unsupported": 18,
+      "agree": 11,
+      "known_divergence": 0,
       "disagree": 0
     },
     "publication.sql": {
@@ -1659,8 +1809,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 654,
-      "agree": 0,
+      "unsupported": 645,
+      "agree": 9,
+      "known_divergence": 0,
       "disagree": 0
     },
     "random.sql": {
@@ -1670,8 +1821,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 48,
-      "agree": 0,
+      "unsupported": 32,
+      "agree": 16,
+      "known_divergence": 0,
       "disagree": 0
     },
     "rangefuncs.sql": {
@@ -1681,8 +1833,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 2,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 426,
-      "agree": 0,
+      "unsupported": 340,
+      "agree": 86,
+      "known_divergence": 0,
       "disagree": 0
     },
     "rangetypes.sql": {
@@ -1692,8 +1845,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 407,
-      "agree": 0,
+      "unsupported": 279,
+      "agree": 117,
+      "known_divergence": 11,
       "disagree": 0
     },
     "regex.sql": {
@@ -1703,8 +1857,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 105,
-      "agree": 0,
+      "unsupported": 13,
+      "agree": 92,
+      "known_divergence": 0,
       "disagree": 0
     },
     "regproc.sql": {
@@ -1714,9 +1869,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 105,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 19,
+      "agree": 65,
+      "known_divergence": 0,
+      "disagree": 21
     },
     "reloptions.sql": {
       "items": 63,
@@ -1725,8 +1881,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 63,
-      "agree": 0,
+      "unsupported": 48,
+      "agree": 15,
+      "known_divergence": 0,
       "disagree": 0
     },
     "replica_identity.sql": {
@@ -1736,8 +1893,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 56,
-      "agree": 0,
+      "unsupported": 47,
+      "agree": 9,
+      "known_divergence": 0,
       "disagree": 0
     },
     "returning.sql": {
@@ -1747,8 +1905,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 75,
-      "agree": 0,
+      "unsupported": 49,
+      "agree": 26,
+      "known_divergence": 0,
       "disagree": 0
     },
     "roleattributes.sql": {
@@ -1758,8 +1917,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 80,
-      "agree": 0,
+      "unsupported": 48,
+      "agree": 32,
+      "known_divergence": 0,
       "disagree": 0
     },
     "rowsecurity.sql": {
@@ -1769,9 +1929,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 774,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 708,
+      "agree": 59,
+      "known_divergence": 0,
+      "disagree": 7
     },
     "rowtypes.sql": {
       "items": 237,
@@ -1780,8 +1941,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 237,
-      "agree": 0,
+      "unsupported": 214,
+      "agree": 19,
+      "known_divergence": 4,
       "disagree": 0
     },
     "rules.sql": {
@@ -1791,8 +1953,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 617,
-      "agree": 0,
+      "unsupported": 512,
+      "agree": 105,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sanity_check.sql": {
@@ -1804,6 +1967,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 3,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "security_label.sql": {
@@ -1815,6 +1979,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 28,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select.sql": {
@@ -1824,8 +1989,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 86,
-      "agree": 0,
+      "unsupported": 74,
+      "agree": 12,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_distinct.sql": {
@@ -1835,8 +2001,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 76,
-      "agree": 0,
+      "unsupported": 64,
+      "agree": 12,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_distinct_on.sql": {
@@ -1848,6 +2015,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 8,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_having.sql": {
@@ -1859,6 +2027,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 23,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_implicit.sql": {
@@ -1868,8 +2037,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 44,
-      "agree": 0,
+      "unsupported": 42,
+      "agree": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_into.sql": {
@@ -1879,9 +2049,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 67,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 61,
+      "agree": 5,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "select_parallel.sql": {
       "items": 235,
@@ -1890,8 +2061,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 235,
-      "agree": 0,
+      "unsupported": 230,
+      "agree": 5,
+      "known_divergence": 0,
       "disagree": 0
     },
     "select_views.sql": {
@@ -1901,8 +2073,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 52,
-      "agree": 0,
+      "unsupported": 42,
+      "agree": 10,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sequence.sql": {
@@ -1912,8 +2085,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 7,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 253,
-      "agree": 0,
+      "unsupported": 170,
+      "agree": 83,
+      "known_divergence": 0,
       "disagree": 0
     },
     "spgist.sql": {
@@ -1923,9 +2097,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 31,
+      "unsupported": 30,
       "agree": 0,
-      "disagree": 0
+      "known_divergence": 0,
+      "disagree": 1
     },
     "sqljson.sql": {
       "items": 219,
@@ -1936,6 +2111,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 216,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sqljson_jsontable.sql": {
@@ -1947,6 +2123,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 116,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sqljson_queryfuncs.sql": {
@@ -1958,17 +2135,19 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 299,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "stats.sql": {
       "items": 364,
-      "skipped": 2,
+      "skipped": 0,
       "skipped_not_a_statement": 0,
       "skipped_parse_failed": 0,
-      "skipped_aborted_transaction": 2,
+      "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 362,
-      "agree": 0,
+      "unsupported": 263,
+      "agree": 101,
+      "known_divergence": 0,
       "disagree": 0
     },
     "stats_ext.sql": {
@@ -1978,8 +2157,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 814,
-      "agree": 0,
+      "unsupported": 793,
+      "agree": 21,
+      "known_divergence": 0,
       "disagree": 0
     },
     "strings.sql": {
@@ -1989,8 +2169,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 457,
-      "agree": 0,
+      "unsupported": 146,
+      "agree": 285,
+      "known_divergence": 26,
       "disagree": 0
     },
     "subscription.sql": {
@@ -2000,8 +2181,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 5,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 151,
-      "agree": 0,
+      "unsupported": 144,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "subselect.sql": {
@@ -2011,8 +2193,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 269,
-      "agree": 0,
+      "unsupported": 262,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sysviews.sql": {
@@ -2022,8 +2205,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 27,
-      "agree": 0,
+      "unsupported": 24,
+      "agree": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tablesample.sql": {
@@ -2035,6 +2219,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 56,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tablespace.sql": {
@@ -2044,8 +2229,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 202,
-      "agree": 0,
+      "unsupported": 189,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "temp.sql": {
@@ -2055,9 +2241,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 160,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 125,
+      "agree": 27,
+      "known_divergence": 0,
+      "disagree": 8
     },
     "test_setup.sql": {
       "items": 60,
@@ -2068,6 +2255,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 60,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "text.sql": {
@@ -2077,8 +2265,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 73,
-      "agree": 0,
+      "unsupported": 15,
+      "agree": 58,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tid.sql": {
@@ -2088,8 +2277,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 41,
-      "agree": 0,
+      "unsupported": 27,
+      "agree": 12,
+      "known_divergence": 2,
       "disagree": 0
     },
     "tidrangescan.sql": {
@@ -2099,8 +2289,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 45,
-      "agree": 0,
+      "unsupported": 32,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tidscan.sql": {
@@ -2110,8 +2301,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 48,
-      "agree": 0,
+      "unsupported": 41,
+      "agree": 7,
+      "known_divergence": 0,
       "disagree": 0
     },
     "time.sql": {
@@ -2121,8 +2313,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 44,
-      "agree": 0,
+      "unsupported": 28,
+      "agree": 12,
+      "known_divergence": 4,
       "disagree": 0
     },
     "timestamp.sql": {
@@ -2132,8 +2325,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 169,
-      "agree": 0,
+      "unsupported": 139,
+      "agree": 28,
+      "known_divergence": 2,
       "disagree": 0
     },
     "timestamptz.sql": {
@@ -2143,9 +2337,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 361,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 175,
+      "agree": 123,
+      "known_divergence": 3,
+      "disagree": 60
     },
     "timetz.sql": {
       "items": 57,
@@ -2154,8 +2349,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 57,
-      "agree": 0,
+      "unsupported": 40,
+      "agree": 13,
+      "known_divergence": 4,
       "disagree": 0
     },
     "transactions.sql": {
@@ -2165,8 +2361,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 33,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 457,
-      "agree": 0,
+      "unsupported": 405,
+      "agree": 52,
+      "known_divergence": 0,
       "disagree": 0
     },
     "triggers.sql": {
@@ -2176,8 +2373,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 3,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1041,
-      "agree": 0,
+      "unsupported": 979,
+      "agree": 62,
+      "known_divergence": 0,
       "disagree": 0
     },
     "truncate.sql": {
@@ -2187,9 +2385,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 193,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 154,
+      "agree": 38,
+      "known_divergence": 0,
+      "disagree": 1
     },
     "tsdicts.sql": {
       "items": 126,
@@ -2198,8 +2397,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 126,
-      "agree": 0,
+      "unsupported": 36,
+      "agree": 90,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tsearch.sql": {
@@ -2209,8 +2409,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 408,
-      "agree": 0,
+      "unsupported": 219,
+      "agree": 189,
+      "known_divergence": 0,
       "disagree": 0
     },
     "tsrf.sql": {
@@ -2220,8 +2421,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 74,
-      "agree": 0,
+      "unsupported": 62,
+      "agree": 11,
+      "known_divergence": 1,
       "disagree": 0
     },
     "tstypes.sql": {
@@ -2231,8 +2433,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 223,
-      "agree": 0,
+      "unsupported": 19,
+      "agree": 203,
+      "known_divergence": 1,
       "disagree": 0
     },
     "tuplesort.sql": {
@@ -2242,8 +2445,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 104,
-      "agree": 0,
+      "unsupported": 103,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "txid.sql": {
@@ -2253,8 +2457,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 38,
-      "agree": 0,
+      "unsupported": 19,
+      "agree": 16,
+      "known_divergence": 3,
       "disagree": 0
     },
     "type_sanity.sql": {
@@ -2264,8 +2469,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 60,
-      "agree": 0,
+      "unsupported": 43,
+      "agree": 17,
+      "known_divergence": 0,
       "disagree": 0
     },
     "typed_table.sql": {
@@ -2275,8 +2481,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 28,
-      "agree": 0,
+      "unsupported": 27,
+      "agree": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "unicode.sql": {
@@ -2286,9 +2493,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 17,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 5,
+      "agree": 7,
+      "known_divergence": 0,
+      "disagree": 5
     },
     "union.sql": {
       "items": 191,
@@ -2299,6 +2507,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 191,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "updatable_views.sql": {
@@ -2308,9 +2517,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 1100,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 989,
+      "agree": 97,
+      "known_divergence": 0,
+      "disagree": 14
     },
     "update.sql": {
       "items": 257,
@@ -2319,8 +2529,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 257,
-      "agree": 0,
+      "unsupported": 244,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "uuid.sql": {
@@ -2330,8 +2541,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 44,
-      "agree": 0,
+      "unsupported": 36,
+      "agree": 8,
+      "known_divergence": 0,
       "disagree": 0
     },
     "vacuum.sql": {
@@ -2341,8 +2553,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 293,
-      "agree": 0,
+      "unsupported": 279,
+      "agree": 14,
+      "known_divergence": 0,
       "disagree": 0
     },
     "vacuum_parallel.sql": {
@@ -2354,6 +2567,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 14,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "varchar.sql": {
@@ -2363,8 +2577,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 22,
-      "agree": 0,
+      "unsupported": 12,
+      "agree": 10,
+      "known_divergence": 0,
       "disagree": 0
     },
     "window.sql": {
@@ -2374,8 +2589,9 @@
       "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 378,
-      "agree": 0,
+      "unsupported": 365,
+      "agree": 13,
+      "known_divergence": 0,
       "disagree": 0
     },
     "with.sql": {
@@ -2385,8 +2601,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 300,
-      "agree": 0,
+      "unsupported": 255,
+      "agree": 45,
+      "known_divergence": 0,
       "disagree": 0
     },
     "write_parallel.sql": {
@@ -2398,6 +2615,7 @@
       "skipped_catalog_unavailable": 0,
       "unsupported": 22,
       "agree": 0,
+      "known_divergence": 0,
       "disagree": 0
     },
     "xid.sql": {
@@ -2407,8 +2625,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 72,
-      "agree": 0,
+      "unsupported": 28,
+      "agree": 37,
+      "known_divergence": 7,
       "disagree": 0
     },
     "xml.sql": {
@@ -2418,9 +2637,10 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 250,
-      "agree": 0,
-      "disagree": 0
+      "unsupported": 185,
+      "agree": 54,
+      "known_divergence": 4,
+      "disagree": 7
     },
     "xmlmap.sql": {
       "items": 40,
@@ -2429,8 +2649,9 @@
       "skipped_parse_failed": 0,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
-      "unsupported": 40,
-      "agree": 0,
+      "unsupported": 13,
+      "agree": 27,
+      "known_divergence": 0,
       "disagree": 0
     }
   }
