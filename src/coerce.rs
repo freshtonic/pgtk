@@ -98,35 +98,29 @@ impl<'c> Coercer<'c> {
             return None;
         }
         let mut result = None;
-        if !types.is(target, Builtin::Oidvector) && !types.is(target, Builtin::Int2vector) {
-            if let (Some(target_elem), Some(source_elem)) =
+        if !types.is(target, Builtin::Oidvector)
+            && !types.is(target, Builtin::Int2vector)
+            && let (Some(target_elem), Some(source_elem)) =
                 (types.element_type(target), types.element_type(source))
-                && self
-                    .find_coercion_pathway(target_elem, source_elem, ccontext)
-                    .is_some()
-            {
-                result = Some(Pathway {
-                    path: CoercionPath::ArrayCoerce,
-                    cast: None,
-                });
-            }
+            && self
+                .find_coercion_pathway(target_elem, source_elem, ccontext)
+                .is_some()
+        {
+            result = Some(Pathway {
+                path: CoercionPath::ArrayCoerce,
+                cast: None,
+            });
         }
-        if result.is_none() {
-            if ccontext >= CoercionContext::Assignment
-                && types.category(target) == TypeCategory::String
-            {
-                result = Some(Pathway {
-                    path: CoercionPath::CoerceViaIO,
-                    cast: None,
-                });
-            } else if ccontext >= CoercionContext::Explicit
-                && types.category(source) == TypeCategory::String
-            {
-                result = Some(Pathway {
-                    path: CoercionPath::CoerceViaIO,
-                    cast: None,
-                });
-            }
+        if result.is_none()
+            && ((ccontext >= CoercionContext::Assignment
+                && types.category(target) == TypeCategory::String)
+                || (ccontext >= CoercionContext::Explicit
+                    && types.category(source) == TypeCategory::String))
+        {
+            result = Some(Pathway {
+                path: CoercionPath::CoerceViaIO,
+                cast: None,
+            });
         }
         result
     }
@@ -189,8 +183,15 @@ impl<'c> Coercer<'c> {
             if types.is_record_array(target) && types.is_complex_array(input) {
                 continue;
             }
-            // typeInheritsFrom / typeIsOfTypedTable: inheritance is not in
-            // the Catalog, so a row-type conversion is never offered.
+            // A child table's row converts to a parent's; a typed table's
+            // row to the type it is OF.
+            if types.is_complex(input)
+                && types.is_complex(target)
+                && (types.type_inherits_from(input, target)
+                    || types.type_is_of_typed_table(input, target))
+            {
+                continue;
+            }
             return false;
         }
         if have_generics && !self.check_generic_type_consistency(inputs, targets) {
@@ -409,6 +410,28 @@ impl<'c> Coercer<'c> {
         }
         if types.is_record_array(target) && types.is_complex_array(input) {
             return Ok((node.clone(), Vec::new()));
+        }
+        if types.is_complex(input)
+            && types.is_complex(target)
+            && (types.type_inherits_from(input, target)
+                || types.type_is_of_typed_table(input, target))
+        {
+            let step = Coercion {
+                path: CoercionPath::ConvertRowtype,
+                cast: None,
+                target,
+                typmod: -1,
+                context: ccontext,
+            };
+            return Ok((
+                Typed {
+                    ty: target,
+                    typmod: -1,
+                    form: Form::Other,
+                    ..node.clone()
+                },
+                vec![step],
+            ));
         }
         Err(crate::diagnostic::unsupported(
             format!(
@@ -768,7 +791,6 @@ impl<'c> Coercer<'c> {
                     }
                 }
                 None => {
-                    anycompatible_range_typeid = Some(telem);
                     let Some(sub) = types.range_subtype(telem) else {
                         return false;
                     };

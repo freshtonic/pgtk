@@ -94,6 +94,7 @@ impl<'c> Types<'c> {
     pub fn element_type(&self, t: TypeRef) -> Option<TypeRef> {
         match &self.catalog[t].kind {
             TypeKind::Array { element } => Some(*element),
+            _ if self.is_record_array(t) => Some(self.builtin(Builtin::Record)),
             _ => None,
         }
     }
@@ -154,9 +155,67 @@ impl<'c> Types<'c> {
         }
     }
 
-    /// `ISCOMPLEX`: a composite type.
+    /// `typeInheritsFrom`: `sub` is the row type of a relation that
+    /// inherits, directly or not, from the relation of `sup`.
+    pub fn type_inherits_from(&self, sub: TypeRef, sup: TypeRef) -> bool {
+        let relation_of = |t: TypeRef| match &self.catalog[t].kind {
+            TypeKind::Composite(detail) => detail.relation,
+            _ => None,
+        };
+        let Some(target) = relation_of(sup) else {
+            return false;
+        };
+        let mut pending: Vec<_> = relation_of(sub).into_iter().collect();
+        let mut seen = Vec::new();
+        while let Some(rel) = pending.pop() {
+            if seen.contains(&rel) {
+                continue;
+            }
+            seen.push(rel);
+            for &parent in &self.catalog[rel].parents {
+                if parent == target {
+                    return true;
+                }
+                pending.push(parent);
+            }
+        }
+        false
+    }
+
+    /// `get_ordering_op_properties` for the type's default sort operator:
+    /// the operator class's input type, such as text for varchar.
+    pub fn ordering_input_type(&self, t: TypeRef) -> TypeRef {
+        let catalog = self.catalog;
+        let base = self.base_type(t);
+        if catalog.btree_ordering(base).is_some() {
+            return base;
+        }
+        for &cast in catalog.casts_from(base) {
+            let c = &catalog[cast];
+            if c.method == pg_catalog::CastMethod::Binary
+                && c.context == pg_catalog::CastContext::Implicit
+                && catalog.btree_ordering(c.target).is_some()
+            {
+                return c.target;
+            }
+        }
+        base
+    }
+
+    /// `typeIsOfTypedTable`: `sub` is the row type of a typed table that
+    /// is OF `sup`.
+    pub fn type_is_of_typed_table(&self, sub: TypeRef, sup: TypeRef) -> bool {
+        match &self.catalog[sub].kind {
+            TypeKind::Composite(detail) => detail
+                .relation
+                .is_some_and(|rel| self.catalog[rel].of_type == Some(sup)),
+            _ => false,
+        }
+    }
+
+    /// `ISCOMPLEX`: a composite type, or a domain over one.
     pub fn is_complex(&self, t: TypeRef) -> bool {
-        matches!(self.catalog[t].kind, TypeKind::Composite(_))
+        matches!(self.catalog[self.base_type(t)].kind, TypeKind::Composite(_))
     }
 
     pub fn is_record(&self, t: TypeRef) -> bool {
@@ -218,6 +277,8 @@ impl<'c> Types<'c> {
                 self.btree_ordering(*element)?;
                 Builtin::Anyarray
             }
+            // record[] sorts with array_ops over record_cmp.
+            _ if self.is_record_array(base) => Builtin::Anyarray,
             TypeKind::Enum { .. } => Builtin::Anyenum,
             TypeKind::Range(r) => {
                 self.btree_ordering(r.subtype)?;

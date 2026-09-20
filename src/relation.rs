@@ -20,6 +20,9 @@ pub struct RangeTableEntry {
     pub colnames: Vec<String>,
     /// Byte offset of the table reference.
     pub location: usize,
+    /// The entry is read as a composite type, without system columns:
+    /// the `excluded` pseudo-relation of ON CONFLICT.
+    pub composite_only: bool,
 }
 
 impl RangeTableEntry {
@@ -27,7 +30,12 @@ impl RangeTableEntry {
     pub fn relation(&self) -> Option<Handle<Relation>> {
         match &self.kind {
             RteKind::Relation { relation, .. } => Some(*relation),
-            RteKind::Join { .. } => None,
+            RteKind::Join { .. }
+            | RteKind::Subquery { .. }
+            | RteKind::Function { .. }
+            | RteKind::Values { .. }
+            | RteKind::SetOperation { .. }
+            | RteKind::Cte { .. } => None,
         }
     }
 }
@@ -41,6 +49,43 @@ pub enum RteKind {
         relation: Handle<Relation>,
         /// `ONLY` was not written.
         inh: bool,
+    },
+    /// A reference to a WITH query.
+    Cte {
+        /// The WITH query's columns.
+        columns: Vec<CteColumn>,
+        /// The reference is the recursive one inside the query itself.
+        self_reference: bool,
+        /// The trailing SEARCH and CYCLE columns that `*` does not expand:
+        /// `p_dontexpand`, set for a reference from inside the query.
+        hidden: usize,
+    },
+    /// A `VALUES` list.
+    Values {
+        /// The type and typmod of each column.
+        columns: Vec<(TypeRef, Typmod)>,
+    },
+    /// The result of `UNION`, `INTERSECT` or `EXCEPT`, visible to its
+    /// `ORDER BY`.
+    SetOperation {
+        /// The type and typmod of each column.
+        columns: Vec<(TypeRef, Typmod)>,
+    },
+    /// One or more function calls in `FROM`.
+    Function {
+        /// The type and typmod of each output column.
+        columns: Vec<(TypeRef, Typmod)>,
+        /// The composite type a single function returns, which a whole-row
+        /// reference has.
+        row_type: Option<TypeRef>,
+    },
+    /// A subquery in `FROM`.
+    Subquery {
+        /// The non-junk target entries of the subquery, in order.
+        columns: Vec<crate::analysis::TargetEntry>,
+        /// What `CheckSelectLocking` refuses for a locking clause pushed
+        /// down into the subquery, if anything.
+        lock_refusal: Option<&'static str>,
     },
     /// The result of a `JOIN`.
     Join {
@@ -81,6 +126,10 @@ pub(crate) struct NamespaceItem {
     /// A `JOIN ... USING (...) AS name` alias: the name, and the number of
     /// leading columns of the join it exposes.
     pub using_alias: Option<(String, usize)>,
+    /// `p_lateral_only`: visible only to a `LATERAL` item.
+    pub lateral_only: bool,
+    /// `p_lateral_ok`: a `LATERAL` reference to it is allowed.
+    pub lateral_ok: bool,
 }
 
 impl NamespaceItem {
@@ -91,6 +140,8 @@ impl NamespaceItem {
             rel_visible: true,
             cols_visible: true,
             using_alias: None,
+            lateral_only: false,
+            lateral_ok: true,
         }
     }
 }
@@ -112,9 +163,52 @@ pub struct Var {
 }
 
 /// One query level's parse state.
+#[derive(Clone, Debug)]
 pub(crate) struct Scope {
     pub rtable: Vec<RangeTableEntry>,
     pub namespace: Vec<NamespaceItem>,
+    /// `p_lateral_active`: a `LATERAL` item of this level's FROM clause is
+    /// being transformed, so the items before it are visible.
+    pub lateral_active: bool,
+    /// `p_ctenamespace`: the WITH queries of this level.
+    pub ctes: Vec<CteEntry>,
+}
+
+/// One column of a WITH query.
+#[derive(Clone, Debug)]
+pub struct CteColumn {
+    /// The column name.
+    pub name: String,
+    /// The column type.
+    pub ty: TypeRef,
+    /// The column typmod.
+    pub typmod: Typmod,
+    /// The table column it comes from, when it does.
+    pub origin: Option<(Handle<Relation>, i16)>,
+    /// The fields of a `record` column whose row is known.
+    pub(crate) fields: Option<Vec<crate::analysis::RecordField>>,
+}
+
+/// `CommonTableExpr` as the namespace sees it.
+#[derive(Clone, Debug)]
+pub struct CteEntry {
+    /// The WITH query name.
+    pub name: String,
+    /// The columns, once known.
+    pub columns: Vec<CteColumn>,
+    /// The columns are known: after analysis, or for a recursive query
+    /// after its non-recursive term.
+    pub columns_known: bool,
+    /// The query is being analysed: a reference to it is a recursive one.
+    pub analysing: bool,
+    /// The query is INSERT, UPDATE, DELETE or MERGE.
+    pub modifying: bool,
+    /// A data-modifying query has a RETURNING list.
+    pub has_returning: bool,
+    /// Byte offset of the WITH query name.
+    pub location: usize,
+    /// The trailing SEARCH and CYCLE columns.
+    pub hidden: usize,
 }
 
 impl Scope {
@@ -122,12 +216,14 @@ impl Scope {
         Self {
             rtable: Vec::new(),
             namespace: Vec::new(),
+            lateral_active: false,
+            ctes: Vec::new(),
         }
     }
 }
 
 /// A system column, `SystemAttributeByName`.
-fn system_attribute(types: &Types<'_>, name: &str) -> Option<(i16, TypeRef)> {
+pub(crate) fn system_attribute(types: &Types<'_>, name: &str) -> Option<(i16, TypeRef)> {
     let (attnum, b) = match name {
         "ctid" => (-1, Builtin::Tid),
         "xmin" => (-2, Builtin::Xid),
@@ -233,6 +329,7 @@ impl<'c> Relations<'c> {
             eref_name,
             colnames,
             location,
+            composite_only: false,
         });
         Ok(scope.rtable.len())
     }
@@ -313,6 +410,7 @@ impl<'c> Relations<'c> {
             return Ok(result);
         }
         if let Some(relation) = rte.relation()
+            && !rte.composite_only
             && self.catalog()[relation].kind != RelationKind::View
             && let Some((attnum, _)) = system_attribute(&self.types, colname)
         {
@@ -331,12 +429,37 @@ impl<'c> Relations<'c> {
     ) -> Var {
         let catalog = self.catalog();
         let RteKind::Relation { relation, .. } = rte.kind else {
-            let RteKind::Join { columns, .. } = &rte.kind else {
-                unreachable!("relation handled above");
+            let index = usize::try_from(attnum - 1).expect("attnum >= 1");
+            return match &rte.kind {
+                RteKind::Join { columns, .. } => Var {
+                    levelsup,
+                    ..columns[index]
+                },
+                RteKind::Subquery { columns, .. } => Var {
+                    varno: rt_index,
+                    varattno: attnum,
+                    levelsup,
+                    ty: columns[index].ty,
+                    typmod: columns[index].typmod,
+                },
+                RteKind::Cte { columns, .. } => Var {
+                    varno: rt_index,
+                    varattno: attnum,
+                    levelsup,
+                    ty: columns[index].ty,
+                    typmod: columns[index].typmod,
+                },
+                RteKind::Function { columns, .. }
+                | RteKind::Values { columns }
+                | RteKind::SetOperation { columns } => Var {
+                    varno: rt_index,
+                    varattno: attnum,
+                    levelsup,
+                    ty: columns[index].0,
+                    typmod: columns[index].1,
+                },
+                RteKind::Relation { .. } => unreachable!("relation handled above"),
             };
-            let _ = rt_index;
-            let column = columns[usize::try_from(attnum - 1).expect("join attnum >= 1")];
-            return Var { levelsup, ..column };
         };
         let rel = &catalog[relation];
         if attnum > 0 {
@@ -397,42 +520,69 @@ impl<'c> Relations<'c> {
         Ok(Some(self.make_var(item.rt_index, rte, attnum, levelsup)))
     }
 
-    /// `colNameToVar` over one level (subqueries are out of scope).
+    /// `check_lateral_ref_ok`.
+    fn lateral_ref_ok(&self, scope: &Scope, item: &NamespaceItem, location: usize) -> Result<()> {
+        if item.lateral_only && !item.lateral_ok {
+            return Err(Diagnostic::new(
+                "42P10",
+                format!(
+                    "invalid reference to FROM-clause entry for table \"{}\"",
+                    self.item_name(scope, item)
+                ),
+            )
+            .detail("The combining JOIN type must be INNER or LEFT for a LATERAL reference.")
+            .at(location)
+            .into());
+        }
+        Ok(())
+    }
+
+    /// `colNameToVar`: the current level first, then each outer level.
     pub fn col_name_to_var(
         &self,
         scope: &Scope,
+        outer: &[Scope],
         colname: &str,
         location: usize,
     ) -> Result<Option<Var>> {
-        let mut result: Option<Var> = None;
-        for item in &scope.namespace {
-            if !item.cols_visible {
-                continue;
-            }
-            if let Some(var) = self.scan_ns_item_for_column(scope, item, 0, colname, location)? {
-                if result.is_some() {
-                    return Err(Diagnostic::new(
-                        "42702",
-                        format!("column reference \"{colname}\" is ambiguous"),
-                    )
-                    .at(location)
-                    .into());
+        for (levelsup, level) in std::iter::once(scope).chain(outer.iter().rev()).enumerate() {
+            let mut result: Option<Var> = None;
+            for item in &level.namespace {
+                if !item.cols_visible || (item.lateral_only && !level.lateral_active) {
+                    continue;
                 }
-                result = Some(var);
+                if let Some(var) =
+                    self.scan_ns_item_for_column(level, item, levelsup, colname, location)?
+                {
+                    if result.is_some() {
+                        return Err(Diagnostic::new(
+                            "42702",
+                            format!("column reference \"{colname}\" is ambiguous"),
+                        )
+                        .at(location)
+                        .into());
+                    }
+                    self.lateral_ref_ok(level, item, location)?;
+                    result = Some(var);
+                }
+            }
+            if result.is_some() {
+                return Ok(result);
             }
         }
-        Ok(result)
+        Ok(None)
     }
 
-    /// `refnameNamespaceItem` over one level.
-    pub fn refname_namespace_item<'s>(
+    /// `refnameNamespaceItem`: the item a table name means, with how many
+    /// levels up it lives.
+    pub fn refname_namespace_item(
         &self,
-        scope: &'s Scope,
+        scope: &Scope,
+        outer: &[Scope],
         schema: Option<&str>,
         refname: &str,
         location: usize,
-    ) -> Result<Option<&'s NamespaceItem>> {
-        let catalog = self.catalog();
+    ) -> Result<Option<(usize, NamespaceItem)>> {
         let relid = match schema {
             Some(schema) => {
                 let Some(r) = self.lookup(Some(schema), refname) else {
@@ -442,35 +592,46 @@ impl<'c> Relations<'c> {
             }
             None => None,
         };
-        let mut result: Option<&NamespaceItem> = None;
-        for item in &scope.namespace {
-            if !item.rel_visible {
-                continue;
-            }
-            let rte = &scope.rtable[item.rt_index - 1];
-            let matches = match relid {
-                Some(r) => item.using_alias.is_none() && rte.relation() == Some(r),
-                None => self.item_name(scope, item) == refname,
-            };
-            if matches {
-                if result.is_some() {
-                    return Err(Diagnostic::new(
-                        "42P09",
-                        format!("table reference \"{refname}\" is ambiguous"),
-                    )
-                    .at(location)
-                    .into());
+        for (levelsup, level) in std::iter::once(scope).chain(outer.iter().rev()).enumerate() {
+            let mut result: Option<&NamespaceItem> = None;
+            for item in &level.namespace {
+                if !item.rel_visible || (item.lateral_only && !level.lateral_active) {
+                    continue;
                 }
-                result = Some(item);
+                let rte = &level.rtable[item.rt_index - 1];
+                let matches = match relid {
+                    Some(r) => {
+                        item.using_alias.is_none()
+                            && rte.alias.is_none()
+                            && rte.relation() == Some(r)
+                    }
+                    None => self.item_name(level, item) == refname,
+                };
+                if matches {
+                    if result.is_some() {
+                        return Err(Diagnostic::new(
+                            "42P09",
+                            format!("table reference \"{refname}\" is ambiguous"),
+                        )
+                        .at(location)
+                        .into());
+                    }
+                    self.lateral_ref_ok(level, item, location)?;
+                    result = Some(item);
+                }
+            }
+            if let Some(item) = result {
+                return Ok(Some((levelsup, item.clone())));
             }
         }
-        Ok(result)
+        Ok(None)
     }
 
     /// `errorMissingRTE`.
     pub fn error_missing_rte(
         &self,
         scope: &Scope,
+        outer: &[Scope],
         schema: Option<&str>,
         relname: &str,
         location: usize,
@@ -478,9 +639,12 @@ impl<'c> Relations<'c> {
         // searchRangeTableForRel: an entry for the relation that is not
         // visible under this name.
         let relid = self.lookup(schema, relname);
-        let found = scope.rtable.iter().find(|rte| {
-            relid.is_some_and(|r| rte.relation() == Some(r)) || rte.eref_name == relname
-        });
+        let found = std::iter::once(scope)
+            .chain(outer.iter().rev())
+            .flat_map(|level| level.rtable.iter())
+            .find(|rte| {
+                relid.is_some_and(|r| rte.relation() == Some(r)) || rte.eref_name == relname
+            });
         match found {
             Some(rte) if rte.alias.is_some() && rte.eref_name != relname => Diagnostic::new(
                 "42P01",

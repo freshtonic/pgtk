@@ -22,6 +22,10 @@ the same question in the same terms. The verdict for a statement is one of:
 | Agree | Both accepted with the same descriptor, or both rejected with the same SQLSTATE, message and position. |
 | Disagree | Anything else. Written to `target/oracle/<file>.txt` with both answers. |
 
+A whole-row reference has a source table and no source column: the wire
+protocol sends column 0, which the client reads as none, and the Subject's
+answer says the same.
+
 The per-file counts are pinned in `baselines/oracle-postgresql-<major>.json`.
 The test fails when a run differs from the pinned counts in either direction,
 so an improvement is pinned on purpose with `PG_ANALYZE_UPDATE_BASELINE=1`.
@@ -79,8 +83,18 @@ Three details follow:
 - **Catalog reloads.** A statement that may change the catalog marks it
   dirty. The Catalog is reloaded lazily, before the next statement the
   Subject says it wants, on the same connection, so uncommitted DDL is seen
-  exactly as the Oracle sees it. The list of statement kinds that keep the
-  catalog is in `replay.rs`; anything not listed counts as DDL.
+  exactly as the Oracle sees it. A statement the Subject does not want, such
+  as a Utility Statement without a query, is still compared, against
+  whatever Catalog the session holds, so it costs no reload. The list of
+  statement kinds that keep the catalog is in `replay.rs`; anything not
+  listed counts as DDL.
+- **Known divergences.** A rejection the Oracle raises outside parse
+  analysis while the Subject analysed counts as a known divergence, not a
+  disagreement: data errors from input functions (classes 22, 54 and 55,
+  and 42602), domain checks folded at parse time (class 23), scanner-level
+  syntax (42601, 0A000), the rewriter's policy and view checks (42P17,
+  55000), and catalog lookups done by `reg*` input functions on unknown
+  literals. The rule is `compare` in `replay.rs`.
 - **Search path.** `current_schemas(false)` is read before every comparison,
   so `SET search_path` and `SET ROLE` need no tracking.
 - **Failed transactions.** PostgreSQL rejects everything after an error inside

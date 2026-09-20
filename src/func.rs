@@ -2,7 +2,7 @@
 //! call names, and with what argument types.
 
 use pg_catalog::{
-    Function, FunctionKind, Handle, PseudoType, QualifiedName, SearchPath, TypeCategory,
+    ArgMode, Function, FunctionKind, Handle, PseudoType, QualifiedName, SearchPath, TypeCategory,
 };
 
 use crate::coerce::Coercer;
@@ -38,6 +38,9 @@ pub(crate) struct Candidate<I: Copy> {
     pub args: Vec<TypeRef>,
     pub nvargs: usize,
     pub ndargs: usize,
+    /// For a call with named arguments: the parameter each call position
+    /// supplies, defaults last.
+    pub argnumbers: Option<Vec<usize>>,
 }
 
 /// `FuncDetailCode`.
@@ -62,6 +65,10 @@ pub(crate) struct FuncFound {
     pub vatype: Option<TypeRef>,
     /// Declared argument types, with defaults appended.
     pub declared: Vec<TypeRef>,
+    /// The types the default expressions of the unspecified parameters
+    /// have, in the order `declared` appends them: what `exprType` gives
+    /// `ParseFuncOrColumn` for `argdefaults`.
+    pub defaults: Vec<TypeRef>,
 }
 
 /// Function resolution over one Catalog and Search Path.
@@ -98,7 +105,7 @@ impl<'c> FuncResolver<'c> {
 
     /// The functions a name can mean, in the order `FuncnameGetCandidates`
     /// visits them: for an unqualified name, every schema on the path.
-    fn functions_named(
+    pub(crate) fn functions_named(
         &self,
         name: &ObjectName,
         location: usize,
@@ -121,13 +128,65 @@ impl<'c> FuncResolver<'c> {
         }
     }
 
-    /// `FuncnameGetCandidates` without named arguments.
+    /// `MatchNamedCall`: the parameter each call position supplies, when
+    /// the named arguments match the function's parameter names.
+    pub(crate) fn match_named_call(
+        proc: &Function,
+        nargs: usize,
+        argnames: &[String],
+        pronargs: usize,
+        include_out: bool,
+    ) -> Option<Vec<usize>> {
+        let numposargs = nargs - argnames.len();
+        let params: Vec<&pg_catalog::Argument> = if include_out {
+            proc.arguments
+                .iter()
+                .filter(|a| a.mode != ArgMode::Table)
+                .collect()
+        } else {
+            proc.input_arguments().collect()
+        };
+        let mut arggiven = vec![false; pronargs];
+        let mut argnumbers = Vec::with_capacity(pronargs);
+        for (ap, given) in arggiven.iter_mut().enumerate().take(numposargs) {
+            argnumbers.push(ap);
+            *given = true;
+        }
+        for argname in argnames {
+            let pp = params
+                .iter()
+                .position(|p| p.name.as_ref().is_some_and(|n| n.to_string() == *argname))?;
+            if arggiven[pp] {
+                return None;
+            }
+            arggiven[pp] = true;
+            argnumbers.push(pp);
+        }
+        if nargs < pronargs {
+            let first_arg_with_default = pronargs - usize::from(proc.default_count);
+            for (pp, given) in arggiven.iter().enumerate().skip(numposargs) {
+                if *given {
+                    continue;
+                }
+                if pp < first_arg_with_default {
+                    return None;
+                }
+                argnumbers.push(pp);
+            }
+        }
+        Some(argnumbers)
+    }
+
+    /// `FuncnameGetCandidates`. `argnames` names the last arguments of the
+    /// call, in order.
     pub fn funcname_get_candidates(
         &self,
         name: &ObjectName,
         nargs: usize,
+        argnames: &[String],
         expand_variadic: bool,
         expand_defaults: bool,
+        include_out: bool,
         location: usize,
     ) -> Result<Vec<Candidate<Handle<Function>>>> {
         let catalog = self.catalog();
@@ -136,29 +195,74 @@ impl<'c> FuncResolver<'c> {
         let mut any_special = false;
         for (func, pathpos) in self.functions_named(name, location)? {
             let proc = &catalog[func];
-            let proargtypes: Vec<TypeRef> = proc.input_arguments().map(|a| a.ty).collect();
-            let pronargs = proargtypes.len();
-            let (va_elem_type, variadic) = if pronargs <= nargs && expand_variadic {
-                let v = proc.variadic;
-                any_special |= v.is_some();
-                (v, v.is_some())
+            // A procedure's OUT arguments are part of its signature for CALL.
+            let proargtypes: Vec<TypeRef> = if include_out && proc.kind == FunctionKind::Procedure {
+                proc.arguments
+                    .iter()
+                    .filter(|a| a.mode != ArgMode::Table)
+                    .map(|a| a.ty)
+                    .collect()
             } else {
-                (None, false)
+                proc.input_arguments().map(|a| a.ty).collect()
             };
-            let use_defaults = if pronargs > nargs && expand_defaults {
-                if nargs + usize::from(proc.default_count) < pronargs {
+            let pronargs = proargtypes.len();
+            let mut argnumbers: Option<Vec<usize>> = None;
+            let (va_elem_type, variadic, use_defaults) = if !argnames.is_empty() {
+                // Named arguments: no variadic expansion, defaults allowed,
+                // and the names must match.
+                if proc.variadic.is_some() && expand_variadic {
                     continue;
                 }
+                let use_defaults = if pronargs > nargs && expand_defaults {
+                    if nargs + usize::from(proc.default_count) < pronargs {
+                        continue;
+                    }
+                    true
+                } else {
+                    false
+                };
+                if pronargs != nargs && !use_defaults {
+                    continue;
+                }
+                let Some(numbers) = Self::match_named_call(
+                    proc,
+                    nargs,
+                    argnames,
+                    pronargs,
+                    include_out && proc.kind == FunctionKind::Procedure,
+                ) else {
+                    continue;
+                };
+                argnumbers = Some(numbers);
                 any_special = true;
-                true
+                (None, false, use_defaults)
             } else {
-                false
+                let (va_elem_type, variadic) = if pronargs <= nargs && expand_variadic {
+                    let v = proc.variadic;
+                    any_special |= v.is_some();
+                    (v, v.is_some())
+                } else {
+                    (None, false)
+                };
+                let use_defaults = if pronargs > nargs && expand_defaults {
+                    if nargs + usize::from(proc.default_count) < pronargs {
+                        continue;
+                    }
+                    any_special = true;
+                    true
+                } else {
+                    false
+                };
+                if pronargs != nargs && !variadic && !use_defaults {
+                    continue;
+                }
+                (va_elem_type, variadic, use_defaults)
             };
-            if pronargs != nargs && !variadic && !use_defaults {
-                continue;
-            }
             let effective_nargs = pronargs.max(nargs);
-            let mut args = proargtypes.clone();
+            let mut args: Vec<TypeRef> = match &argnumbers {
+                Some(numbers) => numbers.iter().map(|&j| proargtypes[j]).collect(),
+                None => proargtypes.clone(),
+            };
             args.resize(
                 effective_nargs,
                 proargtypes.last().copied().unwrap_or(
@@ -183,6 +287,7 @@ impl<'c> FuncResolver<'c> {
                 args,
                 nvargs,
                 ndargs,
+                argnumbers,
             };
             if !result.is_empty() && (any_special || !explicit_schema) {
                 let cmp_nargs = candidate.args.len() - candidate.ndargs;
@@ -431,16 +536,25 @@ impl<'c> FuncResolver<'c> {
         &self,
         name: &ObjectName,
         fargs: &[Typed],
+        argnames: &[String],
         expand_variadic: bool,
         expand_defaults: bool,
+        include_out: bool,
         location: usize,
     ) -> Result<FuncFound> {
         let catalog = self.catalog();
         let types = &self.coercer.types;
         let argtypes: Vec<TypeRef> = fargs.iter().map(|a| a.ty).collect();
         let nargs = argtypes.len();
-        let raw =
-            self.funcname_get_candidates(name, nargs, expand_variadic, expand_defaults, location)?;
+        let raw = self.funcname_get_candidates(
+            name,
+            nargs,
+            argnames,
+            expand_variadic,
+            expand_defaults,
+            include_out,
+            location,
+        )?;
         let mut best = raw
             .iter()
             .find(|c| nargs == 0 || c.args[..nargs] == argtypes[..])
@@ -475,6 +589,7 @@ impl<'c> FuncResolver<'c> {
                         nvargs: 0,
                         vatype: None,
                         declared: vec![target],
+                        defaults: Vec::new(),
                     });
                 }
             }
@@ -494,6 +609,7 @@ impl<'c> FuncResolver<'c> {
                                 nvargs: 0,
                                 vatype: None,
                                 declared: Vec::new(),
+                                defaults: Vec::new(),
                             });
                         }
                     },
@@ -509,6 +625,7 @@ impl<'c> FuncResolver<'c> {
                 nvargs: 0,
                 vatype: None,
                 declared: Vec::new(),
+                defaults: Vec::new(),
             });
         };
         let Some(func) = best.id else {
@@ -520,8 +637,29 @@ impl<'c> FuncResolver<'c> {
                 nvargs: 0,
                 vatype: None,
                 declared: Vec::new(),
+                defaults: Vec::new(),
             });
         };
+        // A VARIADIC argument written with names must stay the last one.
+        if !argnames.is_empty()
+            && !expand_variadic
+            && nargs > 0
+            && best
+                .argnumbers
+                .as_ref()
+                .is_some_and(|n| n[nargs - 1] != nargs - 1)
+        {
+            return Ok(FuncFound {
+                detail: FuncDetail::NotFound,
+                func: None,
+                rettype: None,
+                retset: false,
+                nvargs: 0,
+                vatype: None,
+                declared: Vec::new(),
+                defaults: Vec::new(),
+            });
+        }
         let proc = &catalog[func];
         let detail = match proc.kind {
             FunctionKind::Aggregate => FuncDetail::Aggregate,
@@ -529,6 +667,14 @@ impl<'c> FuncResolver<'c> {
             FunctionKind::Procedure => FuncDetail::Procedure,
             FunctionKind::Window => FuncDetail::WindowFunc,
         };
+        // The defaults' own types, for the parameters the call left out.
+        let defaults: Vec<TypeRef> = (nargs..best.args.len())
+            .map(|i| {
+                let param = best.argnumbers.as_ref().map_or(i, |numbers| numbers[i]);
+                proc.default_type_of(param)
+                    .unwrap_or_else(|| self.default_actual_type(best.args[i]))
+            })
+            .collect();
         Ok(FuncFound {
             detail,
             func: Some(func),
@@ -537,14 +683,41 @@ impl<'c> FuncResolver<'c> {
             nvargs: best.nvargs,
             vatype: if best.nvargs > 0 { proc.variadic } else { None },
             declared: best.args,
+            defaults,
         })
     }
 
-    /// `func_signature_string`.
-    pub fn func_signature_string(&self, name: &ObjectName, argtypes: &[TypeRef]) -> String {
+    /// The type a defaulted argument contributes to polymorphism
+    /// resolution when the Catalog does not know its default expression:
+    /// a polymorphic parameter's default was stored unchanged, so it is
+    /// taken as an unknown-typed expression there.
+    fn default_actual_type(&self, declared: TypeRef) -> TypeRef {
+        let types = &self.coercer.types;
+        if types.is_polymorphic(declared) {
+            types.builtin(pg_catalog::Builtin::Unknown)
+        } else {
+            declared
+        }
+    }
+
+    /// `func_signature_string`: `argnames` names the last arguments.
+    pub fn func_signature_string(
+        &self,
+        name: &ObjectName,
+        argtypes: &[TypeRef],
+        argnames: &[String],
+    ) -> String {
+        let numposargs = argtypes.len().saturating_sub(argnames.len());
         let args = argtypes
             .iter()
-            .map(|&t| self.coercer.types.format(t))
+            .enumerate()
+            .map(|(i, &t)| {
+                let ty = self.coercer.types.format(t);
+                match argnames.get(i.wrapping_sub(numposargs)) {
+                    Some(n) if i >= numposargs => format!("{n} => {ty}"),
+                    _ => ty,
+                }
+            })
             .collect::<Vec<_>>()
             .join(", ");
         format!("{}({args})", name.display())
@@ -558,6 +731,7 @@ impl<'c> FuncResolver<'c> {
         &self,
         name: &ObjectName,
         fargs: &[Typed],
+        argnames: &[String],
         location: usize,
         projection: Option<Projection>,
         deco: Decoration,
@@ -572,7 +746,44 @@ impl<'c> FuncResolver<'c> {
             .into());
         }
         let argtypes: Vec<TypeRef> = fargs.iter().map(|a| a.ty).collect();
-        let found = self.func_get_detail(name, fargs, true, true, location)?;
+        let found = self.func_get_detail(
+            name,
+            fargs,
+            argnames,
+            !deco.variadic,
+            true,
+            deco.proc_call,
+            location,
+        )?;
+        if deco.proc_call {
+            match found.detail {
+                FuncDetail::Procedure | FuncDetail::Multiple => {}
+                FuncDetail::NotFound => {
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "procedure {} does not exist",
+                            self.func_signature_string(name, &argtypes, argnames)
+                        ),
+                    )
+                    .hint("No procedure matches the given name and argument types. You might need to add explicit type casts.")
+                    .at(location)
+                    .into());
+                }
+                _ => {
+                    return Err(Diagnostic::new(
+                        "42809",
+                        format!(
+                            "{} is not a procedure",
+                            self.func_signature_string(name, &argtypes, argnames)
+                        ),
+                    )
+                    .hint("To call a function, use SELECT.")
+                    .at(location)
+                    .into());
+                }
+            }
+        }
         let wrong = |what: &str| -> crate::diagnostic::AnalyzeError {
             Diagnostic::new("42809", what.to_owned())
                 .at(location)
@@ -650,18 +861,35 @@ impl<'c> FuncResolver<'c> {
                         "42883",
                         format!(
                             "function {} does not exist",
-                            self.func_signature_string(name, &argtypes)
+                            self.func_signature_string(name, &argtypes, argnames)
                         ),
                     )
                     .hint(hint)
                     .at(location)
                     .into());
                 }
-                if found.vatype.is_some()
-                    || detail.kind == pg_catalog::AggregateKind::HypotheticalSet
-                {
+                if detail.kind == pg_catalog::AggregateKind::HypotheticalSet {
+                    // The hypothetical direct arguments pair with the
+                    // ordering columns, one to one.
+                    let aggregated = deco.aggregated;
+                    if found.nvargs != 2 * aggregated {
+                        return Err(Diagnostic::new(
+                            "42883",
+                            format!(
+                                "function {} does not exist",
+                                self.func_signature_string(name, &argtypes, argnames)
+                            ),
+                        )
+                        .hint(format!(
+                            "To use the hypothetical-set aggregate {n}, the number of hypothetical direct arguments (here {}) must match the number of ordering columns (here {aggregated}).",
+                            found.nvargs.saturating_sub(aggregated)
+                        ))
+                        .at(location)
+                        .into());
+                    }
+                } else if found.vatype.is_some() {
                     return Err(unsupported(
-                        "variadic or hypothetical-set aggregate",
+                        "variadic ordered-set aggregate",
                         Some(location..location),
                     ));
                 }
@@ -671,10 +899,24 @@ impl<'c> FuncResolver<'c> {
                 )));
             }
             if deco.over {
-                return Err(unsupported(
-                    "window function call",
-                    Some(location..location),
-                ));
+                // An aggregate over a window: its arguments coerced like
+                // any aggregate's, checked by the caller as a window call.
+                let mut actual: Vec<TypeRef> = argtypes.clone();
+                let declared = found.declared.clone();
+                actual.extend(found.defaults.iter().copied());
+                let (rettype, declared) = self.coercer.enforce_generic_type_consistency(
+                    &actual,
+                    &declared,
+                    found.rettype.expect("aggregate"),
+                    false,
+                )?;
+                return Ok(ResolvedFunc::Window {
+                    func,
+                    rettype,
+                    retset: found.retset,
+                    declared,
+                    is_aggregate: true,
+                });
             }
             if fargs.is_empty() && !deco.star && !deco.within_group {
                 return Err(wrong(&format!(
@@ -688,9 +930,7 @@ impl<'c> FuncResolver<'c> {
             }
             let mut actual: Vec<TypeRef> = argtypes.clone();
             let declared = found.declared.clone();
-            for &d in &declared[actual.len()..] {
-                actual.push(d);
-            }
+            actual.extend(found.defaults.iter().copied());
             let (rettype, declared) = self.coercer.enforce_generic_type_consistency(
                 &actual,
                 &declared,
@@ -706,18 +946,19 @@ impl<'c> FuncResolver<'c> {
             });
         }
         match found.detail {
-            FuncDetail::Procedure => {
+            FuncDetail::Procedure if !deco.proc_call => {
                 return Err(Diagnostic::new(
                     "42809",
                     format!(
                         "{} is a procedure",
-                        self.func_signature_string(name, &argtypes)
+                        self.func_signature_string(name, &argtypes, argnames)
                     ),
                 )
                 .hint("To call a procedure, use CALL.")
                 .at(location)
                 .into());
             }
+            FuncDetail::Procedure => {}
             FuncDetail::Coercion => {
                 return Ok(ResolvedFunc::Coercion {
                     target: found.rettype.expect("coercion has a target"),
@@ -728,7 +969,7 @@ impl<'c> FuncResolver<'c> {
                     "42725",
                     format!(
                         "function {} is not unique",
-                        self.func_signature_string(name, &argtypes)
+                        self.func_signature_string(name, &argtypes, argnames)
                     ),
                 )
                 .hint("Could not choose a best candidate function. You might need to add explicit type casts.")
@@ -743,7 +984,7 @@ impl<'c> FuncResolver<'c> {
                     "42883",
                     format!(
                         "function {} does not exist",
-                        self.func_signature_string(name, &argtypes)
+                        self.func_signature_string(name, &argtypes, argnames)
                     ),
                 )
                 .hint("No function matches the given name and argument types. You might need to add explicit type casts.")
@@ -752,22 +993,65 @@ impl<'c> FuncResolver<'c> {
             }
             FuncDetail::Aggregate => unreachable!("handled above"),
             FuncDetail::WindowFunc => {
-                return Err(Diagnostic::new(
-                    "42809",
-                    format!("window function {} requires an OVER clause", name.display()),
-                )
-                .at(location)
-                .into());
+                if !deco.over {
+                    return Err(Diagnostic::new(
+                        "42809",
+                        format!("window function {} requires an OVER clause", name.display()),
+                    )
+                    .at(location)
+                    .into());
+                }
+                if deco.within_group {
+                    return Err(Diagnostic::new(
+                        "42809",
+                        format!(
+                            "window function {} cannot have WITHIN GROUP",
+                            name.display()
+                        ),
+                    )
+                    .at(location)
+                    .into());
+                }
+                let func = found.func.expect("window function");
+                let mut actual: Vec<TypeRef> = argtypes.clone();
+                let declared = found.declared.clone();
+                actual.extend(found.defaults.iter().copied());
+                let (rettype, declared) = self.coercer.enforce_generic_type_consistency(
+                    &actual,
+                    &declared,
+                    found.rettype.expect("window function"),
+                    false,
+                )?;
+                return Ok(ResolvedFunc::Window {
+                    func,
+                    rettype,
+                    retset: found.retset,
+                    declared,
+                    is_aggregate: false,
+                });
             }
             FuncDetail::Normal => {}
         }
         let func = found.func.expect("normal function");
+        if deco.variadic
+            && !fargs.is_empty()
+            && self.catalog()[func]
+                .variadic
+                .is_some_and(|v| matches!(types.pseudo(v), Some(PseudoType::Any)))
+        {
+            let last = &fargs[fargs.len() - 1];
+            if types.element_type(types.base_type(last.ty)).is_none() {
+                return Err(
+                    Diagnostic::new("42804", "VARIADIC argument must be an array")
+                        .at(last.location)
+                        .into(),
+                );
+            }
+        }
         // Defaults: their types are the declared types.
         let mut actual = argtypes.clone();
         let declared = found.declared.clone();
-        for &d in &declared[actual.len()..] {
-            actual.push(d);
-        }
+        actual.extend(found.defaults.iter().copied());
         let (rettype, declared) = self.coercer.enforce_generic_type_consistency(
             &actual,
             &declared,
@@ -820,6 +1104,11 @@ pub(crate) struct Decoration {
     /// Number of `WITHIN GROUP (ORDER BY ...)` expressions appended to the
     /// arguments, for ordered-set aggregates.
     pub aggregated: usize,
+    /// The `VARIADIC` keyword was written on the last argument.
+    pub variadic: bool,
+    /// The call is a CALL statement: a procedure is wanted, and its OUT
+    /// arguments count in the signature.
+    pub proc_call: bool,
 }
 
 /// A field of a composite value selected with function-call syntax,
@@ -834,6 +1123,16 @@ pub(crate) struct Projection {
 pub(crate) enum ResolvedFunc {
     /// A field of the composite argument, not a function at all.
     Projection(Projection),
+    /// A window function call: a window function, or an aggregate with
+    /// `OVER`. Arguments are coerced to their declared types.
+    Window {
+        func: Handle<Function>,
+        rettype: TypeRef,
+        retset: bool,
+        declared: Vec<TypeRef>,
+        /// The function is an aggregate used as a window function.
+        is_aggregate: bool,
+    },
     /// An aggregate: coerce each argument to its declared type; the direct
     /// arguments of an ordered-set aggregate come first.
     Aggregate {

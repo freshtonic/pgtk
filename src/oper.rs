@@ -109,6 +109,7 @@ impl<'c> FuncResolver<'c> {
                 args,
                 nvargs: 0,
                 ndargs: 0,
+                argnumbers: None,
             });
         }
         Ok(result)

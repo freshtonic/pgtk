@@ -64,6 +64,8 @@ pub struct ExprType {
 /// A function call resolved to a function, `FuncExpr`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FunctionResolution {
+    /// The call has an `OVER` clause: a window function call.
+    pub window: bool,
     /// The function called.
     pub function: Handle<Function>,
     /// The declared type each argument is coerced to, polymorphism resolved.
@@ -86,6 +88,19 @@ pub struct TargetEntry {
     pub origin: Option<(Handle<Relation>, i16)>,
     /// `resjunk`: not part of the result.
     pub junk: bool,
+    /// Byte offset of the expression, or of the `*` it was expanded from.
+    pub location: usize,
+    /// The fields of a `record` entry whose row is known.
+    pub(crate) fields: Option<Vec<RecordField>>,
+}
+
+/// One field of a `record` whose row is known: a row constructor, a
+/// whole-row reference to a table-less entry, or OUT parameters.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecordField {
+    pub(crate) name: String,
+    pub(crate) ty: TypeRef,
+    pub(crate) typmod: Typmod,
 }
 
 /// One result column, in the terms a Describe message uses.
@@ -111,13 +126,15 @@ pub struct ResultDescriptor {
 }
 
 /// Everything Analysis learned about one Statement, keyed by the flat AST's
-/// handles. `E` keys expressions, `S` select statements, `I` target items.
+/// handles. `E` keys expressions, `S` select statements, `I` target items,
+/// `F` function calls in `FROM`.
 #[derive(Clone, Debug)]
-pub struct Analysis<E, S, I>
+pub struct Analysis<E, S, I, F>
 where
     E: Hash + Eq + Copy,
     S: Hash + Eq + Copy,
     I: Hash + Eq + Copy,
+    F: Hash + Eq + Copy,
 {
     /// `exprType`/`exprTypmod` of every expression.
     pub expr_types: AnnotationTable<E, ExprType>,
@@ -129,6 +146,8 @@ where
     pub operators: AnnotationTable<E, Handle<Operator>>,
     /// Function calls resolved to `pg_proc` rows.
     pub functions: AnnotationTable<E, FunctionResolution>,
+    /// Function calls in `FROM` resolved to `pg_proc` rows.
+    pub from_functions: AnnotationTable<F, FunctionResolution>,
     /// `*` and `t.*` items expanded into target entries.
     pub star_expansions: AnnotationTable<I, Vec<TargetEntry>>,
     /// The range table of each query level.
@@ -142,11 +161,12 @@ where
     pub utility: bool,
 }
 
-impl<E, S, I> Default for Analysis<E, S, I>
+impl<E, S, I, F> Default for Analysis<E, S, I, F>
 where
     E: Hash + Eq + Copy,
     S: Hash + Eq + Copy,
     I: Hash + Eq + Copy,
+    F: Hash + Eq + Copy,
 {
     fn default() -> Self {
         Self {
@@ -155,6 +175,7 @@ where
             vars: AnnotationTable::default(),
             operators: AnnotationTable::default(),
             functions: AnnotationTable::default(),
+            from_functions: AnnotationTable::default(),
             star_expansions: AnnotationTable::default(),
             range_tables: AnnotationTable::default(),
             target_lists: AnnotationTable::default(),
