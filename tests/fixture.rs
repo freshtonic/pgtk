@@ -169,7 +169,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
         name: Name::new("widget"),
         schema,
         kind: RelationKind::Table,
-        row_type,
+        row_type: Some(row_type),
         columns: vec![Column {
             name: Name::new("id"),
             position: 1,

@@ -9,7 +9,9 @@ rest so that they are not re-decided.
 - Entities: Schema, Type, Relation, Column, Function (with optional Aggregate
   detail), Operator, Cast, Extension.
 - Relations: tables, views, materialized views, foreign tables, partitioned
-  tables. Not sequences, indexes, TOAST, or composite-backing classes.
+  tables, sequences. A sequence is a Relation with its three columns
+  (`last_value`, `log_cnt`, `is_called`), no row type, and no `pg_sequence`
+  detail. Not indexes, TOAST, or composite-backing classes.
 - Schemas: all except `pg_toast*` and `pg_temp*`; Entities inside those are
   skipped.
 - Server versions: 14 through 17, one binary, version detected at load.
@@ -39,7 +41,8 @@ rest so that they are not re-decided.
 
 ## Relations and Columns
 
-- Relation: kind, name, Schema, `row_type: Handle<Type>`, ordered Columns.
+- Relation: kind, name, Schema, `row_type: Option<Handle<Type>>` (`None` only
+  for a sequence, whose `reltype` is 0), ordered Columns.
 - Column: name, position, Type, Type Modifier, NOT NULL, has-default,
   generated, identity. Dropped attributes excluded. No default text.
 

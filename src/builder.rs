@@ -280,7 +280,7 @@ impl CatalogBuilder {
         }
         for entity in &self.relations {
             check(entity.schema, schemas, "schema")?;
-            check(entity.row_type, types, "type")?;
+            check_opt(entity.row_type, types, "type")?;
             check_opt(entity.extension, extensions, "extension")?;
             for column in &entity.columns {
                 check(column.ty, types, "type")?;
