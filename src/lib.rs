@@ -83,6 +83,7 @@ pub use relation::{Column, Relation, RelationKind};
 pub use schema::Schema;
 pub use search_path::SearchPath;
 pub use types::{
-    CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type, TypeCategory, TypeKind,
+    BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
+    TypeCategory, TypeKind,
 };
 pub use typmod::{IntervalFields, Typmod, TypmodDetail};

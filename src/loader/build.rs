@@ -37,7 +37,8 @@ use crate::operator::{Operator, OperatorKind};
 use crate::relation::{Column, Relation, RelationKind};
 use crate::schema::Schema;
 use crate::types::{
-    CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type, TypeCategory, TypeKind,
+    BtreeOperators, CompositeDetail, DomainDetail, Field, PseudoType, RangeDetail, Type,
+    TypeCategory, TypeKind,
 };
 use crate::typmod::Typmod;
 
@@ -520,6 +521,37 @@ fn cast_rows(rows: &Rows) -> Result<Vec<CastRow>, LoadError> {
     })
 }
 
+/// One row of [`QueryId::DefaultOperatorClasses`].
+#[derive(Debug, Clone)]
+struct OperatorClassRow {
+    /// The OID of the operator class.
+    oid: Oid,
+    /// The name of the operator class.
+    name: Name,
+    /// The name of the access method: `btree` or `hash`.
+    method: String,
+    /// The OID of the input type of the class.
+    intype: Oid,
+    /// The strategy number of the operator.
+    strategy: i16,
+    /// The OID of the operator.
+    operator: Oid,
+}
+
+/// Read [`QueryId::DefaultOperatorClasses`].
+fn operator_class_rows(rows: &Rows) -> Result<Vec<OperatorClassRow>, LoadError> {
+    read(rows, QueryId::DefaultOperatorClasses, |row| {
+        Ok(OperatorClassRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            method: row.text(2)?.to_owned(),
+            intype: row.oid(3)?,
+            strategy: row.i16(4)?,
+            operator: row.oid(5)?,
+        })
+    })
+}
+
 /// Every query, read into typed rows.
 struct Input {
     /// The name of the database.
@@ -550,6 +582,8 @@ struct Input {
     operators: Vec<OperatorRow>,
     /// Every cast.
     casts: Vec<CastRow>,
+    /// The operators of every default btree and hash operator class.
+    operator_classes: Vec<OperatorClassRow>,
 }
 
 impl Input {
@@ -570,6 +604,7 @@ impl Input {
             aggregates: aggregate_rows(rows_of(rows, QueryId::Aggregates)?)?,
             operators: operator_rows(rows_of(rows, QueryId::Operators)?)?,
             casts: cast_rows(rows_of(rows, QueryId::Casts)?)?,
+            operator_classes: operator_class_rows(rows_of(rows, QueryId::DefaultOperatorClasses)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -1043,6 +1078,8 @@ pub(crate) fn assemble(
             category: TypeCategory::from_char(row.category),
             is_preferred: row.is_preferred,
             is_collatable: row.collatable,
+            btree: None,
+            hash_equality: None,
             array: type_handles.get(&row.typarray).copied(),
             kind,
             extension: owner(MemberClass::Type, row.oid),
@@ -1076,7 +1113,7 @@ pub(crate) fn assemble(
     );
 
     // Step 9. Operators.
-    let operators = build_operators(
+    let (operators, operator_handles) = build_operators(
         &input,
         &schema_handles,
         &type_handles,
@@ -1094,6 +1131,16 @@ pub(crate) fn assemble(
             Err(diagnostic) => diagnostics.push(diagnostic),
         }
     }
+
+    // Step 10a. The operators of the default operator classes. The types
+    // are in handle order, so a handle is a position.
+    attach_operator_classes(
+        &input.operator_classes,
+        &type_handles,
+        &operator_handles,
+        &mut types,
+        &mut diagnostics,
+    );
 
     // Step 12. Push in handle order. Step 11, the extension of each entity,
     // is already in place, because the map of step 3 answered every push.
@@ -1490,7 +1537,7 @@ fn build_operators(
     functions: &HashMap<Oid, Handle<Function>>,
     members: &HashMap<(MemberClass, Oid), Handle<Extension>>,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Vec<Operator> {
+) -> (Vec<Operator>, HashMap<Oid, Handle<Operator>>) {
     let mut kept = KeptSet::all(input.operators.iter().map(|row| row.oid));
     for (index, row) in input.operators.iter().enumerate() {
         if let Some(diagnostic) = operator_note(row, schemas, types, functions) {
@@ -1540,7 +1587,88 @@ fn build_operators(
             extension: members.get(&(MemberClass::Operator, row.oid)).copied(),
         });
     }
-    operators
+    (operators, handles)
+}
+
+/// Give each type the operators of its default btree and hash operator
+/// classes.
+///
+/// A class goes away, with a note, when its input type or one of its
+/// operators is not in the catalog, and when a btree class does not have
+/// each of the five strategies. The first class in OID order stays when two
+/// classes are the default for one type and one access method.
+fn attach_operator_classes(
+    rows: &[OperatorClassRow],
+    type_handles: &HashMap<Oid, Handle<Type>>,
+    operator_handles: &HashMap<Oid, Handle<Operator>>,
+    types: &mut [Type],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let mut rows: Vec<&OperatorClassRow> = rows.iter().collect();
+    rows.sort_by_key(|row| (row.oid, row.strategy));
+
+    for class in rows.chunk_by(|a, b| a.oid == b.oid) {
+        let first = class[0];
+        let Some(ty) = type_handles.get(&first.intype) else {
+            diagnostics.push(missing(
+                EntityKind::OperatorClass,
+                first.oid,
+                &first.name,
+                EntityKind::Type,
+                first.intype,
+            ));
+            continue;
+        };
+
+        // The operator of each strategy. Position 0 is strategy 1.
+        let mut by_strategy: [Option<Handle<Operator>>; 5] = [None; 5];
+        let mut complete = true;
+        for row in class {
+            let Some(operator) = operator_handles.get(&row.operator) else {
+                diagnostics.push(missing(
+                    EntityKind::OperatorClass,
+                    row.oid,
+                    &row.name,
+                    EntityKind::Operator,
+                    row.operator,
+                ));
+                complete = false;
+                continue;
+            };
+            if let Some(slot) = usize::try_from(row.strategy - 1)
+                .ok()
+                .and_then(|index| by_strategy.get_mut(index))
+            {
+                *slot = Some(*operator);
+            }
+        }
+        if !complete {
+            continue;
+        }
+
+        let ty = &mut types[ty.index() as usize];
+        match first.method.as_str() {
+            "btree" => {
+                let [Some(lt), Some(le), Some(eq), Some(ge), Some(gt)] = by_strategy else {
+                    diagnostics.push(Diagnostic::Skipped {
+                        entity: EntityKind::OperatorClass,
+                        oid: first.oid,
+                        name: first.name.clone(),
+                        reason: SkipReason::IncompleteOperatorClass,
+                    });
+                    continue;
+                };
+                ty.btree
+                    .get_or_insert(BtreeOperators { lt, le, eq, ge, gt });
+            }
+            "hash" => {
+                if let Some(eq) = by_strategy[0] {
+                    ty.hash_equality.get_or_insert(eq);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Build one cast, or give the note that says why it went away.
@@ -2101,5 +2229,121 @@ mod tests {
         assert!(catalog[temporary].is_temporary);
         assert_eq!(catalog.temporary_schema(), Some(temporary));
         assert!(!catalog[catalog.schema_named("public").unwrap()].is_temporary);
+    }
+
+    /// The notes that name an operator class.
+    fn operator_class_notes(loaded: &Loaded) -> Vec<Diagnostic> {
+        loaded
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                matches!(
+                    diagnostic,
+                    Diagnostic::MissingReference {
+                        entity: EntityKind::OperatorClass,
+                        ..
+                    } | Diagnostic::Skipped {
+                        entity: EntityKind::OperatorClass,
+                        ..
+                    }
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn a_type_takes_the_operators_of_its_default_operator_classes() {
+        let mut rows = sample_rows();
+        // The sample has one operator, so it stands for each strategy. The
+        // rows are out of order, to show that the loader sorts them.
+        rows.insert(
+            QueryId::DefaultOperatorClasses,
+            vec![
+                row(&["70001", "bool_hash_ops", "hash", "16", "1", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "5", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "1", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "2", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "3", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "4", "50000"]),
+            ],
+        );
+        let loaded = load(rows);
+        assert_eq!(operator_class_notes(&loaded), Vec::new());
+
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let operator = catalog.operator_by_oid(Oid(50000)).unwrap();
+        let btree = catalog.btree_ordering(boolean).unwrap();
+        assert_eq!(
+            [btree.lt, btree.le, btree.eq, btree.ge, btree.gt],
+            [operator; 5]
+        );
+        assert_eq!(catalog.hash_equality(boolean), Some(operator));
+
+        // A type that no class names has neither.
+        let array = catalog.type_by_oid(Oid(1000)).unwrap();
+        assert_eq!(catalog.btree_ordering(array), None);
+        assert_eq!(catalog.hash_equality(array), None);
+    }
+
+    #[test]
+    fn a_btree_class_without_each_strategy_goes_with_a_note() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::DefaultOperatorClasses,
+            vec![
+                row(&["70000", "bool_ops", "btree", "16", "1", "50000"]),
+                row(&["70000", "bool_ops", "btree", "16", "3", "50000"]),
+            ],
+        );
+        let loaded = load(rows);
+        let boolean = loaded.catalog.type_by_oid(Oid(16)).unwrap();
+        assert_eq!(loaded.catalog.btree_ordering(boolean), None);
+        assert_eq!(
+            operator_class_notes(&loaded),
+            vec![Diagnostic::Skipped {
+                entity: EntityKind::OperatorClass,
+                oid: Oid(70000),
+                name: Name::new("bool_ops"),
+                reason: SkipReason::IncompleteOperatorClass,
+            }]
+        );
+    }
+
+    #[test]
+    fn an_operator_class_with_a_missing_reference_goes_with_a_note() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::DefaultOperatorClasses,
+            vec![
+                // The shell operator 50001 is not in the catalog.
+                row(&["70001", "bool_hash_ops", "hash", "16", "1", "50001"]),
+                // The type 99999 is not in the catalog.
+                row(&["70002", "ghost_ops", "hash", "99999", "1", "50000"]),
+            ],
+        );
+        let loaded = load(rows);
+        let boolean = loaded.catalog.type_by_oid(Oid(16)).unwrap();
+        assert_eq!(loaded.catalog.hash_equality(boolean), None);
+        assert_eq!(
+            operator_class_notes(&loaded),
+            vec![
+                Diagnostic::MissingReference {
+                    entity: EntityKind::OperatorClass,
+                    oid: Oid(70001),
+                    name: Name::new("bool_hash_ops"),
+                    referenced: EntityKind::Operator,
+                    referenced_oid: Oid(50001),
+                },
+                Diagnostic::MissingReference {
+                    entity: EntityKind::OperatorClass,
+                    oid: Oid(70002),
+                    name: Name::new("ghost_ops"),
+                    referenced: EntityKind::Type,
+                    referenced_oid: Oid(99999),
+                },
+            ]
+        );
     }
 }

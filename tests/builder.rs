@@ -1,10 +1,10 @@
 //! Build a small catalog by hand, then exercise every lookup.
 
 use pg_catalog::{
-    ArgMode, Argument, Builtin, Cast, CastContext, CastMethod, Catalog, CatalogBuilder, Column,
-    CompositeDetail, DomainDetail, Extension, Field, Function, FunctionKind, Handle, Metadata,
-    Name, Oid, Operator, OperatorKind, QualifiedName, Relation, RelationKind, Schema, SearchPath,
-    Type, TypeCategory, TypeKind, Typmod, Volatility,
+    ArgMode, Argument, BtreeOperators, Builtin, Cast, CastContext, CastMethod, Catalog,
+    CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, Function,
+    FunctionKind, Handle, Metadata, Name, Oid, Operator, OperatorKind, QualifiedName, Relation,
+    RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -57,6 +57,8 @@ fn base_type(oid: u32, name: &str, schema: Handle<Schema>, category: TypeCategor
         is_collatable: false,
         array: None,
         kind: TypeKind::Base,
+        btree: None,
+        hash_equality: None,
         extension: None,
     }
 }
@@ -764,6 +766,50 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
             (3, "is_called", boolean),
         ]
     );
+}
+
+#[test]
+fn a_type_answers_with_its_btree_operators_and_its_hash_equality() {
+    let (catalog, h) = small_catalog();
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+
+    // One comparison operator for `int4`, for each of the five symbols.
+    let boolean = builder.push_type(base_type(16, "bool", h.pg_catalog, TypeCategory::Boolean));
+    let mut comparison = |oid: u32, symbol: &str| {
+        builder.push_operator(Operator {
+            oid: Oid(oid),
+            name: Name::new(symbol),
+            schema: h.pg_catalog,
+            kind: OperatorKind::Infix,
+            left: Some(h.int4),
+            right: h.int4,
+            result: boolean,
+            function: h.catalog_f_int4,
+            commutator: None,
+            negator: None,
+            extension: None,
+        })
+    };
+    let btree = BtreeOperators {
+        lt: comparison(97, "<"),
+        le: comparison(523, "<="),
+        eq: comparison(96, "="),
+        ge: comparison(525, ">="),
+        gt: comparison(521, ">"),
+    };
+    builder.type_mut(h.int4).btree = Some(btree);
+    builder.type_mut(h.int4).hash_equality = Some(btree.eq);
+    let catalog = builder.finish().expect("the catalog builds");
+
+    assert_eq!(catalog.btree_ordering(h.int4), Some(btree));
+    assert_eq!(catalog.hash_equality(h.int4), Some(btree.eq));
+    assert_eq!(catalog[btree.lt].name, Name::new("<"));
+    assert_eq!(catalog[btree.gt].name, Name::new(">"));
+
+    // A type with no operator class, as `json` and `xml` are on a server.
+    assert_eq!(catalog.btree_ordering(h.text), None);
+    assert_eq!(catalog.hash_equality(h.text), None);
 }
 
 #[test]

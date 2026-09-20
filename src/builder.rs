@@ -261,6 +261,12 @@ impl CatalogBuilder {
             check(entity.schema, schemas, "schema")?;
             check_opt(entity.array, types, "type")?;
             check_opt(entity.extension, extensions, "extension")?;
+            if let Some(btree) = entity.btree {
+                for operator in [btree.lt, btree.le, btree.eq, btree.ge, btree.gt] {
+                    check(operator, operators, "operator")?;
+                }
+            }
+            check_opt(entity.hash_equality, operators, "operator")?;
             match &entity.kind {
                 TypeKind::Base | TypeKind::Enum { .. } | TypeKind::Pseudo(_) => {}
                 TypeKind::Array { element } => check(*element, types, "type")?,
@@ -402,6 +408,8 @@ mod tests {
             is_collatable: false,
             array: None,
             kind: TypeKind::Base,
+            btree: None,
+            hash_equality: None,
             extension: None,
         }
     }
@@ -433,6 +441,24 @@ mod tests {
             BuildError::DanglingHandle { entity, index, len } => {
                 assert_eq!(entity, "schema");
                 assert_eq!(index, 0);
+                assert_eq!(len, 0);
+            }
+            other => panic!("expected a dangling handle, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_dangling_operator_class_handle_fails_the_build() {
+        let mut builder = CatalogBuilder::new(Metadata::placeholder());
+        builder.permit_missing_builtins();
+        let pg_catalog = builder.push_schema(schema(11, "pg_catalog"));
+        let int4 = builder.push_type(base_type(23, "int4", pg_catalog));
+        builder.type_mut(int4).hash_equality = Some(Handle::new(7));
+        let error = builder.finish().unwrap_err();
+        match error {
+            BuildError::DanglingHandle { entity, index, len } => {
+                assert_eq!(entity, "operator");
+                assert_eq!(index, 7);
                 assert_eq!(len, 0);
             }
             other => panic!("expected a dangling handle, got {other:?}"),

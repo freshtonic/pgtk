@@ -135,8 +135,17 @@ is a kind of Function, not a separate Entity.
 **Operator**:
 A `pg_operator` row: a named symbol with zero-or-one left operand Type, one
 right operand Type, a result Type, and an implementing Function. Distinct from
-an operator class or operator family, which describe index behaviour and are
-out of scope.
+an operator class or operator family, which describe index behaviour. The
+model holds no operator class. It holds only the Sort Operators that a default
+operator class gives a Type.
+
+**Sort Operators**:
+The Operators that PostgreSQL uses to sort and to group values of one Type:
+the `<`, `<=`, `=`, `>=`, and `>` members of the Type's default btree operator
+class, and the `=` member of its default hash operator class. Each takes the
+Type on both sides. The lookup is for the exact Type; the rules for a Domain,
+a binary-coercible Type, and a container Type belong to the consumer. A Type
+without them, such as `json` or `xml`, cannot be sorted or grouped.
 _Avoid_: Op
 
 **Cast**:
@@ -170,7 +179,10 @@ lookups take one as an argument.
 
 These are deliberate exclusions, not omissions:
 
-- Operator classes and operator families (index behaviour, not typing).
+- Operator classes and operator families as Entities, all access methods other
+  than btree and hash, non-default operator classes, and cross-type members of
+  an operator family (such as `int4 < int8`). Only the Sort Operators of each
+  Type are in scope.
 - Collations. A Type keeps a collatable flag so collation checking can be
   added later without reshaping the model.
 - Indexes, constraints (other than counts on Domains), triggers, rules,

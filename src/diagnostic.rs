@@ -81,6 +81,8 @@ pub enum EntityKind {
     Operator,
     /// A cast.
     Cast,
+    /// A default operator class.
+    OperatorClass,
 }
 
 impl EntityKind {
@@ -95,6 +97,7 @@ impl EntityKind {
             EntityKind::Function => "function",
             EntityKind::Operator => "operator",
             EntityKind::Cast => "cast",
+            EntityKind::OperatorClass => "operator class",
         }
     }
 }
@@ -115,6 +118,9 @@ pub enum SkipReason {
     DependsOnSkipped,
     /// The `relkind` is one that this model does not keep.
     UnsupportedRelationKind(char),
+    /// A default btree operator class does not give its input type each of
+    /// the five comparison operators.
+    IncompleteOperatorClass,
 }
 
 impl fmt::Display for SkipReason {
@@ -124,6 +130,9 @@ impl fmt::Display for SkipReason {
             SkipReason::DependsOnSkipped => f.write_str("it depends on a skipped entity"),
             SkipReason::UnsupportedRelationKind(kind) => {
                 write!(f, "relkind {kind} is not supported")
+            }
+            SkipReason::IncompleteOperatorClass => {
+                f.write_str("it does not have each of the five btree operators")
             }
         }
     }

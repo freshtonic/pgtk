@@ -15,7 +15,7 @@ use crate::operator::Operator;
 use crate::relation::Relation;
 use crate::schema::Schema;
 use crate::search_path::SearchPath;
-use crate::types::Type;
+use crate::types::{BtreeOperators, Type};
 
 /// The version of the server that a catalog came from.
 ///
@@ -120,7 +120,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 1;
+    pub const FORMAT_VERSION: u32 = 2;
 
     /// Make a catalog and build its indexes.
     ///
@@ -483,6 +483,43 @@ impl Catalog {
         path.schemas()
             .iter()
             .filter(|schema| !self[**schema].is_temporary)
+    }
+
+    /// The comparison operators of the default btree operator class of a
+    /// type.
+    ///
+    /// PostgreSQL reads these operators to sort and to group: `ORDER BY`,
+    /// `GROUP BY`, `DISTINCT`, a set operation, and a window frame. The
+    /// operators are the members of the operator family of the class that
+    /// take the type on both sides. A cross-type member, such as
+    /// `int4 < int8`, is not here.
+    ///
+    /// The lookup is for the exact type only. It is `None` when no default
+    /// btree operator class names this type as its input type. PostgreSQL
+    /// looks further, and the consumer must do the same:
+    ///
+    /// - A domain uses the class of its base type.
+    /// - A type that is binary-coercible to the input type of a class uses
+    ///   that class. `varchar` uses the class of `text` in this way.
+    /// - An array, an enum, a range, a multirange, and a composite type use
+    ///   the class of `anyarray`, `anyenum`, `anyrange`, `anymultirange`,
+    ///   and `record`. Those pseudo-types have an answer here. For an array,
+    ///   a range, and a composite, PostgreSQL then also examines the element
+    ///   type, the subtype, or each column type.
+    pub fn btree_ordering(&self, ty: Handle<Type>) -> Option<BtreeOperators> {
+        self[ty].btree
+    }
+
+    /// The `=` operator of the default hash operator class of a type.
+    ///
+    /// PostgreSQL uses this operator to group by hashing. It also uses it as
+    /// the equality operator of a type that has no btree operator class,
+    /// such as `xid`.
+    ///
+    /// The lookup is for the exact type only, as for
+    /// [`btree_ordering`](Catalog::btree_ordering).
+    pub fn hash_equality(&self, ty: Handle<Type>) -> Option<Handle<Operator>> {
+        self[ty].hash_equality
     }
 
     /// The stored cast from one type to another, when the catalog holds one.
