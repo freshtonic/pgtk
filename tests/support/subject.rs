@@ -43,9 +43,10 @@ pub enum SubjectOutcome {
 ///
 /// It must be `Send` because each worker thread drives its own copy.
 pub trait Subject: Send {
-    /// Would `analyze` do anything but answer Unsupported for a statement of
-    /// this shape? The harness reloads the Catalog only before statements
-    /// the Subject wants, since a reload costs about a hundred milliseconds.
+    /// Does `analyze` read the Catalog for a statement of this shape? The
+    /// harness reloads the Catalog only before statements the Subject
+    /// wants, since a reload costs about a hundred milliseconds; the others
+    /// are analysed against whatever Catalog it has.
     fn wants(&self, shape: Shape) -> bool;
 
     /// Analyse `sql`, one statement without its terminator, as PostgreSQL

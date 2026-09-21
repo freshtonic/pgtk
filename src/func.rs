@@ -560,6 +560,7 @@ impl<'c> FuncResolver<'c> {
         fargs: &[Typed],
         location: usize,
         projection: Option<Projection>,
+        deco: Decoration,
     ) -> Result<ResolvedFunc> {
         let types = &self.coercer.types;
         if fargs.len() > 100 {
@@ -572,6 +573,138 @@ impl<'c> FuncResolver<'c> {
         }
         let argtypes: Vec<TypeRef> = fargs.iter().map(|a| a.ty).collect();
         let found = self.func_get_detail(name, fargs, true, true, location)?;
+        let wrong = |what: &str| -> crate::diagnostic::AnalyzeError {
+            Diagnostic::new("42809", what.to_owned())
+                .at(location)
+                .into()
+        };
+        if matches!(
+            found.detail,
+            FuncDetail::Normal | FuncDetail::Procedure | FuncDetail::Coercion
+        ) {
+            let n = name.display();
+            if deco.star {
+                return Err(wrong(&format!(
+                    "{n}(*) specified, but {n} is not an aggregate function"
+                )));
+            }
+            if deco.distinct {
+                return Err(wrong(&format!(
+                    "DISTINCT specified, but {n} is not an aggregate function"
+                )));
+            }
+            if deco.within_group {
+                return Err(wrong(&format!(
+                    "WITHIN GROUP specified, but {n} is not an aggregate function"
+                )));
+            }
+            if deco.order_by {
+                return Err(wrong(&format!(
+                    "ORDER BY specified, but {n} is not an aggregate function"
+                )));
+            }
+            if deco.filter {
+                return Err(wrong(&format!(
+                    "FILTER specified, but {n} is not an aggregate function"
+                )));
+            }
+            if deco.over {
+                return Err(wrong(&format!(
+                    "OVER specified, but {n} is not a window function nor an aggregate function"
+                )));
+            }
+        }
+        if found.detail == FuncDetail::Aggregate {
+            let func = found.func.expect("aggregate");
+            let proc = &self.catalog()[func];
+            let detail = proc.aggregate.as_ref().expect("aggregate detail");
+            let n = name.display();
+            let ordered_set = !matches!(detail.kind, pg_catalog::AggregateKind::Normal);
+            if ordered_set {
+                if !deco.within_group {
+                    return Err(wrong(&format!(
+                        "WITHIN GROUP is required for ordered-set aggregate {n}"
+                    )));
+                }
+                if deco.over {
+                    return Err(Diagnostic::new(
+                        "0A000",
+                        format!("OVER is not supported for ordered-set aggregate {n}"),
+                    )
+                    .at(location)
+                    .into());
+                }
+                let num_direct = fargs.len() - deco.aggregated;
+                let cat_direct = usize::from(detail.direct_args);
+                if found.vatype.is_none() && num_direct != cat_direct {
+                    let hint = if cat_direct == 1 {
+                        format!(
+                            "There is an ordered-set aggregate {n}, but it requires {cat_direct} direct argument, not {num_direct}."
+                        )
+                    } else {
+                        format!(
+                            "There is an ordered-set aggregate {n}, but it requires {cat_direct} direct arguments, not {num_direct}."
+                        )
+                    };
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "function {} does not exist",
+                            self.func_signature_string(name, &argtypes)
+                        ),
+                    )
+                    .hint(hint)
+                    .at(location)
+                    .into());
+                }
+                if found.vatype.is_some()
+                    || detail.kind == pg_catalog::AggregateKind::HypotheticalSet
+                {
+                    return Err(unsupported(
+                        "variadic or hypothetical-set aggregate",
+                        Some(location..location),
+                    ));
+                }
+            } else if deco.within_group {
+                return Err(wrong(&format!(
+                    "{n} is not an ordered-set aggregate, so it cannot have WITHIN GROUP"
+                )));
+            }
+            if deco.over {
+                return Err(unsupported(
+                    "window function call",
+                    Some(location..location),
+                ));
+            }
+            if fargs.is_empty() && !deco.star && !deco.within_group {
+                return Err(wrong(&format!(
+                    "{n}(*) must be used to call a parameterless aggregate function"
+                )));
+            }
+            if found.retset {
+                return Err(Diagnostic::new("42P13", "aggregates cannot return sets")
+                    .at(location)
+                    .into());
+            }
+            let mut actual: Vec<TypeRef> = argtypes.clone();
+            let declared = found.declared.clone();
+            for &d in &declared[actual.len()..] {
+                actual.push(d);
+            }
+            let (rettype, declared) = self.coercer.enforce_generic_type_consistency(
+                &actual,
+                &declared,
+                found.rettype.expect("aggregate"),
+                false,
+            )?;
+            return Ok(ResolvedFunc::Aggregate {
+                func,
+                rettype,
+                declared,
+                kind: detail.kind,
+                direct_args: fargs.len() - deco.aggregated,
+            });
+        }
         match found.detail {
             FuncDetail::Procedure => {
                 return Err(Diagnostic::new(
@@ -617,12 +750,7 @@ impl<'c> FuncResolver<'c> {
                 .at(location)
                 .into());
             }
-            FuncDetail::Aggregate => {
-                return Err(unsupported(
-                    "aggregate function call",
-                    Some(location..location),
-                ));
-            }
+            FuncDetail::Aggregate => unreachable!("handled above"),
             FuncDetail::WindowFunc => {
                 return Err(Diagnostic::new(
                     "42809",
@@ -679,6 +807,21 @@ impl<'c> FuncResolver<'c> {
     }
 }
 
+/// The decoration of a call as written: `f(*)`, `DISTINCT`, an argument
+/// `ORDER BY`, `WITHIN GROUP`, `FILTER` and `OVER`.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Decoration {
+    pub star: bool,
+    pub distinct: bool,
+    pub order_by: bool,
+    pub within_group: bool,
+    pub filter: bool,
+    pub over: bool,
+    /// Number of `WITHIN GROUP (ORDER BY ...)` expressions appended to the
+    /// arguments, for ordered-set aggregates.
+    pub aggregated: usize,
+}
+
 /// A field of a composite value selected with function-call syntax,
 /// `ParseComplexProjection`.
 #[derive(Clone, Copy, Debug)]
@@ -691,6 +834,15 @@ pub(crate) struct Projection {
 pub(crate) enum ResolvedFunc {
     /// A field of the composite argument, not a function at all.
     Projection(Projection),
+    /// An aggregate: coerce each argument to its declared type; the direct
+    /// arguments of an ordered-set aggregate come first.
+    Aggregate {
+        func: Handle<Function>,
+        rettype: TypeRef,
+        declared: Vec<TypeRef>,
+        kind: pg_catalog::AggregateKind,
+        direct_args: usize,
+    },
     /// A real function: coerce each argument to its declared type.
     Function {
         func: Handle<Function>,

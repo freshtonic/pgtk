@@ -137,6 +137,9 @@ where
     pub target_lists: AnnotationTable<S, Vec<TargetEntry>>,
     /// The Result Descriptor of the Statement.
     pub result: ResultDescriptor,
+    /// The Statement is a Utility Statement: nothing in it was analysed
+    /// and the Result Descriptor is empty.
+    pub utility: bool,
 }
 
 impl<E, S, I> Default for Analysis<E, S, I>
@@ -156,6 +159,7 @@ where
             range_tables: AnnotationTable::default(),
             target_lists: AnnotationTable::default(),
             result: ResultDescriptor::default(),
+            utility: false,
         }
     }
 }

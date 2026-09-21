@@ -9,8 +9,8 @@ use crate::types::{TypeRef, Types, Typmod};
 /// `RangeTblEntry`, for the kinds this slice knows.
 #[derive(Clone, Debug)]
 pub struct RangeTableEntry {
-    /// The relation, for a table, view, sequence or the like.
-    pub relation: Handle<Relation>,
+    /// What the entry is.
+    pub kind: RteKind,
     /// The alias the query gave, if any.
     pub alias: Option<String>,
     /// The name the entry answers to: the alias, or the relation name.
@@ -18,10 +18,57 @@ pub struct RangeTableEntry {
     /// Column names by attribute number, starting at attnum 1; an empty
     /// name is a dropped column.
     pub colnames: Vec<String>,
-    /// `ONLY` was not written.
-    pub inh: bool,
     /// Byte offset of the table reference.
     pub location: usize,
+}
+
+impl RangeTableEntry {
+    /// The relation, when the entry is one.
+    pub fn relation(&self) -> Option<Handle<Relation>> {
+        match &self.kind {
+            RteKind::Relation { relation, .. } => Some(*relation),
+            RteKind::Join { .. } => None,
+        }
+    }
+}
+
+/// The kinds of range table entry, `RTEKind`.
+#[derive(Clone, Debug)]
+pub enum RteKind {
+    /// A table, view, sequence or the like.
+    Relation {
+        /// The relation.
+        relation: Handle<Relation>,
+        /// `ONLY` was not written.
+        inh: bool,
+    },
+    /// The result of a `JOIN`.
+    Join {
+        /// The kind of join.
+        join_type: JoinType,
+        /// One `Var` per output column: the input column it passes through,
+        /// or a column of this entry for a merged `USING` column whose
+        /// value is computed.
+        columns: Vec<Var>,
+        /// For each output column that is a column of this entry, the input
+        /// columns its value is computed from; empty for the others. This
+        /// is what `flatten_join_alias_vars` expands the column to, less
+        /// the coercions.
+        inputs: Vec<Vec<Var>>,
+    },
+}
+
+/// `JoinType`, for the joins the grammar can write.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinType {
+    /// `INNER JOIN`, `JOIN`, `CROSS JOIN`.
+    Inner,
+    /// `LEFT [OUTER] JOIN`.
+    Left,
+    /// `RIGHT [OUTER] JOIN`.
+    Right,
+    /// `FULL [OUTER] JOIN`.
+    Full,
 }
 
 /// `ParseNamespaceItem`.
@@ -31,6 +78,21 @@ pub(crate) struct NamespaceItem {
     pub rt_index: usize,
     pub rel_visible: bool,
     pub cols_visible: bool,
+    /// A `JOIN ... USING (...) AS name` alias: the name, and the number of
+    /// leading columns of the join it exposes.
+    pub using_alias: Option<(String, usize)>,
+}
+
+impl NamespaceItem {
+    /// An item that exposes the whole entry under its own name.
+    pub fn plain(rt_index: usize) -> Self {
+        Self {
+            rt_index,
+            rel_visible: true,
+            cols_visible: true,
+            using_alias: None,
+        }
+    }
 }
 
 /// PostgreSQL's `Var`: which range table entry, which attribute.
@@ -166,30 +228,53 @@ impl<'c> Relations<'c> {
         }
         let _ = numaliases_used;
         scope.rtable.push(RangeTableEntry {
-            relation,
+            kind: RteKind::Relation { relation, inh },
             alias: alias.map(str::to_owned),
             eref_name,
             colnames,
-            inh,
             location,
         });
         Ok(scope.rtable.len())
     }
 
-    /// `checkNameSpaceConflicts` for one new item against the namespace.
-    pub fn check_namespace_conflicts(&self, scope: &Scope, new_index: usize) -> Result<()> {
-        let new = &scope.rtable[new_index - 1];
-        for item in &scope.namespace {
-            if !item.rel_visible {
+    /// The name a namespace item answers to.
+    pub fn item_name<'s>(&self, scope: &'s Scope, item: &'s NamespaceItem) -> &'s str {
+        match &item.using_alias {
+            Some((name, _)) => name,
+            None => &scope.rtable[item.rt_index - 1].eref_name,
+        }
+    }
+
+    /// `checkNameSpaceConflicts`: no two visible items of the two lists
+    /// may answer to the same name, except two unaliased references to
+    /// different relations.
+    pub fn check_namespace_conflicts(
+        &self,
+        scope: &Scope,
+        existing: &[NamespaceItem],
+        new: &[NamespaceItem],
+    ) -> Result<()> {
+        for a in existing {
+            if !a.rel_visible {
                 continue;
             }
-            let existing = &scope.rtable[item.rt_index - 1];
-            if existing.eref_name == new.eref_name {
-                // Two unaliased references to the same relation are allowed
-                // only when they are the same entry, which they never are here.
+            let name = self.item_name(scope, a);
+            let rte_a = &scope.rtable[a.rt_index - 1];
+            for b in new {
+                if !b.rel_visible || self.item_name(scope, b) != name {
+                    continue;
+                }
+                let rte_b = &scope.rtable[b.rt_index - 1];
+                if let (Some(ra), Some(rb)) = (rte_a.relation(), rte_b.relation())
+                    && rte_a.alias.is_none()
+                    && rte_b.alias.is_none()
+                    && ra != rb
+                {
+                    continue;
+                }
                 return Err(Diagnostic::new(
                     "42712",
-                    format!("table name \"{}\" specified more than once", new.eref_name),
+                    format!("table name \"{name}\" specified more than once"),
                 )
                 .into());
             }
@@ -204,9 +289,14 @@ impl<'c> Relations<'c> {
         rte: &RangeTableEntry,
         colname: &str,
         location: usize,
+        ncols: Option<usize>,
     ) -> Result<Option<i16>> {
         let mut result: Option<i16> = None;
-        for (i, name) in rte.colnames.iter().enumerate() {
+        let colnames = match ncols {
+            Some(n) => &rte.colnames[..n],
+            None => &rte.colnames[..],
+        };
+        for (i, name) in colnames.iter().enumerate() {
             if name == colname {
                 if result.is_some() {
                     return Err(Diagnostic::new(
@@ -219,11 +309,11 @@ impl<'c> Relations<'c> {
                 result = Some(i as i16 + 1);
             }
         }
-        if result.is_some() {
+        if result.is_some() || ncols.is_some() {
             return Ok(result);
         }
-        let kind = self.catalog()[rte.relation].kind;
-        if kind != RelationKind::View
+        if let Some(relation) = rte.relation()
+            && self.catalog()[relation].kind != RelationKind::View
             && let Some((attnum, _)) = system_attribute(&self.types, colname)
         {
             return Ok(Some(attnum));
@@ -240,7 +330,15 @@ impl<'c> Relations<'c> {
         levelsup: usize,
     ) -> Var {
         let catalog = self.catalog();
-        let rel = &catalog[rte.relation];
+        let RteKind::Relation { relation, .. } = rte.kind else {
+            let RteKind::Join { columns, .. } = &rte.kind else {
+                unreachable!("relation handled above");
+            };
+            let _ = rt_index;
+            let column = columns[usize::try_from(attnum - 1).expect("join attnum >= 1")];
+            return Var { levelsup, ..column };
+        };
+        let rel = &catalog[relation];
         if attnum > 0 {
             let column = rel
                 .columns
@@ -292,7 +390,8 @@ impl<'c> Relations<'c> {
         location: usize,
     ) -> Result<Option<Var>> {
         let rte = &scope.rtable[item.rt_index - 1];
-        let Some(attnum) = self.scan_rte_for_column(rte, colname, location)? else {
+        let ncols = item.using_alias.as_ref().map(|(_, n)| *n);
+        let Some(attnum) = self.scan_rte_for_column(rte, colname, location, ncols)? else {
             return Ok(None);
         };
         Ok(Some(self.make_var(item.rt_index, rte, attnum, levelsup)))
@@ -350,8 +449,8 @@ impl<'c> Relations<'c> {
             }
             let rte = &scope.rtable[item.rt_index - 1];
             let matches = match relid {
-                Some(r) => rte.relation == r,
-                None => rte.eref_name == refname,
+                Some(r) => item.using_alias.is_none() && rte.relation() == Some(r),
+                None => self.item_name(scope, item) == refname,
             };
             if matches {
                 if result.is_some() {
@@ -379,10 +478,9 @@ impl<'c> Relations<'c> {
         // searchRangeTableForRel: an entry for the relation that is not
         // visible under this name.
         let relid = self.lookup(schema, relname);
-        let found = scope
-            .rtable
-            .iter()
-            .find(|rte| relid.is_some_and(|r| rte.relation == r) || rte.eref_name == relname);
+        let found = scope.rtable.iter().find(|rte| {
+            relid.is_some_and(|r| rte.relation() == Some(r)) || rte.eref_name == relname
+        });
         match found {
             Some(rte) if rte.alias.is_some() && rte.eref_name != relname => Diagnostic::new(
                 "42P01",

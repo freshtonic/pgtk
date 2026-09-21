@@ -4,13 +4,14 @@
 use pg_catalog::{Builtin, Catalog};
 use pg_sql::FlatAst;
 use pg_sql::ast::FlatStatement;
+use pg_sql::ast::ddl::table::FlatCreateTableBody;
 use pg_sql::ast::dml::select::{
     FlatAlias, FlatColNameTableTail, FlatFromClause, FlatNamedTableRefTail, FlatPlainTableAlias,
     FlatSelectBody, FlatSelectHead, FlatSelectItem, FlatSelectStmt, FlatSelectTargets,
     FlatSimpleTableRef, FlatTableFunctionName, FlatWhereCondition,
 };
 use pg_sql::ast::dml::select::{
-    FlatLimitOffsetClause, FlatLimitingClause, FlatOrderByClause, FlatSortDir,
+    FlatGroupByItem, FlatLimitOffsetClause, FlatLimitingClause, FlatOrderByClause, FlatSortDir,
 };
 use pg_sql::ast::dml::values::{FlatSelectClause, FlatSimpleSelect};
 use pg_sql::ast::shared::expr::{
@@ -25,6 +26,7 @@ use pg_sql::ast::shared::expr::{
     FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign,
 };
 use pg_sql::ast::shared::names::FlatQualifiedOperatorName;
+use pg_sql::ast::utility::copy::FlatCopyBody;
 use pg_sql::tokens::FlatColId;
 use pg_sql::tokens::literal::FlatAliasName;
 use recursa::{Handle, List, List1, Span, Text};
@@ -34,13 +36,17 @@ use crate::analysis::{
 };
 use crate::coerce::Coercer;
 use crate::consts::{LiteralKind, make_const};
-use crate::diagnostic::{AnalyzeError, Diagnostic, Result, unsupported};
-use crate::func::{FuncResolver, ObjectName, Projection, ResolvedFunc};
-use crate::relation::{NamespaceItem, Relations, Scope};
+use crate::diagnostic::{AnalyzeError, Diagnostic, NO_LOCATION, Result, unsupported};
+use crate::func::{Decoration, FuncResolver, ObjectName, Projection, ResolvedFunc};
+use crate::relation::{JoinType, NamespaceItem, Relations, RteKind, Scope, Var};
 use crate::settings::Settings;
 use crate::typename::{TypeName, TypeNames, TypmodArg};
 use crate::types::{TypeRef, Types};
 use crate::value::{Coercion, CoercionContext, Form, Typed};
+use pg_sql::ast::dml::select::{
+    FlatJoinCondition, FlatJoinSuffix, FlatJoinType, FlatParenTableBody, FlatTableRef,
+    FlatUnqualifiedJoinKind,
+};
 
 /// The Analysis of one Statement, keyed by `pg-sql`'s flat handles.
 pub type FlatAnalysis = Analysis<Handle<FlatExpr>, Handle<FlatSelectStmt>, Handle<FlatSelectItem>>;
@@ -99,6 +105,10 @@ impl<'c> Analyzer<'c> {
             },
             settings: &self.settings,
             analysis: FlatAnalysis::default(),
+            expr_kind: ExprKind::SelectTarget,
+            in_agg_args: 0,
+            has_aggs: false,
+            agg_locations: Vec::new(),
         };
         *walker.resolver.coercer.params.borrow_mut() = declared_params.to_vec();
         match walker.statement() {
@@ -164,6 +174,86 @@ struct Walker<'a, 'input, 'c> {
     typenames: TypeNames<'c>,
     settings: &'a Settings,
     analysis: FlatAnalysis,
+    /// `p_expr_kind`: which clause is being transformed.
+    expr_kind: ExprKind,
+    /// Depth of aggregate argument lists being transformed, for the
+    /// nesting check.
+    in_agg_args: usize,
+    /// `p_hasAggs` of the query level being transformed.
+    has_aggs: bool,
+    /// Locations of the aggregates of the query level, in source order.
+    agg_locations: Vec<usize>,
+}
+
+/// `ParseExprKind`, with `ParseExprKindName`'s spelling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExprKind {
+    SelectTarget,
+    Where,
+    Having,
+    GroupBy,
+    OrderBy,
+    DistinctOn,
+    Limit,
+    Offset,
+    Filter,
+    JoinOn,
+    JoinUsing,
+}
+
+impl ExprKind {
+    fn name(self) -> &'static str {
+        match self {
+            Self::SelectTarget => "SELECT",
+            Self::Where => "WHERE",
+            Self::Having => "HAVING",
+            Self::GroupBy => "GROUP BY",
+            Self::OrderBy => "ORDER BY",
+            Self::DistinctOn => "DISTINCT ON",
+            Self::Limit => "LIMIT",
+            Self::Offset => "OFFSET",
+            Self::Filter => "FILTER",
+            Self::JoinOn => "JOIN/ON",
+            Self::JoinUsing => "JOIN/USING",
+        }
+    }
+
+    /// `check_srf_call_placement`: where a set-returning call is refused.
+    fn refuses_srf(self) -> bool {
+        matches!(
+            self,
+            Self::Where
+                | Self::Having
+                | Self::Filter
+                | Self::Limit
+                | Self::Offset
+                | Self::JoinOn
+                | Self::JoinUsing
+        )
+    }
+
+    /// `check_agglevels_and_constraints`: where an aggregate is refused.
+    fn refuses_aggregate(self) -> bool {
+        matches!(
+            self,
+            Self::Where
+                | Self::Filter
+                | Self::GroupBy
+                | Self::Limit
+                | Self::Offset
+                | Self::JoinOn
+                | Self::JoinUsing
+        )
+    }
+}
+
+/// One GROUP BY entry, for the ungrouped-column check.
+#[derive(Clone, Copy, Debug)]
+enum GroupEntry {
+    /// A plain column reference.
+    Var(crate::relation::Var),
+    /// Any other expression, compared structurally.
+    Expr(Handle<FlatExpr>),
 }
 
 /// How PostgreSQL's `FigureColname` names an expression: the name and its
@@ -316,8 +406,49 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 Ok(())
             }
             FlatStatement::With(_) => Err(unsupported("WITH", None)),
-            _ => Err(unsupported("utility statement", None)),
+            FlatStatement::Insert(_) => Err(unsupported("INSERT", None)),
+            FlatStatement::Update(_) => Err(unsupported("UPDATE", None)),
+            FlatStatement::Delete(_) => Err(unsupported("DELETE", None)),
+            FlatStatement::Merge(_) => Err(unsupported("MERGE", None)),
+            // transformStmt rewrites these at parse analysis.
+            FlatStatement::Explain(_) => Err(unsupported("EXPLAIN", None)),
+            FlatStatement::Declare(_) => Err(unsupported("DECLARE CURSOR", None)),
+            FlatStatement::Call(_) => Err(unsupported("CALL", None)),
+            FlatStatement::CreateMaterializedView(_) => {
+                Err(unsupported("CREATE MATERIALIZED VIEW", None))
+            }
+            FlatStatement::CreateTable(t) => match self.get(self.get(*t).body) {
+                FlatCreateTableBody::AsQuery(_) | FlatCreateTableBody::ColumnsAsQuery(_) => {
+                    Err(unsupported("CREATE TABLE AS", None))
+                }
+                _ => self.utility(),
+            },
+            // Describe answers these from session state.
+            FlatStatement::Execute(_) => Err(unsupported("EXECUTE", None)),
+            FlatStatement::Fetch(_) => Err(unsupported("FETCH", None)),
+            FlatStatement::Show(_) => Err(unsupported("SHOW", None)),
+            // Utility Statements with a query inside them, which Analysis
+            // resolves even though parse analysis does not.
+            FlatStatement::CreateView(_) => Err(unsupported("CREATE VIEW", None)),
+            FlatStatement::CreateRule(_) => Err(unsupported("CREATE RULE", None)),
+            FlatStatement::Prepare(_) => Err(unsupported("PREPARE", None)),
+            FlatStatement::Copy(c) => match self.get(self.get(*c).body) {
+                FlatCopyBody::Query(_) => Err(unsupported("COPY (query)", None)),
+                _ => self.utility(),
+            },
+            _ => self.utility(),
         }
+    }
+
+    /// A Utility Statement: parse analysis leaves it as it is, and a
+    /// Describe message answers with no columns.
+    fn utility(&mut self) -> Result<()> {
+        self.analysis.utility = true;
+        self.analysis.result = ResultDescriptor {
+            columns: Vec::new(),
+            params: self.finish_params()?,
+        };
+        Ok(())
     }
 
     /// `check_variable_parameters`.
@@ -347,19 +478,46 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         limit_offset: Option<Handle<FlatLimitOffsetClause>>,
     ) -> Result<Vec<TargetEntry>> {
         let stmt = self.get(handle);
-        if stmt.group_by.is_some() {
-            return Err(unsupported("GROUP BY", None));
-        }
-        if stmt.having.is_some() {
-            return Err(unsupported("HAVING", None));
-        }
         if stmt.window.is_some() {
             return Err(unsupported("WINDOW", None));
         }
         let mut scope = Scope::new();
+        let mut distinct = false;
+        let mut distinct_on: Option<Vec<Handle<FlatExpr>>> = None;
         let (items, from) = match stmt.head {
             None => (None, None),
             Some(head) => match self.get(head) {
+                FlatSelectHead::DistinctOn(d) => {
+                    let d = self.get(*d);
+                    distinct_on = Some(self.list(self.get(d.qualifier).exprs).to_vec());
+                    let list = self.get(d.targets);
+                    if list.into.is_some() {
+                        return Err(unsupported("SELECT INTO", None));
+                    }
+                    (Some(list.items), list.from_clause)
+                }
+                FlatSelectHead::Distinct(d) => {
+                    distinct = true;
+                    let list = self.get(self.get(*d).targets);
+                    if list.into.is_some() {
+                        return Err(unsupported("SELECT INTO", None));
+                    }
+                    (Some(list.items), list.from_clause)
+                }
+                FlatSelectHead::All(a) => match self.get(*a).targets {
+                    None => (None, None),
+                    Some(targets) => match self.get(targets) {
+                        FlatSelectTargets::Items(list) => {
+                            let list = self.get(*list);
+                            if list.into.is_some() {
+                                return Err(unsupported("SELECT INTO", None));
+                            }
+                            (Some(list.items), list.from_clause)
+                        }
+                        FlatSelectTargets::Empty(from) => (None, Some(*from)),
+                        FlatSelectTargets::Into(_) => return Err(unsupported("SELECT INTO", None)),
+                    },
+                },
                 FlatSelectHead::Plain(targets) => match self.get(*targets) {
                     FlatSelectTargets::Items(list) => {
                         let list = self.get(*list);
@@ -371,18 +529,27 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     FlatSelectTargets::Empty(from) => (None, Some(*from)),
                     FlatSelectTargets::Into(_) => return Err(unsupported("SELECT INTO", None)),
                 },
-                FlatSelectHead::Distinct(_) | FlatSelectHead::DistinctOn(_) => {
-                    return Err(unsupported("DISTINCT", None));
-                }
             },
         };
         if let Some(from) = from {
             self.from_clause(&mut scope, from)?;
         }
         let mut target_list = Vec::new();
+        let mut target_exprs: Vec<Option<Handle<FlatExpr>>> = Vec::new();
+        self.expr_kind = ExprKind::SelectTarget;
         if let Some(items) = items {
             for item in self.list1(items) {
+                let before = target_list.len();
                 self.target_item(&scope, *item, &mut target_list)?;
+                let expr = match self.get(*item) {
+                    FlatSelectItem::Expr(e) if target_list.len() == before + 1 => {
+                        Some(self.get(*e).expr)
+                    }
+                    _ => None,
+                };
+                target_exprs.resize(before, None);
+                target_exprs.push(expr);
+                target_exprs.resize(target_list.len(), None);
             }
         }
         // markTargetListOrigins happened as entries were made.
@@ -391,11 +558,24 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let FlatWhereCondition::Expr(expr) = self.get(clause.condition) else {
                 return Err(unsupported("WHERE CURRENT OF", None));
             };
+            self.expr_kind = ExprKind::Where;
             let typed = self.expr(&scope, *expr)?;
             let (_, steps) = self.coercer().coerce_to_boolean(&typed, "WHERE")?;
             self.record_coercions(*expr, steps);
         }
+        // HAVING, then the sort and group clauses, as transformSelectStmt orders them.
+        let mut having_expr = None;
+        if let Some(having) = stmt.having {
+            let expr = self.get(having).condition;
+            self.expr_kind = ExprKind::Having;
+            let typed = self.expr(&scope, expr)?;
+            let (_, steps) = self.coercer().coerce_to_boolean(&typed, "HAVING")?;
+            self.record_coercions(expr, steps);
+            having_expr = Some(expr);
+        }
         // transformSortClause, with the SQL92 rules.
+        let mut sort_refs: Vec<usize> = Vec::new();
+        self.expr_kind = ExprKind::OrderBy;
         if let Some(order_by) = order_by {
             let clause = self.get(order_by);
             for item in self.list1(clause.items) {
@@ -407,8 +587,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     &scope,
                     item.expr,
                     &mut target_list,
-                    "ORDER BY",
+                    &mut target_exprs,
+                    ExprKind::OrderBy,
                 )?;
+                sort_refs.push(index);
                 let entry = &mut target_list[index];
                 // addTargetToSortList: unknown becomes text, then the type
                 // must have an ordering operator.
@@ -437,6 +619,172 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
             }
         }
+        // transformGroupClause without grouping sets.
+        let mut group_entries: Vec<GroupEntry> = Vec::new();
+        let has_group_by = stmt.group_by.is_some();
+        if let Some(group_by) = stmt.group_by {
+            let clause = self.get(group_by);
+            if clause.modifier.is_some() {
+                return Err(unsupported("GROUP BY DISTINCT/ALL", None));
+            }
+            self.expr_kind = ExprKind::GroupBy;
+            for item in self.list1(clause.items) {
+                let expr = match self.get(*item) {
+                    FlatGroupByItem::Expr(e) => *e,
+                    FlatGroupByItem::GroupingSets(_)
+                    | FlatGroupByItem::Rollup(_)
+                    | FlatGroupByItem::Cube(_)
+                    | FlatGroupByItem::Empty(_) => {
+                        return Err(unsupported("grouping sets", None));
+                    }
+                };
+                let index = self.find_targetlist_entry_sql92(
+                    &scope,
+                    expr,
+                    &mut target_list,
+                    &mut target_exprs,
+                    ExprKind::GroupBy,
+                )?;
+                // addTargetToGroupList: unknown becomes text; an equality
+                // operator must exist.
+                let entry = &mut target_list[index];
+                if self.types().is_unknown(entry.ty) {
+                    entry.ty = self.types().builtin(Builtin::Text);
+                    entry.typmod = -1;
+                }
+                let ty = entry.ty;
+                if self.types().equality_operator(ty).is_none() {
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "could not identify an equality operator for type {}",
+                            self.types().format(ty)
+                        ),
+                    )
+                    .at(self.span(expr).start)
+                    .into());
+                }
+                let entry_expr = target_exprs[index];
+                let var = entry_expr.and_then(|e| self.plain_var(e));
+                group_entries.push(match var {
+                    Some(v) => GroupEntry::Var(v),
+                    None => GroupEntry::Expr(entry_expr.unwrap_or(expr)),
+                });
+            }
+        }
+        // transformDistinctOnClause.
+        if let Some(exprs) = distinct_on {
+            self.expr_kind = ExprKind::DistinctOn;
+            let mut refs: Vec<usize> = Vec::new();
+            for &expr in &exprs {
+                let index = self.find_targetlist_entry_sql92(
+                    &scope,
+                    expr,
+                    &mut target_list,
+                    &mut target_exprs,
+                    ExprKind::DistinctOn,
+                )?;
+                refs.push(index);
+            }
+            // ORDER BY items that are DISTINCT ON items lead the result;
+            // once one is skipped no more may follow.
+            let mut result: Vec<usize> = Vec::new();
+            let mut skipped = false;
+            for &sort in &sort_refs {
+                if let Some(pos) = refs.iter().position(|&r| r == sort) {
+                    if skipped {
+                        return Err(Diagnostic::new(
+                            "42P10",
+                            "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+                        )
+                        .at(self.span(exprs[pos]).start)
+                        .into());
+                    }
+                    if !result.contains(&sort) {
+                        result.push(sort);
+                    }
+                } else {
+                    skipped = true;
+                }
+            }
+            for (pos, &index) in refs.iter().enumerate() {
+                if result.contains(&index) {
+                    continue;
+                }
+                if skipped {
+                    return Err(Diagnostic::new(
+                        "42P10",
+                        "SELECT DISTINCT ON expressions must match initial ORDER BY expressions",
+                    )
+                    .at(self.span(exprs[pos]).start)
+                    .into());
+                }
+                // addTargetToGroupList
+                let entry = &mut target_list[index];
+                if self.types().is_unknown(entry.ty) {
+                    entry.ty = self.types().builtin(Builtin::Text);
+                    entry.typmod = -1;
+                }
+                let ty = entry.ty;
+                if self.types().equality_operator(ty).is_none() {
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "could not identify an equality operator for type {}",
+                            self.types().format(ty)
+                        ),
+                    )
+                    .at(self.span(exprs[pos]).start)
+                    .into());
+                }
+                result.push(index);
+            }
+        }
+        // transformDistinctClause.
+        if distinct {
+            for &index in &sort_refs {
+                if target_list[index].junk {
+                    let location = target_exprs[index].map_or(0, |e| self.span(e).start);
+                    return Err(Diagnostic::new(
+                        "42P10",
+                        "for SELECT DISTINCT, ORDER BY expressions must appear in select list",
+                    )
+                    .at(location)
+                    .into());
+                }
+            }
+            let mut any = false;
+            for (index, entry) in target_list.iter_mut().enumerate() {
+                if entry.junk {
+                    continue;
+                }
+                any = true;
+                if self.types().is_unknown(entry.ty) {
+                    entry.ty = self.types().builtin(Builtin::Text);
+                    entry.typmod = -1;
+                }
+                let ty = entry.ty;
+                if self.types().equality_operator(ty).is_none() {
+                    let location = target_exprs[index].map_or(0, |e| self.span(e).start);
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "could not identify an equality operator for type {}",
+                            self.types().format(ty)
+                        ),
+                    )
+                    .at(location)
+                    .into());
+                }
+            }
+            if !any {
+                return Err(Diagnostic::new(
+                    "42601",
+                    "SELECT DISTINCT must have at least one column",
+                )
+                .into());
+            }
+        }
         // transformLimitClause for LIMIT and OFFSET.
         if let Some(lo) = limit_offset {
             let (limit, offset) = match self.get(lo) {
@@ -453,6 +801,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 match self.get(limit) {
                     FlatLimitingClause::Limit(l) => {
                         let count = self.get(*l).count;
+                        self.expr_kind = ExprKind::Limit;
                         self.limit_expr(&scope, count, "LIMIT")?;
                     }
                     FlatLimitingClause::FetchFirst(_) => {
@@ -462,7 +811,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             if let Some(offset) = offset {
                 let count = self.get(offset).count;
+                self.expr_kind = ExprKind::Offset;
                 self.limit_expr(&scope, count, "OFFSET")?;
+            }
+        }
+        // parseCheckAggregates
+        if self.has_aggs || has_group_by || having_expr.is_some() {
+            let mut checked: Vec<Handle<FlatExpr>> =
+                target_exprs.iter().flatten().copied().collect();
+            checked.extend(having_expr);
+            for expr in checked {
+                self.check_ungrouped(&scope, expr, &group_entries)?;
             }
         }
         // resolveTargetListUnknowns
@@ -565,16 +924,26 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         scope: &Scope,
         expr: Handle<FlatExpr>,
         target_list: &mut Vec<TargetEntry>,
-        construct: &str,
+        target_exprs: &mut Vec<Option<Handle<FlatExpr>>>,
+        kind: ExprKind,
     ) -> Result<usize> {
+        let construct = kind.name();
         let location = self.span(expr).start;
         if let FlatExpr::ColumnRef(c) = self.get(expr) {
             let c = self.get(*c);
             if self.list(c.subscripts).is_empty() {
                 let (name, _) = self.col_id(c.name)?;
+                // In GROUP BY a name that is a column of the FROM clause is
+                // not matched against output names.
+                let is_column = kind == ExprKind::GroupBy
+                    && self
+                        .relations
+                        .col_name_to_var(scope, &name, location)?
+                        .is_some();
                 let mut found: Option<usize> = None;
+                let _ = is_column;
                 for (i, entry) in target_list.iter().enumerate() {
-                    if !entry.junk && entry.name == name {
+                    if !is_column && !entry.junk && entry.name == name {
                         if found.is_some() {
                             // Two output columns with the name: ambiguous
                             // unless the expressions are equal, which
@@ -620,9 +989,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     .into(),
             );
         }
-        // findTargetlistEntrySQL99: an expression. Matching an existing
-        // entry needs structural equality; a new resjunk entry is added.
+        // findTargetlistEntrySQL99: an expression. An existing entry that
+        // equals it (implicit coercions stripped) is reused; otherwise a
+        // resjunk entry is added.
         let typed = self.expr(scope, expr)?;
+        for (i, e) in target_exprs.iter().enumerate() {
+            if let Some(e) = e
+                && self.expr_equal(*e, expr)
+            {
+                return Ok(i);
+            }
+        }
         target_list.push(TargetEntry {
             name: String::new(),
             ty: typed.ty,
@@ -630,23 +1007,664 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             origin: None,
             junk: true,
         });
+        target_exprs.push(Some(expr));
         Ok(target_list.len() - 1)
+    }
+
+    /// The `Var` an expression is, looking through parentheses, when it is
+    /// a bare column reference.
+    fn plain_var(&self, expr: Handle<FlatExpr>) -> Option<crate::relation::Var> {
+        if let Some(v) = self.analysis.vars.get(expr) {
+            return Some(*v);
+        }
+        if let FlatExpr::Parenthesized(p) = self.get(expr) {
+            let p = self.get(*p);
+            if self.list(p.indirection).is_empty()
+                && let FlatParenContent::Exprs(list) = self.get(p.content)
+            {
+                let exprs = self.list1(*list);
+                if exprs.len() == 1 {
+                    return self.plain_var(exprs[0]);
+                }
+            }
+        }
+        None
+    }
+
+    /// `equal()` over two analysed expressions: the same resolution and the
+    /// same structure. Parentheses are transparent, as `gram.y` keeps no
+    /// node for them.
+    fn expr_equal(&self, a: Handle<FlatExpr>, b: Handle<FlatExpr>) -> bool {
+        let a = self.unparen(a);
+        let b = self.unparen(b);
+        if a == b {
+            return true;
+        }
+        match (self.get(a), self.get(b)) {
+            (
+                FlatExpr::ColumnRef(_) | FlatExpr::QualRef(_),
+                FlatExpr::ColumnRef(_) | FlatExpr::QualRef(_),
+            ) => match (self.analysis.vars.get(a), self.analysis.vars.get(b)) {
+                (Some(x), Some(y)) => x == y,
+                _ => false,
+            },
+            (FlatExpr::IntegerLit(x), FlatExpr::IntegerLit(y)) => self.text(*x) == self.text(*y),
+            (FlatExpr::NumericLit(x), FlatExpr::NumericLit(y)) => self.text(*x) == self.text(*y),
+            (FlatExpr::StringLit(x), FlatExpr::StringLit(y)) => {
+                self.source[self.span(*x)] == self.source[self.span(*y)]
+            }
+            (FlatExpr::BoolTrue, FlatExpr::BoolTrue)
+            | (FlatExpr::BoolFalse, FlatExpr::BoolFalse)
+            | (FlatExpr::Null, FlatExpr::Null) => true,
+            (FlatExpr::Func(_), FlatExpr::Func(_)) => {
+                let same_function = match (
+                    self.analysis.functions.get(a),
+                    self.analysis.functions.get(b),
+                ) {
+                    (Some(x), Some(y)) => x.function == y.function,
+                    _ => false,
+                };
+                same_function && self.children_equal(a, b)
+            }
+            _ => {
+                let same_variant =
+                    std::mem::discriminant(self.get(a)) == std::mem::discriminant(self.get(b));
+                let same_operator = match (
+                    self.analysis.operators.get(a),
+                    self.analysis.operators.get(b),
+                ) {
+                    (Some(x), Some(y)) => x == y,
+                    (None, None) => true,
+                    _ => false,
+                };
+                let same_type = self.analysis.expr_types.get(a) == self.analysis.expr_types.get(b);
+                same_variant && same_operator && same_type && self.children_equal(a, b)
+            }
+        }
+    }
+
+    /// Whether two expressions of the same variant have pairwise equal
+    /// child expressions, found through their spans in source order.
+    fn children_equal(&self, a: Handle<FlatExpr>, b: Handle<FlatExpr>) -> bool {
+        let ca = self.child_exprs(a);
+        let cb = self.child_exprs(b);
+        if ca.len() != cb.len() {
+            return false;
+        }
+        // Non-expression content (operator spelling, a cast's type name)
+        // must match textually once child expressions are blanked.
+        let ta = self.skeleton(a, &ca);
+        let tb = self.skeleton(b, &cb);
+        if ta != tb {
+            return false;
+        }
+        ca.iter().zip(&cb).all(|(&x, &y)| self.expr_equal(x, y))
+    }
+
+    /// The direct child expressions of an expression, in source order: the
+    /// analysed expressions whose spans lie inside it and inside no other
+    /// analysed descendant.
+    fn child_exprs(&self, e: Handle<FlatExpr>) -> Vec<Handle<FlatExpr>> {
+        let span = self.span(e);
+        let mut inside: Vec<(std::ops::Range<usize>, Handle<FlatExpr>)> = self
+            .analysis
+            .expr_types
+            .iter()
+            .map(|(h, _)| (self.span(h), h))
+            .filter(|(s, h)| {
+                *h != e
+                    && s.start >= span.start
+                    && s.end <= span.end
+                    && !(s.start == span.start && s.end == span.end)
+            })
+            .collect();
+        inside.sort_by_key(|(s, _)| (s.start, std::cmp::Reverse(s.end)));
+        let mut out: Vec<(std::ops::Range<usize>, Handle<FlatExpr>)> = Vec::new();
+        for (s, h) in inside {
+            if out
+                .last()
+                .is_some_and(|(last, _)| s.start >= last.start && s.end <= last.end)
+            {
+                continue;
+            }
+            out.push((s, h));
+        }
+        out.into_iter().map(|(_, h)| h).collect()
+    }
+
+    /// The source text of an expression with its child expressions blanked
+    /// and whitespace collapsed.
+    fn skeleton(&self, e: Handle<FlatExpr>, children: &[Handle<FlatExpr>]) -> String {
+        let span = self.span(e);
+        let mut text = String::new();
+        let mut pos = span.start;
+        for &c in children {
+            let cs = self.span(c);
+            text.push_str(&self.source[pos..cs.start]);
+            text.push('\u{0}');
+            pos = cs.end;
+        }
+        text.push_str(&self.source[pos..span.end]);
+        text.split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_ascii_lowercase()
+    }
+
+    fn unparen(&self, mut e: Handle<FlatExpr>) -> Handle<FlatExpr> {
+        loop {
+            let FlatExpr::Parenthesized(p) = self.get(e) else {
+                return e;
+            };
+            let p = self.get(*p);
+            if !self.list(p.indirection).is_empty() {
+                return e;
+            }
+            match self.get(p.content) {
+                FlatParenContent::Exprs(list) if self.list1(*list).len() == 1 => {
+                    e = self.list1(*list)[0]
+                }
+                _ => return e,
+            }
+        }
+    }
+
+    /// `check_ungrouped_columns_walker` at a `Var`. A merged column of a
+    /// join stands for the input columns it is computed from, as
+    /// `flatten_join_alias_vars` expands it before the check; those carry
+    /// no location.
+    fn check_ungrouped_var(
+        &self,
+        scope: &Scope,
+        var: Var,
+        groups: &[GroupEntry],
+        location: usize,
+    ) -> Result<()> {
+        if var.levelsup != 0 {
+            return Ok(());
+        }
+        let grouped = groups.iter().any(
+            |g| matches!(g, GroupEntry::Var(gv) if gv.varno == var.varno && gv.varattno == var.varattno),
+        );
+        if grouped {
+            return Ok(());
+        }
+        let rte = &scope.rtable[var.varno - 1];
+        if let RteKind::Join { inputs, .. } = &rte.kind {
+            let inputs = &inputs[usize::try_from(var.varattno - 1).expect("join attnum")];
+            for input in inputs {
+                self.check_ungrouped_var(scope, *input, groups, NO_LOCATION)?;
+            }
+            return Ok(());
+        }
+        // check_functional_grouping: every column of a non-deferrable
+        // primary key of the same range table entry is grouped.
+        let key = rte
+            .relation()
+            .and_then(|r| self.catalog()[r].primary_key.as_ref())
+            .and_then(pg_catalog::PrimaryKey::grouping_columns);
+        if let Some(key) = key
+            && !key.is_empty()
+            && key.iter().all(|&k| {
+                groups.iter().any(|g| {
+                    matches!(g, GroupEntry::Var(gv) if gv.varno == var.varno && gv.varattno == k)
+                })
+            })
+        {
+            return Ok(());
+        }
+        let attname = if var.varattno > 0 {
+            rte.colnames[usize::try_from(var.varattno - 1).expect("attnum")].clone()
+        } else {
+            match var.varattno {
+                -1 => "ctid",
+                -2 => "xmin",
+                -3 => "cmin",
+                -4 => "xmax",
+                -5 => "cmax",
+                _ => "tableoid",
+            }
+            .to_owned()
+        };
+        Err(Diagnostic::new(
+            "42803",
+            format!(
+                "column \"{}.{}\" must appear in the GROUP BY clause or be used in an aggregate function",
+                rte.eref_name, attname
+            ),
+        )
+        .at(location)
+        .into())
+    }
+
+    /// `check_ungrouped_columns` over one expression: every column
+    /// reference must be grouped, be inside an aggregate, or be part of an
+    /// expression equal to a GROUP BY expression.
+    fn check_ungrouped(
+        &self,
+        scope: &Scope,
+        expr: Handle<FlatExpr>,
+        groups: &[GroupEntry],
+    ) -> Result<()> {
+        let have_non_var = groups.iter().any(|g| matches!(g, GroupEntry::Expr(_)));
+        if have_non_var {
+            for g in groups {
+                if let GroupEntry::Expr(ge) = g
+                    && self.expr_equal(*ge, expr)
+                {
+                    return Ok(());
+                }
+            }
+        }
+        if let Some(var) = self.analysis.vars.get(expr) {
+            return self.check_ungrouped_var(scope, *var, groups, self.span(expr).start);
+        }
+        // An aggregate's arguments are not checked (only direct arguments
+        // of ordered-set aggregates would be).
+        if self
+            .analysis
+            .functions
+            .get(expr)
+            .is_some_and(|f| self.catalog()[f.function].aggregate.is_some())
+        {
+            return Ok(());
+        }
+        for child in self.child_exprs(expr) {
+            self.check_ungrouped(scope, child, groups)?;
+        }
+        Ok(())
     }
 
     // ----- FROM -----
 
+    /// `transformFromClause`.
     fn from_clause(&mut self, scope: &mut Scope, from: Handle<FlatFromClause>) -> Result<()> {
         let from = self.get(from);
         for table in self.list1(from.tables) {
-            let table_ref = self.get(*table);
-            if table_ref.tablesample.is_some() {
-                return Err(unsupported("TABLESAMPLE", None));
+            let (_, items) = self.table_ref(scope, *table, None)?;
+            self.relations
+                .check_namespace_conflicts(scope, &scope.namespace, &items)?;
+            scope.namespace.extend(items);
+        }
+        Ok(())
+    }
+
+    /// `transformFromClauseItem` for a table reference with its chain of
+    /// joins. `alias` is the alias of the parentheses around the chain,
+    /// which the grammar hangs on the last join.
+    fn table_ref(
+        &mut self,
+        scope: &mut Scope,
+        handle: Handle<FlatTableRef>,
+        alias: Option<Handle<FlatPlainTableAlias>>,
+    ) -> Result<(NamespaceItem, Vec<NamespaceItem>)> {
+        let table_ref = self.get(handle);
+        if table_ref.tablesample.is_some() {
+            return Err(unsupported("TABLESAMPLE", None));
+        }
+        let location = self.span(handle).start;
+        let mut current = self.simple_table_ref(scope, table_ref.base, location)?;
+        let joins = self.list(table_ref.joins);
+        if joins.is_empty() && alias.is_some() {
+            return Err(unsupported(
+                "alias on a parenthesized table reference",
+                Some(location..location),
+            ));
+        }
+        for (i, join) in joins.iter().enumerate() {
+            let join_alias = if i + 1 == joins.len() { alias } else { None };
+            let join_location = self.span(*join).start;
+            match self.get(*join) {
+                FlatJoinSuffix::Unqualified(u) => {
+                    let u = self.get(*u);
+                    if u.tablesample.is_some() {
+                        return Err(unsupported("TABLESAMPLE", None));
+                    }
+                    let (join_type, natural) = match self.get(u.kind) {
+                        FlatUnqualifiedJoinKind::Cross => (JoinType::Inner, false),
+                        FlatUnqualifiedJoinKind::Natural(n) => {
+                            (self.join_type(self.get(*n).join_type), true)
+                        }
+                    };
+                    let right_location = self.span(u.table).start;
+                    let right = self.simple_table_ref(scope, u.table, right_location)?;
+                    current = self.join_tables(
+                        scope,
+                        current,
+                        right,
+                        join_type,
+                        natural,
+                        None,
+                        join_alias,
+                        join_location,
+                    )?;
+                }
+                FlatJoinSuffix::Qualified(q) => {
+                    let q = self.get(*q);
+                    let join_type = self.join_type(q.join_type);
+                    let right = self.table_ref(scope, q.table, None)?;
+                    current = self.join_tables(
+                        scope,
+                        current,
+                        right,
+                        join_type,
+                        false,
+                        Some(q.condition),
+                        join_alias,
+                        join_location,
+                    )?;
+                }
             }
-            if !self.list(table_ref.joins).is_empty() {
-                return Err(unsupported("JOIN", None));
+        }
+        Ok(current)
+    }
+
+    fn join_type(&self, handle: Handle<FlatJoinType>) -> JoinType {
+        match self.get(handle) {
+            FlatJoinType::LeftOuter | FlatJoinType::Left => JoinType::Left,
+            FlatJoinType::RightOuter | FlatJoinType::Right => JoinType::Right,
+            FlatJoinType::FullOuter | FlatJoinType::Full => JoinType::Full,
+            FlatJoinType::Inner | FlatJoinType::Plain => JoinType::Inner,
+        }
+    }
+
+    /// The name and column names of a table alias.
+    fn plain_alias(
+        &self,
+        alias: Option<Handle<FlatPlainTableAlias>>,
+    ) -> Result<(Option<String>, Vec<String>)> {
+        let Some(a) = alias else {
+            return Ok((None, Vec::new()));
+        };
+        let (name, columns) = match self.get(a) {
+            FlatPlainTableAlias::WithAs(w) => {
+                let w = self.get(*w);
+                (w.name, w.columns)
             }
-            let location = self.span(*table).start;
-            let (schema, name, inh, alias) = match self.get(table_ref.base) {
+            FlatPlainTableAlias::Bare(b) => {
+                let b = self.get(*b);
+                (b.name, b.columns)
+            }
+        };
+        let (name, _) = self.col_id(name)?;
+        let mut cols = Vec::new();
+        if let Some(columns) = columns {
+            let columns = self.get(columns);
+            for c in self.list1(columns.0) {
+                cols.push(self.col_id(*c)?.0);
+            }
+        }
+        Ok((Some(name), cols))
+    }
+
+    /// One `JoinExpr` of `transformFromClauseItem`: both sides are already
+    /// transformed.
+    #[allow(clippy::too_many_arguments)]
+    fn join_tables(
+        &mut self,
+        scope: &mut Scope,
+        left: (NamespaceItem, Vec<NamespaceItem>),
+        right: (NamespaceItem, Vec<NamespaceItem>),
+        join_type: JoinType,
+        natural: bool,
+        condition: Option<Handle<FlatJoinCondition>>,
+        alias: Option<Handle<FlatPlainTableAlias>>,
+        location: usize,
+    ) -> Result<(NamespaceItem, Vec<NamespaceItem>)> {
+        let (l_top, l_ns) = left;
+        let (r_top, r_ns) = right;
+        self.relations
+            .check_namespace_conflicts(scope, &l_ns, &r_ns)?;
+        let mut my_ns = l_ns;
+        my_ns.extend(r_ns);
+        let l_colnames = scope.rtable[l_top.rt_index - 1].colnames.clone();
+        let r_colnames = scope.rtable[r_top.rt_index - 1].colnames.clone();
+        // The USING columns, or for NATURAL the names common to both sides
+        // in left order.
+        let mut using: Vec<String> = Vec::new();
+        let mut using_alias: Option<String> = None;
+        if natural {
+            for l in &l_colnames {
+                if !l.is_empty() && r_colnames.iter().any(|r| r == l) {
+                    using.push(l.clone());
+                }
+            }
+        } else if let Some(cond) = condition
+            && let FlatJoinCondition::Using(u) = self.get(cond)
+        {
+            let u = self.get(*u);
+            for c in self.list1(self.get(u.columns).0) {
+                using.push(self.col_id(*c)?.0);
+            }
+            if let Some(a) = u.alias {
+                using_alias = Some(self.col_id(self.get(a).name)?.0);
+            }
+        }
+        let rtindex = scope.rtable.len() + 1;
+        let mut pairs: Vec<(usize, usize)> = Vec::new();
+        let mut res_colnames: Vec<String> = Vec::new();
+        for u in &using {
+            if res_colnames.iter().any(|c| c == u) {
+                return Err(Diagnostic::new(
+                    "42701",
+                    format!("column name \"{u}\" appears more than once in USING clause"),
+                )
+                .into());
+            }
+            let li = find_using_column(&l_colnames, u, "left")?;
+            let ri = find_using_column(&r_colnames, u, "right")?;
+            pairs.push((li, ri));
+            res_colnames.push(u.clone());
+        }
+        if !pairs.is_empty() {
+            // transformJoinUsingClause: `l = r` for each column, ANDed.
+            let eq = ObjectName {
+                schema: None,
+                name: "=".to_owned(),
+            };
+            let construct = if pairs.len() == 1 {
+                "JOIN/USING"
+            } else {
+                "AND"
+            };
+            for &(li, ri) in &pairs {
+                let lt = typed_var(&self.side_var(scope, &l_top, li));
+                let rt = typed_var(&self.side_var(scope, &r_top, ri));
+                let resolved = self.resolver.make_op(&eq, Some(&lt), &rt, NO_LOCATION)?;
+                self.coercer()
+                    .coerce_to_boolean(&resolved.result, construct)?;
+            }
+        } else if let Some(cond) = condition
+            && let FlatJoinCondition::On(o) = self.get(cond)
+        {
+            // transformJoinOnClause: only the two sides are visible.
+            let expr = self.get(*o).condition;
+            let saved_ns = std::mem::replace(&mut scope.namespace, my_ns.clone());
+            let saved_kind = self.expr_kind;
+            self.expr_kind = ExprKind::JoinOn;
+            let result = self
+                .expr(scope, expr)
+                .and_then(|t| self.coercer().coerce_to_boolean(&t, "JOIN/ON"));
+            scope.namespace = saved_ns;
+            self.expr_kind = saved_kind;
+            let (_, steps) = result?;
+            self.record_coercions(expr, steps);
+        }
+        // buildMergedJoinVar for each USING column.
+        let mut res_vars: Vec<Var> = Vec::new();
+        let mut res_inputs: Vec<Vec<Var>> = Vec::new();
+        for &(li, ri) in &pairs {
+            let lv = self.side_var(scope, &l_top, li);
+            let rv = self.side_var(scope, &r_top, ri);
+            let out_ty = self
+                .coercer()
+                .common_type(&[lv.ty, rv.ty])
+                .map_err(|(p, n)| {
+                    Diagnostic::new(
+                        "42804",
+                        format!(
+                            "JOIN/USING types {} and {} cannot be matched",
+                            self.types().format(p),
+                            self.types().format(n)
+                        ),
+                    )
+                })?;
+            let out_typmod = if lv.ty == out_ty && rv.ty == out_ty && lv.typmod == rv.typmod {
+                lv.typmod
+            } else {
+                -1
+            };
+            let l_same = lv.ty == out_ty && lv.typmod == out_typmod;
+            let r_same = rv.ty == out_ty && rv.typmod == out_typmod;
+            if lv.ty != out_ty {
+                self.coercer().coerce_type(
+                    &typed_var(&lv),
+                    out_ty,
+                    out_typmod,
+                    CoercionContext::Implicit,
+                )?;
+            }
+            if rv.ty != out_ty {
+                self.coercer().coerce_type(
+                    &typed_var(&rv),
+                    out_ty,
+                    out_typmod,
+                    CoercionContext::Implicit,
+                )?;
+            }
+            let join_var = Var {
+                varno: rtindex,
+                varattno: i16::try_from(res_vars.len() + 1).expect("column count"),
+                levelsup: 0,
+                ty: out_ty,
+                typmod: out_typmod,
+            };
+            let (var, inputs) = match join_type {
+                JoinType::Inner => {
+                    if l_same {
+                        (lv, Vec::new())
+                    } else if r_same {
+                        (rv, Vec::new())
+                    } else {
+                        (join_var, vec![lv])
+                    }
+                }
+                JoinType::Left => {
+                    if l_same {
+                        (lv, Vec::new())
+                    } else {
+                        (join_var, vec![lv])
+                    }
+                }
+                JoinType::Right => {
+                    if r_same {
+                        (rv, Vec::new())
+                    } else {
+                        (join_var, vec![rv])
+                    }
+                }
+                JoinType::Full => (join_var, vec![lv, rv]),
+            };
+            res_vars.push(var);
+            res_inputs.push(inputs);
+        }
+        // extractRemainingColumns for each side.
+        for (i, name) in l_colnames.iter().enumerate() {
+            if name.is_empty() || pairs.iter().any(|&(li, _)| li == i + 1) {
+                continue;
+            }
+            res_colnames.push(name.clone());
+            res_vars.push(self.side_var(scope, &l_top, i + 1));
+            res_inputs.push(Vec::new());
+        }
+        for (i, name) in r_colnames.iter().enumerate() {
+            if name.is_empty() || pairs.iter().any(|&(_, ri)| ri == i + 1) {
+                continue;
+            }
+            res_colnames.push(name.clone());
+            res_vars.push(self.side_var(scope, &r_top, i + 1));
+            res_inputs.push(Vec::new());
+        }
+        // addRangeTableEntryForJoin: the alias renames the leading columns.
+        let (alias_name, column_aliases) = self.plain_alias(alias)?;
+        if column_aliases.len() > res_colnames.len() {
+            return Err(Diagnostic::new(
+                "42P10",
+                format!(
+                    "join expression \"{}\" has {} columns available but {} columns specified",
+                    alias_name.as_deref().unwrap_or("unnamed_join"),
+                    res_colnames.len(),
+                    column_aliases.len()
+                ),
+            )
+            .into());
+        }
+        for (i, a) in column_aliases.into_iter().enumerate() {
+            res_colnames[i] = a;
+        }
+        let eref_name = alias_name
+            .clone()
+            .unwrap_or_else(|| "unnamed_join".to_owned());
+        scope.rtable.push(crate::relation::RangeTableEntry {
+            kind: RteKind::Join {
+                join_type,
+                columns: res_vars,
+                inputs: res_inputs,
+            },
+            alias: alias_name.clone(),
+            eref_name,
+            colnames: res_colnames,
+            location,
+        });
+        if let Some(name) = using_alias {
+            let item = NamespaceItem {
+                rt_index: rtindex,
+                rel_visible: true,
+                cols_visible: true,
+                using_alias: Some((name, using.len())),
+            };
+            self.relations
+                .check_namespace_conflicts(scope, &my_ns, std::slice::from_ref(&item))?;
+            my_ns.push(item);
+        }
+        // An alias hides the inputs; otherwise only their column names are
+        // hidden.
+        if alias_name.is_some() {
+            my_ns.clear();
+        } else {
+            for item in &mut my_ns {
+                item.cols_visible = false;
+            }
+        }
+        let top = NamespaceItem {
+            rt_index: rtindex,
+            rel_visible: alias_name.is_some(),
+            cols_visible: true,
+            using_alias: None,
+        };
+        my_ns.push(top.clone());
+        Ok((top, my_ns))
+    }
+
+    /// The `Var` of one column of a join input.
+    fn side_var(&self, scope: &Scope, item: &NamespaceItem, attnum: usize) -> Var {
+        self.relations.make_var(
+            item.rt_index,
+            &scope.rtable[item.rt_index - 1],
+            i16::try_from(attnum).expect("column count"),
+            0,
+        )
+    }
+
+    /// `transformFromClauseItem` for one table reference without joins.
+    fn simple_table_ref(
+        &mut self,
+        scope: &mut Scope,
+        base: Handle<FlatSimpleTableRef>,
+        location: usize,
+    ) -> Result<(NamespaceItem, Vec<NamespaceItem>)> {
+        {
+            let (schema, name, inh, alias) = match self.get(base) {
                 FlatSimpleTableRef::Named(named) => {
                     let named = self.get(*named);
                     let (schema, name) = match self.get(named.name) {
@@ -714,32 +1732,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     };
                     (None, name, inh, alias)
                 }
-                _ => return Err(unsupported("FROM item", Some(location..location))),
-            };
-            let (alias_name, column_aliases) = match alias {
-                None => (None, Vec::new()),
-                Some(a) => {
-                    let (name, columns) = match self.get(a) {
-                        FlatPlainTableAlias::WithAs(w) => {
-                            let w = self.get(*w);
-                            (w.name, w.columns)
-                        }
-                        FlatPlainTableAlias::Bare(b) => {
-                            let b = self.get(*b);
-                            (b.name, b.columns)
+                FlatSimpleTableRef::Paren(p) => {
+                    let p = self.get(*p);
+                    return match self.get(p.body) {
+                        FlatParenTableBody::Table(t) => self.table_ref(scope, *t, p.alias),
+                        FlatParenTableBody::Query(_) => {
+                            Err(unsupported("subquery in FROM", Some(location..location)))
                         }
                     };
-                    let (name, _) = self.col_id(name)?;
-                    let mut cols = Vec::new();
-                    if let Some(columns) = columns {
-                        let columns = self.get(columns);
-                        for c in self.list1(columns.0) {
-                            cols.push(self.col_id(*c)?.0);
-                        }
-                    }
-                    (Some(name), cols)
                 }
+                _ => return Err(unsupported("FROM item", Some(location..location))),
             };
+            let (alias_name, column_aliases) = self.plain_alias(alias)?;
             let rt_index = self.relations.add_range_table_entry(
                 scope,
                 schema.as_deref(),
@@ -749,14 +1753,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 inh,
                 location,
             )?;
-            self.relations.check_namespace_conflicts(scope, rt_index)?;
-            scope.namespace.push(NamespaceItem {
-                rt_index,
-                rel_visible: true,
-                cols_visible: true,
-            });
+            let item = NamespaceItem::plain(rt_index);
+            Ok((item.clone(), vec![item]))
         }
-        Ok(())
     }
 
     fn name_part(
@@ -872,7 +1871,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Option<(pg_catalog::Handle<pg_catalog::Relation>, i16)> {
         if let Some(var) = self.analysis.vars.get(expr) {
             let rte = &scope.rtable[var.varno - 1];
-            return (var.levelsup == 0).then_some((rte.relation, var.varattno));
+            return (var.levelsup == 0)
+                .then(|| rte.relation().map(|r| (r, var.varattno)))
+                .flatten();
         }
         let unchanged = self
             .analysis
@@ -946,7 +1947,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn expand_ns_item(&self, scope: &Scope, item: &NamespaceItem) -> Vec<TargetEntry> {
         let rte = &scope.rtable[item.rt_index - 1];
         let mut out = Vec::new();
-        for (i, name) in rte.colnames.iter().enumerate() {
+        let ncols = item
+            .using_alias
+            .as_ref()
+            .map_or(rte.colnames.len(), |(_, n)| *n);
+        for (i, name) in rte.colnames[..ncols].iter().enumerate() {
             if name.is_empty() {
                 continue;
             }
@@ -955,7 +1960,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 name: name.clone(),
                 ty: var.ty,
                 typmod: var.typmod,
-                origin: Some((rte.relation, var.varattno)),
+                origin: scope.rtable[var.varno - 1]
+                    .relation()
+                    .map(|r| (r, var.varattno)),
                 junk: false,
             });
         }
@@ -2588,6 +3595,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             return Ok(self.bool_result(lt.location));
         }
         let resolved = self.resolver.make_op(&name, Some(lt), rt, op_location)?;
+        if resolved.result.returns_set {
+            self.check_srf_placement(op_location)?;
+        }
         self.analysis.operators.insert(handle, resolved.operator);
         self.record_coercions(l, resolved.left_coercions);
         self.record_coercions(r, resolved.right_coercions);
@@ -2791,23 +3801,23 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 ));
             }
         };
-        if suffix.within_group.is_some() || suffix.filter.is_some() || suffix.window.is_some() {
-            return Err(unsupported(
-                "aggregate or window decoration",
-                Some(location..location),
-            ));
-        }
+        let mut deco = Decoration {
+            within_group: suffix.within_group.is_some(),
+            filter: suffix.filter.is_some(),
+            over: suffix.window.is_some(),
+            ..Decoration::default()
+        };
         let mut arg_handles: Vec<Handle<FlatExpr>> = Vec::new();
+        let mut order_by: Option<Handle<FlatOrderByClause>> = None;
         if let Some(body) = suffix.body {
             match self.get(body) {
+                FlatFunctionCallBody::Star(_) => deco.star = true,
                 FlatFunctionCallBody::Args(args) => {
                     let args = self.get(*args);
-                    if args.trailing_variadic.is_some() || args.order_by.is_some() {
-                        return Err(unsupported(
-                            "VARIADIC or ORDER BY in call",
-                            Some(location..location),
-                        ));
+                    if args.trailing_variadic.is_some() {
+                        return Err(unsupported("VARIADIC", Some(location..location)));
                     }
+                    order_by = args.order_by;
                     for arg in self.list1(args.args) {
                         match self.get(*arg) {
                             FlatFuncArg::Plain(e) => arg_handles.push(*e),
@@ -2820,8 +3830,48 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                     }
                 }
-                _ => return Err(unsupported("aggregate call form", Some(location..location))),
+                FlatFunctionCallBody::All(all) => {
+                    let all = self.get(*all);
+                    order_by = all.order_by;
+                    for arg in self.list1(self.get(all.args).0) {
+                        match self.get(*arg) {
+                            FlatFuncArg::Plain(e) => arg_handles.push(*e),
+                            FlatFuncArg::Named(_) => {
+                                return Err(unsupported(
+                                    "named argument",
+                                    Some(location..location),
+                                ));
+                            }
+                        }
+                    }
+                }
+                FlatFunctionCallBody::Distinct(d) => {
+                    let d = self.get(*d);
+                    deco.distinct = true;
+                    order_by = d.order_by;
+                    for arg in self.list1(self.get(d.args).0) {
+                        match self.get(*arg) {
+                            FlatFuncArg::Plain(e) => arg_handles.push(*e),
+                            FlatFuncArg::Named(_) => {
+                                return Err(unsupported(
+                                    "named argument",
+                                    Some(location..location),
+                                ));
+                            }
+                        }
+                    }
+                }
+                FlatFunctionCallBody::LeadingVariadic(_) => {
+                    return Err(unsupported("VARIADIC", Some(location..location)));
+                }
             }
+        }
+        deco.order_by = order_by.is_some();
+        if deco.over {
+            return Err(unsupported(
+                "window function call",
+                Some(location..location),
+            ));
         }
         // MERGE_ACTION() is a keyword form that only a MERGE may use.
         if name.schema.is_none() && name.name == "merge_action" && arg_handles.is_empty() {
@@ -2870,13 +3920,189 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         for &a in &arg_handles {
             args.push(self.expr(scope, a)?);
         }
+        // WITHIN GROUP (ORDER BY ...) expressions are appended to the
+        // arguments of an ordered-set aggregate.
+        let mut within_exprs: Vec<Handle<FlatExpr>> = Vec::new();
+        if let Some(wg) = suffix.within_group {
+            let clause = self.get(self.get(wg).order_by);
+            for item in self.list1(clause.items) {
+                let item = self.get(*item);
+                if item.using.is_some() {
+                    return Err(unsupported(
+                        "WITHIN GROUP ... USING",
+                        Some(location..location),
+                    ));
+                }
+                within_exprs.push(item.expr);
+            }
+            for &e in &within_exprs {
+                arg_handles.push(e);
+                args.push(self.expr(scope, e)?);
+            }
+            deco.aggregated = within_exprs.len();
+        }
         // ParseComplexProjection: f(composite) may be the field f.
-        let projection = if name.schema.is_none() && args.len() == 1 {
+        let projection = if name.schema.is_none()
+            && args.len() == 1
+            && suffix.body.is_some()
+            && !deco.star
+            && !deco.distinct
+        {
             self.projection_field(args[0].ty, &name.name)
         } else {
             None
         };
-        self.resolve_call(handle, name, &arg_handles, &args, location, projection)
+        let typed = self.resolve_call_decorated(
+            handle,
+            name,
+            &arg_handles,
+            &args,
+            location,
+            projection,
+            deco,
+        )?;
+        // An aggregate's ORDER BY, DISTINCT and FILTER.
+        if self
+            .analysis
+            .functions
+            .get(handle)
+            .is_some_and(|f| self.catalog()[f.function].aggregate.is_some())
+        {
+            self.aggregate_clauses(
+                scope,
+                handle,
+                &arg_handles,
+                &args,
+                order_by,
+                suffix.filter,
+                deco,
+                location,
+            )?;
+        }
+        Ok(typed)
+    }
+
+    /// `transformAggregateCall` and `check_agglevels_and_constraints` for a
+    /// resolved aggregate.
+    fn aggregate_clauses(
+        &mut self,
+        scope: &Scope,
+        handle: Handle<FlatExpr>,
+        arg_handles: &[Handle<FlatExpr>],
+        args: &[Typed],
+        order_by: Option<Handle<FlatOrderByClause>>,
+        filter: Option<Handle<pg_sql::ast::shared::expr::FlatFilterClause>>,
+        deco: Decoration,
+        location: usize,
+    ) -> Result<()> {
+        let _ = handle;
+        // Argument ORDER BY: SQL99 rules; a new expression is a junk entry.
+        let mut order_exprs: Vec<Handle<FlatExpr>> = Vec::new();
+        if let Some(ob) = order_by {
+            let clause = self.get(ob);
+            let saved = self.expr_kind;
+            self.expr_kind = ExprKind::OrderBy;
+            for item in self.list1(clause.items) {
+                let item = self.get(*item);
+                if item.using.is_some() {
+                    return Err(unsupported(
+                        "aggregate ORDER BY ... USING",
+                        Some(location..location),
+                    ));
+                }
+                let mut t = self.expr(scope, item.expr)?;
+                if self.types().is_unknown(t.ty) {
+                    let text = self.types().builtin(Builtin::Text);
+                    let steps = self.coercer().coerce_to_common_type(&t, text, "ORDER BY")?;
+                    self.record_coercions(item.expr, steps);
+                    t.ty = text;
+                }
+                if self.types().btree_ordering(t.ty).is_none() {
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "could not identify an ordering operator for type {}",
+                            self.types().format(t.ty)
+                        ),
+                    )
+                    .hint("Use an explicit ordering operator or modify the query.")
+                    .at(self.span(item.expr).start)
+                    .into());
+                }
+                order_exprs.push(item.expr);
+            }
+            self.expr_kind = saved;
+        }
+        if deco.distinct {
+            // transformDistinctClause(is_agg): ORDER BY items must be
+            // arguments, and each argument needs an ordering operator.
+            for &oe in &order_exprs {
+                if !arg_handles.iter().any(|&a| self.expr_equal(a, oe)) {
+                    return Err(Diagnostic::new(
+                        "42P10",
+                        "in an aggregate with DISTINCT, ORDER BY expressions must appear in argument list",
+                    )
+                    .at(self.span(oe).start)
+                    .into());
+                }
+            }
+            for (a, t) in arg_handles.iter().zip(args) {
+                let ty = if self.types().is_unknown(t.ty) {
+                    self.types().builtin(Builtin::Text)
+                } else {
+                    t.ty
+                };
+                if self.types().btree_ordering(ty).is_none() {
+                    return Err(Diagnostic::new(
+                        "42883",
+                        format!(
+                            "could not identify an ordering operator for type {}",
+                            self.types().format(ty)
+                        ),
+                    )
+                    .detail("Aggregates with DISTINCT must be able to sort their inputs.")
+                    .at(self.span(*a).start)
+                    .into());
+                }
+            }
+            if args.is_empty() {
+                return Err(Diagnostic::new(
+                    "42601",
+                    "an aggregate with DISTINCT must have at least one argument",
+                )
+                .into());
+            }
+        }
+        if let Some(f) = filter {
+            let clause = self.get(self.get(f).body);
+            let FlatWhereCondition::Expr(expr) = self.get(clause.condition) else {
+                return Err(unsupported(
+                    "FILTER (WHERE CURRENT OF)",
+                    Some(location..location),
+                ));
+            };
+            let saved = self.expr_kind;
+            self.expr_kind = ExprKind::Filter;
+            let t = self.expr(scope, *expr)?;
+            let (_, steps) = self.coercer().coerce_to_boolean(&t, "FILTER")?;
+            self.record_coercions(*expr, steps);
+            self.expr_kind = saved;
+        }
+        // check_agglevels_and_constraints for one query level.
+        if self.expr_kind.refuses_aggregate() {
+            return Err(Diagnostic::new(
+                "42803",
+                format!(
+                    "aggregate functions are not allowed in {}",
+                    self.expr_kind.name()
+                ),
+            )
+            .at(location)
+            .into());
+        }
+        self.has_aggs = true;
+        self.agg_locations.push(location);
+        Ok(())
     }
 
     /// The field `name` of a composite type, for function-call syntax.
@@ -2904,10 +4130,115 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         location: usize,
         projection: Option<Projection>,
     ) -> Result<Typed> {
+        self.resolve_call_decorated(
+            handle,
+            name,
+            arg_handles,
+            args,
+            location,
+            projection,
+            Decoration::default(),
+        )
+    }
+
+    /// `check_srf_call_placement` and the aggregate-argument rule for a
+    /// call or operator that returns a set.
+    fn check_srf_placement(&self, location: usize) -> Result<()> {
+        if self.in_agg_args > 0 {
+            return Err(Diagnostic::new(
+                "0A000",
+                "aggregate function calls cannot contain set-returning function calls",
+            )
+            .hint("You might be able to move the set-returning function into a LATERAL FROM item.")
+            .at(location)
+            .into());
+        }
+        if self.expr_kind.refuses_srf() {
+            return Err(Diagnostic::new(
+                "0A000",
+                format!(
+                    "set-returning functions are not allowed in {}",
+                    self.expr_kind.name()
+                ),
+            )
+            .at(location)
+            .into());
+        }
+        Ok(())
+    }
+
+    fn resolve_call_decorated(
+        &mut self,
+        handle: Handle<FlatExpr>,
+        name: ObjectName,
+        arg_handles: &[Handle<FlatExpr>],
+        args: &[Typed],
+        location: usize,
+        projection: Option<Projection>,
+        deco: Decoration,
+    ) -> Result<Typed> {
         match self
             .resolver
-            .parse_func(&name, args, location, projection)?
+            .parse_func(&name, args, location, projection, deco)?
         {
+            ResolvedFunc::Aggregate {
+                func,
+                rettype,
+                declared,
+                kind,
+                direct_args,
+            } => {
+                let _ = (kind, direct_args);
+                // check_agg_arguments: an aggregate inside the arguments.
+                let span = self.span(handle);
+                if let Some(&inner) = self
+                    .agg_locations
+                    .iter()
+                    .find(|&&l| l > span.start && l < span.end)
+                {
+                    return Err(Diagnostic::new(
+                        "42803",
+                        "aggregate function calls cannot be nested",
+                    )
+                    .at(inner)
+                    .into());
+                }
+                for (i, (&a, arg)) in arg_handles.iter().zip(args).enumerate() {
+                    if arg.returns_set {
+                        return Err(Diagnostic::new(
+                            "0A000",
+                            "aggregate function calls cannot contain set-returning function calls",
+                        )
+                        .hint("You might be able to move the set-returning function into a LATERAL FROM item.")
+                        .at(arg.location)
+                        .into());
+                    }
+                    if i < declared.len() && arg.ty != declared[i] {
+                        let (_, steps) = self.coercer().coerce_type(
+                            arg,
+                            declared[i],
+                            -1,
+                            CoercionContext::Implicit,
+                        )?;
+                        self.record_coercions(a, steps);
+                    }
+                }
+                self.analysis.functions.insert(
+                    handle,
+                    FunctionResolution {
+                        function: func,
+                        declared,
+                        returns_set: false,
+                    },
+                );
+                Ok(Typed {
+                    ty: rettype,
+                    typmod: -1,
+                    form: Form::Other,
+                    location,
+                    returns_set: false,
+                })
+            }
             ResolvedFunc::Projection(p) => Ok(Typed {
                 ty: p.ty,
                 typmod: p.typmod,
@@ -2938,6 +4269,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         )?;
                         self.record_coercions(a, steps);
                     }
+                }
+                if retset {
+                    self.check_srf_placement(location)?;
                 }
                 self.analysis.functions.insert(
                     handle,
@@ -3714,4 +5048,39 @@ fn string_literal_body(text: &str) -> String {
     } else {
         trimmed.to_owned()
     }
+}
+
+/// A `Typed` for a `Var` that no node of the statement carries.
+fn typed_var(var: &Var) -> Typed {
+    Typed {
+        ty: var.ty,
+        typmod: var.typmod,
+        form: Form::Var,
+        location: NO_LOCATION,
+        returns_set: false,
+    }
+}
+
+/// The 1-based position of a `USING` column on one side of a join.
+fn find_using_column(colnames: &[String], name: &str, side: &str) -> Result<usize> {
+    let mut found: Option<usize> = None;
+    for (i, c) in colnames.iter().enumerate() {
+        if c == name {
+            if found.is_some() {
+                return Err(Diagnostic::new(
+                    "42702",
+                    format!("common column name \"{name}\" appears more than once in {side} table"),
+                )
+                .into());
+            }
+            found = Some(i + 1);
+        }
+    }
+    found.ok_or_else(|| {
+        Diagnostic::new(
+            "42703",
+            format!("column \"{name}\" specified in USING clause does not exist in {side} table"),
+        )
+        .into()
+    })
 }
