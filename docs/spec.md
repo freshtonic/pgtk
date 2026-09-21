@@ -165,6 +165,9 @@ impl PseudoType {
 pub struct Relation {
     pub oid: Oid, pub name: Name, pub schema: Handle<Schema>, pub kind: RelationKind,
     pub row_type: Option<Handle<Type>>, pub columns: Vec<Column>,
+    /// reloftype: the composite type of `CREATE TABLE t OF type`. None when 0.
+    /// Not the row type. For typeIsOfTypedTable in can_coerce_type.
+    pub of_type: Option<Handle<Type>>,     // #[serde(default)]
     /// pg_inherits: direct parents in inhseqno order. Empty when none. Covers
     /// INHERITS and partitions. The consumer walks the chain (typeInheritsFrom).
     pub parents: Vec<Handle<Relation>>,    // #[serde(default)]
@@ -341,6 +344,7 @@ impl Catalog {
                                          // 3: Relation gained primary_key
                                          // 4: Column.identity became Option<Identity>
                                          // 5: Relation gained parents, Function gained default_types
+                                         // 6: Relation gained of_type
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -590,7 +594,7 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   (SELECT count(*) FROM pg_constraint k WHERE k.contypid = t.oid AND k.contype = 'c') AS check_count`.
   `ORDER BY oid`.
 - **EnumLabels**: `enumtypid, enumsortorder, enumlabel` `ORDER BY enumtypid, enumsortorder`.
-- **Relations**: `oid, relname, relnamespace, relkind, reltype` from
+- **Relations**: `oid, relname, relnamespace, relkind, reltype, reloftype` from
   `pg_class` joined with the filter, `WHERE relkind IN ('r','v','m','f','p','S')`
   `ORDER BY oid`.
 - **Attributes**: `attrelid, attnum, attname, atttypid, atttypmod, attnotnull,
@@ -687,10 +691,13 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
     with no note, when one of its columns is not a column of the relation (the
     column already has a `MissingReference`): a part of a key would let a
     consumer accept a `GROUP BY` that the server rejects.
-10c. Parents: a relation takes its `Inherits` rows in step 7, in `inhseqno`
+10c. Typed tables: `of_type` is the handle of `reloftype` when it is not 0.
+    When that type is not kept, the relation stays with `of_type = None` and
+    a `MissingReference` (entity `Relation`, referenced `Type`).
+10d. Parents: a relation takes its `Inherits` rows in step 7, in `inhseqno`
     order. A parent that is not kept gives a `MissingReference` (entity
     `Relation`, referenced `Relation`) and goes; the other parents stay.
-10d. Default types: `loader/node_tree.rs` reads the text of `proargdefaults`.
+10e. Default types: `loader/node_tree.rs` reads the text of `proargdefaults`.
     It splits the top-level list into nodes (a backslash escapes a brace) and
     reads the result type of each node from one field at the top level of the
     node: `CONST :consttype`, `FUNCEXPR :funcresulttype`, `OPEXPR`,

@@ -202,6 +202,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 identity: None,
             },
         ],
+        of_type: None,
         parents: Vec::new(),
         primary_key: None,
         extension: Some(widgets),
@@ -478,6 +479,7 @@ fn temporary_catalog() -> (Catalog, TemporaryHandles) {
             kind: RelationKind::Table,
             row_type: Some(row_type),
             columns: Vec::new(),
+            of_type: None,
             parents: Vec::new(),
             primary_key: None,
             extension: None,
@@ -742,6 +744,7 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
             sequence_column("log_cnt", 2, int8),
             sequence_column("is_called", 3, boolean),
         ],
+        of_type: None,
         parents: Vec::new(),
         primary_key: None,
         extension: None,
@@ -949,6 +952,28 @@ fn a_function_needs_one_default_type_for_each_default() {
             default_types: 0,
         })
     ));
+}
+
+#[test]
+fn a_typed_table_names_the_type_that_it_is_of() {
+    let (catalog, h) = small_catalog();
+    assert_eq!(catalog[h.widget].of_type, None);
+
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    let widget_type = builder.push_type(Type {
+        kind: TypeKind::Composite(CompositeDetail {
+            fields: Vec::new(),
+            relation: None,
+        }),
+        ..base_type(20020, "widget_type", h.public, TypeCategory::Composite)
+    });
+    builder.relation_mut(h.widget).of_type = Some(widget_type);
+    let catalog = builder.finish().expect("the catalog builds");
+
+    // The type of the table and its row type are two types.
+    assert_eq!(catalog[h.widget].of_type, Some(widget_type));
+    assert_eq!(catalog[h.widget].row_type, Some(h.widget_row));
 }
 
 #[test]

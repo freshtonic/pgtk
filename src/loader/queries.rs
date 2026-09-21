@@ -336,6 +336,7 @@ ORDER BY e.enumtypid, e.enumsortorder
 //   2  relnamespace  OID of the schema that holds the relation
 //   3  relkind       kind letter: r v m f p S
 //   4  reltype       OID of the row type of the relation
+//   5  reloftype     OID of the composite type of a typed table, else 0
 //@sql Relations
 const RELATIONS: &str = r#"
 SELECT
@@ -343,7 +344,8 @@ SELECT
     c.relname::text,
     c.relnamespace::text,
     c.relkind::text,
-    c.reltype::text
+    c.reltype::text,
+    c.reloftype::text
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')

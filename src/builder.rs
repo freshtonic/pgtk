@@ -310,6 +310,7 @@ impl CatalogBuilder {
             for column in &entity.columns {
                 check(column.ty, types, "type")?;
             }
+            check_opt(entity.of_type, types, "type")?;
             for parent in &entity.parents {
                 check(*parent, relations, "relation")?;
             }

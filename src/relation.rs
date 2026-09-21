@@ -29,6 +29,17 @@ pub struct Relation {
     pub row_type: Option<Handle<Type>>,
     /// The live columns, in attribute order.
     pub columns: Vec<Column>,
+    /// The composite type that a typed table is `OF`.
+    ///
+    /// This is `reloftype`, from `CREATE TABLE persons OF person_type`. It is
+    /// `None` for a relation that is not a typed table. It is a different
+    /// type from [`row_type`](Relation::row_type): a typed table has its own
+    /// row type too.
+    ///
+    /// PostgreSQL accepts the row type of a typed table where it expects the
+    /// type that the table is `OF`.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub of_type: Option<Handle<Type>>,
     /// The direct parents of the relation, in `inhseqno` order.
     ///
     /// This is `pg_inherits`. A table that inherits names its parents here,

@@ -209,6 +209,9 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         Some(row_type) => println!("  row type  {}", type_name(catalog, row_type)),
         None => println!("  row type  none"),
     }
+    if let Some(of_type) = relation.of_type {
+        println!("  of type   {}", type_name(catalog, of_type));
+    }
     if let Some(key) = &relation.primary_key {
         let names: Vec<&str> = key
             .columns

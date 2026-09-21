@@ -45,6 +45,8 @@ rest so that they are not re-decided.
 
 - Relation: kind, name, Schema, `row_type: Option<Handle<Type>>` (`None` only
   for a sequence, whose `reltype` is 0), ordered Columns,
+  `of_type: Option<Handle<Type>>` (`reloftype` of a typed table, for
+  `typeIsOfTypedTable`; not the same type as `row_type`),
   `parents: Vec<Handle<Relation>>` (the direct `pg_inherits` parents in
   `inhseqno` order, for `typeInheritsFrom`; the consumer walks the chain), and
   `primary_key: Option<PrimaryKey { columns: Vec<i16>, deferrable }>`. The key
