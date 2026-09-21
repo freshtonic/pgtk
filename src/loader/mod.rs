@@ -24,6 +24,7 @@
 //! ```
 
 mod build;
+mod node_tree;
 mod parse;
 pub mod queries;
 

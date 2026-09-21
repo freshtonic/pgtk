@@ -44,7 +44,9 @@ rest so that they are not re-decided.
 ## Relations and Columns
 
 - Relation: kind, name, Schema, `row_type: Option<Handle<Type>>` (`None` only
-  for a sequence, whose `reltype` is 0), ordered Columns, and
+  for a sequence, whose `reltype` is 0), ordered Columns,
+  `parents: Vec<Handle<Relation>>` (the direct `pg_inherits` parents in
+  `inhseqno` order, for `typeInheritsFrom`; the consumer walks the chain), and
   `primary_key: Option<PrimaryKey { columns: Vec<i16>, deferrable }>`. The key
   columns are attribute positions (`conkey`) in key order. This is what
   `check_functional_grouping` reads. `PrimaryKey::grouping_columns` is `None`
@@ -61,7 +63,9 @@ rest so that they are not re-decided.
 
 - Function: kind (function, procedure, aggregate, window), arguments
   `{name: Option<Name>, ty, mode: In|Out|InOut|Variadic|Table}` in one list,
-  `variadic: Option<Handle<Type>>`, `default_count`, `returns`,
+  `variadic: Option<Handle<Type>>`, `default_count`, `default_types` (the
+  `exprType()` of each default, read from the `proargdefaults` node tree; the
+  expression itself is not kept), `returns`,
   `returns_set`, `strict`, volatility, optional Aggregate
   `{kind: Normal|OrderedSet|HypotheticalSet, direct_args}`. Procedures return
   `void`. No language, source, cost, security, parallel safety.

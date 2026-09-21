@@ -28,6 +28,7 @@ use crate::function::{
     AggregateDetail, AggregateKind, ArgMode, Argument, Function, FunctionKind, Volatility,
 };
 use crate::handle::Handle;
+use crate::loader::node_tree;
 use crate::loader::parse::Cells;
 use crate::loader::queries::QueryId;
 use crate::loader::{Loaded, Rows};
@@ -219,6 +220,8 @@ struct FunctionRow {
     strict: bool,
     /// The `provolatile` letter.
     volatile: char,
+    /// The text of `proargdefaults`, when an argument has a default.
+    defaults: Option<String>,
 }
 
 /// One row of [`QueryId::FunctionArguments`].
@@ -446,6 +449,7 @@ fn function_rows(rows: &Rows) -> Result<Vec<FunctionRow>, LoadError> {
             retset: row.bool(7)?,
             strict: row.bool(8)?,
             volatile: row.char(9)?,
+            defaults: row.opt_text(10)?.map(str::to_owned),
         })
     })
 }
@@ -574,6 +578,22 @@ fn primary_key_rows(rows: &Rows) -> Result<HashMap<Oid, PrimaryKey>, LoadError> 
     Ok(keys)
 }
 
+/// Read [`QueryId::Inherits`] into the parents of each relation.
+///
+/// The parents of one relation are in `inhseqno` order after the sort.
+fn inherits_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<Oid>>, LoadError> {
+    let mut cells: Vec<(Oid, i32, Oid)> = read(rows, QueryId::Inherits, |row| {
+        Ok((row.oid(0)?, row.i32(1)?, row.oid(2)?))
+    })?;
+    cells.sort_by_key(|(child, seqno, _)| (*child, *seqno));
+
+    let mut parents: HashMap<Oid, Vec<Oid>> = HashMap::new();
+    for (child, _, parent) in cells {
+        parents.entry(child).or_default().push(parent);
+    }
+    Ok(parents)
+}
+
 /// Every query, read into typed rows.
 struct Input {
     /// The name of the database.
@@ -608,6 +628,8 @@ struct Input {
     operator_classes: Vec<OperatorClassRow>,
     /// The primary key of each relation that has one.
     primary_keys: HashMap<Oid, PrimaryKey>,
+    /// The OIDs of the direct parents of each relation that has one.
+    parents: HashMap<Oid, Vec<Oid>>,
 }
 
 impl Input {
@@ -630,6 +652,7 @@ impl Input {
             casts: cast_rows(rows_of(rows, QueryId::Casts)?)?,
             operator_classes: operator_class_rows(rows_of(rows, QueryId::DefaultOperatorClasses)?)?,
             primary_keys: primary_key_rows(rows_of(rows, QueryId::PrimaryKeys)?)?,
+            parents: inherits_rows(rows_of(rows, QueryId::Inherits)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -1125,6 +1148,21 @@ pub(crate) fn assemble(
                 .iter()
                 .all(|position| columns.iter().any(|column| column.position == *position))
         });
+        // A parent that the catalog does not hold goes, with a note. The
+        // other parents stay.
+        let mut parents = Vec::new();
+        for parent in input.parents.get(&row.oid).into_iter().flatten() {
+            match relation_handles.get(parent) {
+                Some(handle) => parents.push(*handle),
+                None => diagnostics.push(missing(
+                    EntityKind::Relation,
+                    row.oid,
+                    &row.name,
+                    EntityKind::Relation,
+                    *parent,
+                )),
+            }
+        }
         relations.push(Relation {
             oid: row.oid,
             name: row.name.clone(),
@@ -1132,6 +1170,7 @@ pub(crate) fn assemble(
             kind: relation_kind(row.relkind),
             row_type: type_handles.get(&row.reltype).copied(),
             columns,
+            parents,
             primary_key: primary_key.cloned(),
             extension: owner(MemberClass::Class, row.oid),
         });
@@ -1483,6 +1522,7 @@ fn one_function(
         arguments: built,
         variadic,
         default_count: row.default_count,
+        default_types: default_types(row, types),
         returns: *returns,
         returns_set: row.retset,
         strict: row.strict,
@@ -1490,6 +1530,28 @@ fn one_function(
         aggregate,
         extension,
     })
+}
+
+/// The type of each default expression of a function.
+///
+/// The result always has one entry for each default. Each entry is `None`
+/// when the text of `proargdefaults` is not readable, and when it does not
+/// hold one expression for each default.
+fn default_types(
+    row: &FunctionRow,
+    types: &HashMap<Oid, Handle<Type>>,
+) -> Vec<Option<Handle<Type>>> {
+    let count = usize::from(row.default_count);
+    row.defaults
+        .as_deref()
+        .and_then(node_tree::expression_types)
+        .filter(|oids| oids.len() == count)
+        .map(|oids| {
+            oids.into_iter()
+                .map(|oid| oid.and_then(|oid| types.get(&oid).copied()))
+                .collect()
+        })
+        .unwrap_or_else(|| vec![None; count])
 }
 
 /// Build every function that the loader keeps, with its handle.
@@ -1918,7 +1980,7 @@ mod tests {
         rows.insert(
             QueryId::Functions,
             vec![row(&[
-                "40000", "f1", "2200", "f", "0", "0", "16", "f", "t", "i",
+                "40000", "f1", "2200", "f", "0", "0", "16", "f", "t", "i", NULL,
             ])],
         );
         rows.insert(
@@ -2490,5 +2552,99 @@ mod tests {
             column: "attidentity",
             value: "q".to_owned(),
         }));
+    }
+
+    #[test]
+    fn a_relation_takes_its_parents_in_sequence_order() {
+        let mut rows = sample_rows();
+        // Two more relations. Each one borrows the row type of another
+        // relation that the test adds, so that it stays in the catalog.
+        rows.get_mut(&QueryId::Types).unwrap().extend([
+            row(&[
+                "16501", "p1", "2200", "c", "C", "f", "f", "0", "0", "f", "16500", "r", "0", "-1",
+                "f", NULL, NULL, NULL, "0",
+            ]),
+            row(&[
+                "16503", "p2", "2200", "c", "C", "f", "f", "0", "0", "f", "16502", "r", "0", "-1",
+                "f", NULL, NULL, NULL, "0",
+            ]),
+        ]);
+        rows.get_mut(&QueryId::Relations).unwrap().extend([
+            row(&["16500", "p1", "2200", "r", "16501"]),
+            row(&["16502", "p2", "2200", "r", "16503"]),
+        ]);
+        // The rows are out of order, to show that the loader sorts them. One
+        // parent is not in the catalog.
+        rows.insert(
+            QueryId::Inherits,
+            vec![
+                row(&["16384", "3", "99999"]),
+                row(&["16384", "2", "16500"]),
+                row(&["16384", "1", "16502"]),
+            ],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let child = catalog.relation_by_oid(Oid(16384)).unwrap();
+        let p1 = catalog.relation_by_oid(Oid(16500)).unwrap();
+        let p2 = catalog.relation_by_oid(Oid(16502)).unwrap();
+        assert_eq!(catalog[child].parents, vec![p2, p1]);
+        assert_eq!(catalog[p1].parents, Vec::new());
+        assert!(loaded.diagnostics.contains(&Diagnostic::MissingReference {
+            entity: EntityKind::Relation,
+            oid: Oid(16384),
+            name: Name::new("t1"),
+            referenced: EntityKind::Relation,
+            referenced_oid: Oid(99999),
+        }));
+    }
+
+    /// The sample function, with two defaults and this `proargdefaults`.
+    fn rows_with_defaults(defaults: &str) -> HashMap<QueryId, Rows> {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Functions,
+            vec![row(&[
+                "40000", "f1", "2200", "f", "0", "2", "16", "f", "t", "i", defaults,
+            ])],
+        );
+        rows.insert(
+            QueryId::FunctionArguments,
+            vec![
+                row(&["40000", "1", "16", NULL, "x"]),
+                row(&["40000", "2", "16", NULL, "y"]),
+                row(&["40000", "3", "16", NULL, "z"]),
+            ],
+        );
+        rows
+    }
+
+    #[test]
+    fn a_function_takes_the_type_of_each_default() {
+        // The first default is a `bool` constant. The second is a constant
+        // of a type that the catalog does not hold.
+        let loaded = load(rows_with_defaults(
+            "({CONST :consttype 16 :consttypmod -1 :constlen 1} \
+             {CONST :consttype 99999 :consttypmod -1 :constlen 1})",
+        ));
+        let catalog = &loaded.catalog;
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        let function = &catalog[catalog.function_by_oid(Oid(40000)).unwrap()];
+        assert_eq!(function.default_count, 2);
+        assert_eq!(function.default_types, vec![Some(boolean), None]);
+
+        // The defaults belong to the last two of the three input arguments.
+        assert_eq!(function.default_type_of(0), None);
+        assert_eq!(function.default_type_of(1), Some(boolean));
+        assert_eq!(function.default_type_of(2), None);
+        assert_eq!(function.default_type_of(3), None);
+    }
+
+    #[test]
+    fn defaults_that_do_not_match_the_count_give_no_type() {
+        let loaded = load(rows_with_defaults("({CONST :consttype 16})"));
+        let catalog = &loaded.catalog;
+        let function = &catalog[catalog.function_by_oid(Oid(40000)).unwrap()];
+        assert_eq!(function.default_types, vec![None, None]);
     }
 }

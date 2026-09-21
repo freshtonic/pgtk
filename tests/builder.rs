@@ -83,6 +83,7 @@ fn function(
         }],
         variadic: None,
         default_count: 0,
+        default_types: Vec::new(),
         returns,
         returns_set: false,
         strict: true,
@@ -201,6 +202,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 identity: None,
             },
         ],
+        parents: Vec::new(),
         primary_key: None,
         extension: Some(widgets),
     });
@@ -476,6 +478,7 @@ fn temporary_catalog() -> (Catalog, TemporaryHandles) {
             kind: RelationKind::Table,
             row_type: Some(row_type),
             columns: Vec::new(),
+            parents: Vec::new(),
             primary_key: None,
             extension: None,
         })
@@ -739,6 +742,7 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
             sequence_column("log_cnt", 2, int8),
             sequence_column("is_called", 3, boolean),
         ],
+        parents: Vec::new(),
         primary_key: None,
         extension: None,
     });
@@ -879,6 +883,72 @@ fn a_column_keeps_the_kind_of_its_identity() {
     );
     assert_eq!(widget.column("label").map(|c| c.identity), Some(None));
     assert_ne!(Identity::Always, Identity::ByDefault);
+}
+
+#[test]
+fn a_relation_names_its_direct_parents_in_order() {
+    let (catalog, h) = temporary_catalog();
+    assert_eq!(catalog[h.public_widget].parents, Vec::new());
+
+    // The temporary `widget` inherits from the `widget` in `public`.
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    builder.relation_mut(h.temporary_widget).parents = vec![h.public_widget];
+    let catalog = builder.finish().expect("the catalog builds");
+    assert_eq!(catalog[h.temporary_widget].parents, vec![h.public_widget]);
+}
+
+#[test]
+fn a_function_answers_with_the_type_of_a_default() {
+    let (catalog, h) = small_catalog();
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+
+    // `g(a int4, b text = ..., c text = ...)`. The default of `b` is a
+    // `text` expression. The loader cannot tell the type of the default of
+    // `c`.
+    let argument = |name: &str, ty| Argument {
+        name: Some(Name::new(name)),
+        ty,
+        mode: ArgMode::In,
+    };
+    let g = builder.push_function(Function {
+        arguments: vec![
+            argument("a", h.int4),
+            argument("b", h.text),
+            argument("c", h.text),
+        ],
+        default_count: 2,
+        default_types: vec![Some(h.text), None],
+        ..function(30010, "g", h.public, h.int4, h.int4)
+    });
+    let catalog = builder.finish().expect("the catalog builds");
+
+    let g = &catalog[g];
+    assert_eq!(g.default_type_of(0), None);
+    assert_eq!(g.default_type_of(1), Some(h.text));
+    assert_eq!(g.default_type_of(2), None);
+    assert_eq!(g.default_type_of(3), None);
+}
+
+#[test]
+fn a_function_needs_one_default_type_for_each_default() {
+    let (catalog, h) = small_catalog();
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    builder.push_function(Function {
+        default_count: 1,
+        default_types: Vec::new(),
+        ..function(30010, "g", h.public, h.int4, h.int4)
+    });
+    assert!(matches!(
+        builder.finish(),
+        Err(BuildError::DefaultTypesLength {
+            function: Oid(30010),
+            default_count: 1,
+            default_types: 0,
+        })
+    ));
 }
 
 #[test]

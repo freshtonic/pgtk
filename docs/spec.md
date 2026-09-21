@@ -165,6 +165,9 @@ impl PseudoType {
 pub struct Relation {
     pub oid: Oid, pub name: Name, pub schema: Handle<Schema>, pub kind: RelationKind,
     pub row_type: Option<Handle<Type>>, pub columns: Vec<Column>,
+    /// pg_inherits: direct parents in inhseqno order. Empty when none. Covers
+    /// INHERITS and partitions. The consumer walks the chain (typeInheritsFrom).
+    pub parents: Vec<Handle<Relation>>,    // #[serde(default)]
     pub primary_key: Option<PrimaryKey>,   // #[serde(default)]
     pub extension: Option<Handle<Extension>>,
 }
@@ -205,6 +208,12 @@ pub struct Function {
     pub arguments: Vec<Argument>,           // proallargtypes order, else proargtypes
     pub variadic: Option<Handle<Type>>,     // provariadic when <> 0
     pub default_count: u16,                 // pronargdefaults
+    /// exprType() of each proargdefaults expression. len == default_count (the
+    /// builder enforces it). The defaults belong to the last default_count
+    /// input arguments, in order. An untyped literal for a polymorphic
+    /// argument is Some(unknown). None: a node kind the loader does not know,
+    /// or a type that is not kept.
+    pub default_types: Vec<Option<Handle<Type>>>,   // #[serde(default)]
     pub returns: Handle<Type>, pub returns_set: bool, pub strict: bool,
     pub volatility: Volatility, pub aggregate: Option<AggregateDetail>,
     pub extension: Option<Handle<Extension>>,
@@ -331,6 +340,7 @@ impl Catalog {
     pub const FORMAT_VERSION: u32 = 3;   // 2: Type gained btree and hash_equality
                                          // 3: Relation gained primary_key
                                          // 4: Column.identity became Option<Identity>
+                                         // 5: Relation gained parents, Function gained default_types
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -461,6 +471,8 @@ pub enum BuildError {
     MissingBuiltin { builtin: Builtin, oid: Oid },
     /// A primary key names a position that no column of the relation has.
     UnknownKeyColumn { relation: Oid, position: i16 },
+    /// default_types.len() != default_count.
+    DefaultTypesLength { function: Oid, default_count: u16, default_types: usize },
 }
 ```
 
@@ -520,7 +532,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
-    Operators, Casts, DefaultOperatorClasses, PrimaryKeys }
+    Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -587,7 +599,8 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `WHERE attnum > 0 AND NOT attisdropped AND relkind IN ('r','v','m','f','p','S','c')`
   `ORDER BY attrelid, attnum`.
 - **Functions**: `oid, proname, pronamespace, prokind, provariadic,
-  pronargdefaults, prorettype, proretset, proisstrict, provolatile` with the
+  pronargdefaults, prorettype, proretset, proisstrict, provolatile,
+  proargdefaults::text` with the
   filter, `ORDER BY oid`.
 - **FunctionArguments**: one row per argument:
   ```sql
@@ -616,6 +629,10 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   JOIN pg_class c ON c.oid = k.conrelid` with the filter on `relnamespace`,
   `CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS a(attnum, n)`,
   `WHERE k.contype = 'p'` `ORDER BY conrelid, n`. One row per key column.
+- **Inherits**: `inhrelid, inhseqno, inhparent` from `pg_inherits i JOIN
+  pg_class c ON c.oid = i.inhrelid` with the filter on `relnamespace`,
+  `WHERE c.relkind IN ('r','v','m','f','p','S')` (this drops the partitions of
+  an index) `ORDER BY inhrelid, inhseqno`.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -670,6 +687,24 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
     with no note, when one of its columns is not a column of the relation (the
     column already has a `MissingReference`): a part of a key would let a
     consumer accept a `GROUP BY` that the server rejects.
+10c. Parents: a relation takes its `Inherits` rows in step 7, in `inhseqno`
+    order. A parent that is not kept gives a `MissingReference` (entity
+    `Relation`, referenced `Relation`) and goes; the other parents stay.
+10d. Default types: `loader/node_tree.rs` reads the text of `proargdefaults`.
+    It splits the top-level list into nodes (a backslash escapes a brace) and
+    reads the result type of each node from one field at the top level of the
+    node: `CONST :consttype`, `FUNCEXPR :funcresulttype`, `OPEXPR`,
+    `DISTINCTEXPR`, `NULLIFEXPR :opresulttype`, `RELABELTYPE`, `COERCEVIAIO`,
+    `ARRAYCOERCEEXPR`, `COERCETODOMAIN`, `FIELDSELECT`, `CONVERTROWTYPEEXPR
+    :resulttype`, `ARRAY`/`ARRAYEXPR :array_typeid`, `SUBSCRIPTINGREF
+    :refrestype`, `CASE`/`CASEEXPR :casetype`, `COALESCE`/`COALESCEEXPR
+    :coalescetype`, `MINMAX`/`MINMAXEXPR :minmaxtype`, `ROW`/`ROWEXPR
+    :row_typeid`, `SQLVALUEFUNCTION :type`, `PARAM :paramtype`; `BOOLEXPR`,
+    `NULLTEST`, `BOOLEANTEST`, `SCALARARRAYOPEXPR` give `bool`. PostgreSQL 16
+    renamed some labels, so both forms are read. Another label gives `None`.
+    When the text does not parse, or does not hold `pronargdefaults`
+    expressions, each entry is `None`. No diagnostic: `None` already says
+    that the type is not known.
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.
