@@ -48,9 +48,9 @@ fn lock_server() -> std::sync::MutexGuard<'static, ()> {
 mod sync_tests {
     use super::{lock_server, skip, url};
     use pg_catalog::{
-        ArgMode, Builtin, CastMethod, Catalog, FiresWhen, FunctionKind, Identity, Loaded, Name,
-        ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent, SearchPath,
-        TriggerTiming, TypeKind,
+        ArgMode, Builtin, CastMethod, Catalog, ConstraintKind, FiresWhen, FunctionKind, Identity,
+        Loaded, Name, ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent,
+        SearchPath, TriggerTiming, TypeKind,
     };
     use postgres::{Client, NoTls};
     use std::panic::AssertUnwindSafe;
@@ -435,6 +435,21 @@ mod sync_tests {
                  n int4
              );
              CREATE DOMAIN {schema}.c_word AS text COLLATE \"C\";
+             CREATE TABLE {schema}.booked (
+                 id int4 CONSTRAINT booked_pk PRIMARY KEY,
+                 room int4 NOT NULL CONSTRAINT booked_room_key UNIQUE DEFERRABLE,
+                 seats int4 CONSTRAINT booked_seats_check CHECK (seats > 0),
+                 during int4range,
+                 CONSTRAINT booked_no_overlap EXCLUDE USING gist (during WITH &&),
+                 CONSTRAINT booked_always CHECK (true)
+             );
+             CREATE VIEW {schema}.booked_view AS SELECT id, room FROM {schema}.booked;
+             CREATE RULE booked_view_ins AS ON INSERT TO {schema}.booked_view
+                 DO INSTEAD INSERT INTO {schema}.booked (id, room)
+                 VALUES (new.id, new.room) RETURNING id, room;
+             CREATE OPERATOR CLASS {schema}.int4_backwards_ops FOR TYPE int4 USING btree AS
+                 OPERATOR 1 >, OPERATOR 2 >=, OPERATOR 3 =, OPERATOR 4 <=, OPERATOR 5 <,
+                 FUNCTION 1 btint4cmp(int4, int4);
              CREATE TABLE {schema}.p1 (a int4);
              CREATE TABLE {schema}.p2 (b text);
              CREATE TABLE {schema}.c1 (c int4) INHERITS ({schema}.p2, {schema}.p1);
@@ -685,6 +700,72 @@ mod sync_tests {
             Some(default)
         );
         assert_eq!(catalog[int4].collation, None);
+
+        // A relation has its constraints by name. NOT NULL is not a
+        // constraint on PostgreSQL 14 to 17.
+        let booked = &catalog[relation("booked")];
+        let kinds: Vec<_> = booked
+            .constraints
+            .iter()
+            .map(|c| (c.name.as_str(), c.kind, c.deferrable, c.columns.clone()))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("booked_always", ConstraintKind::Check, false, vec![]),
+                (
+                    "booked_no_overlap",
+                    ConstraintKind::Exclusion,
+                    false,
+                    vec![4]
+                ),
+                ("booked_pk", ConstraintKind::PrimaryKey, false, vec![1]),
+                ("booked_room_key", ConstraintKind::Unique, true, vec![2]),
+                ("booked_seats_check", ConstraintKind::Check, false, vec![3]),
+            ]
+        );
+        assert!(booked.constraint("booked_pk").is_some());
+        assert!(booked.constraint("no_such_constraint").is_none());
+        // The foreign key of `reading_note` is a constraint of that table.
+        assert!(
+            catalog[relation("reading_note")]
+                .constraints
+                .iter()
+                .any(|c| c.kind == ConstraintKind::ForeignKey)
+        );
+
+        // The definition of a rule has the RETURNING list of its action.
+        let rules = &catalog[relation("booked_view")].rules;
+        assert_eq!(rules.len(), 1);
+        let definition = &rules[0].definition;
+        assert!(
+            definition.starts_with("CREATE RULE booked_view_ins"),
+            "{definition}"
+        );
+        assert!(definition.contains("RETURNING"), "{definition}");
+        assert!(rules[0].replaces(RuleEvent::Insert));
+
+        // An operator class answers its name and its access method.
+        let path = SearchPath::new(catalog, [schema, "public"]);
+        let backwards = catalog
+            .operator_class_visible(&path, "int4_backwards_ops", "btree")
+            .expect("the new class is there");
+        assert_eq!(catalog[backwards].input_type, int4);
+        assert!(!catalog[backwards].is_default);
+        assert_eq!(catalog[backwards].extension, None);
+        assert_eq!(
+            catalog.operator_class_visible(&path, "int4_backwards_ops", "hash"),
+            None
+        );
+        let stock = catalog
+            .operator_class_visible(&path, "int4_ops", "btree")
+            .expect("int4_ops is there");
+        assert!(catalog[stock].is_default);
+        // The default class of `int4` is still the stock one.
+        assert_eq!(
+            catalog[catalog.btree_ordering(int4).unwrap().lt].name,
+            Name::new("<")
+        );
 
         // A typed table names the type that it is `OF`. Its row type is
         // another type, with the same fields.

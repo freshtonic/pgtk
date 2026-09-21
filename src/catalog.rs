@@ -13,6 +13,7 @@ use crate::handle::Handle;
 use crate::name::{Name, QualifiedName};
 use crate::oid::Oid;
 use crate::operator::Operator;
+use crate::operator_class::OperatorClass;
 use crate::parameter::{self, Parameter};
 use crate::relation::Relation;
 use crate::schema::Schema;
@@ -101,6 +102,7 @@ pub struct Catalog {
     functions: Vec<Function>,
     operators: Vec<Operator>,
     casts: Vec<Cast>,
+    operator_classes: Vec<OperatorClass>,
     parameters: Vec<Parameter>,
     builtins: Vec<Option<Handle<Type>>>,
     schema_by_oid: HashMap<Oid, Handle<Schema>>,
@@ -121,6 +123,8 @@ pub struct Catalog {
     casts_by_source: HashMap<Handle<Type>, Vec<Handle<Cast>>>,
     parameter_by_name: HashMap<String, usize>,
     collations_by_name: HashMap<(Handle<Schema>, Name), Vec<Handle<Collation>>>,
+    operator_class_by_oid: HashMap<Oid, Handle<OperatorClass>>,
+    operator_class_by_name: HashMap<(Handle<Schema>, Name, Name), Handle<OperatorClass>>,
 }
 
 /// Make handles for an arena, then pair each handle with its entity.
@@ -135,7 +139,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 9;
+    pub const FORMAT_VERSION: u32 = 10;
 
     /// Make a catalog and build its indexes.
     ///
@@ -151,6 +155,7 @@ impl Catalog {
         functions: Vec<Function>,
         operators: Vec<Operator>,
         casts: Vec<Cast>,
+        operator_classes: Vec<OperatorClass>,
         mut parameters: Vec<Parameter>,
     ) -> Self {
         // One name in one schema can have a collation for each encoding.
@@ -259,6 +264,16 @@ impl Catalog {
             casts_by_source,
             parameter_by_name,
             collations_by_name,
+            operator_class_by_oid: with_handles(&operator_classes)
+                .map(|(handle, entity)| (entity.oid, handle))
+                .collect(),
+            operator_class_by_name: with_handles(&operator_classes)
+                .map(|(handle, entity)| {
+                    let key = (entity.schema, entity.name.clone(), entity.method.clone());
+                    (key, handle)
+                })
+                .collect(),
+            operator_classes,
             collations,
             parameters,
             builtins,
@@ -288,6 +303,7 @@ impl Catalog {
         Vec<Function>,
         Vec<Operator>,
         Vec<Cast>,
+        Vec<OperatorClass>,
         Vec<Parameter>,
     ) {
         (
@@ -300,6 +316,7 @@ impl Catalog {
             self.functions,
             self.operators,
             self.casts,
+            self.operator_classes,
             self.parameters,
         )
     }
@@ -378,6 +395,57 @@ impl Catalog {
     /// Every cast, in OID order.
     pub fn casts(&self) -> impl ExactSizeIterator<Item = (Handle<Cast>, &Cast)> {
         with_handles(&self.casts)
+    }
+
+    /// Every operator class, in OID order.
+    pub fn operator_classes(
+        &self,
+    ) -> impl ExactSizeIterator<Item = (Handle<OperatorClass>, &OperatorClass)> {
+        with_handles(&self.operator_classes)
+    }
+
+    /// The operator class with this OID.
+    pub fn operator_class_by_oid(&self, oid: Oid) -> Option<Handle<OperatorClass>> {
+        self.operator_class_by_oid.get(&oid).copied()
+    }
+
+    /// The operator class with this qualified name for this access method.
+    ///
+    /// The name of the access method is in lower case, such as `btree`.
+    /// PostgreSQL gives the error `operator class "x" does not exist for
+    /// access method "btree"` when it finds nothing.
+    pub fn operator_class_named(
+        &self,
+        name: &QualifiedName,
+        method: &str,
+    ) -> Option<Handle<OperatorClass>> {
+        let (schema, name) = self.key(name)?;
+        self.operator_class_by_name
+            .get(&(schema, name, Name::new(method)))
+            .copied()
+    }
+
+    /// The operator class with this name for this access method, in the
+    /// first schema of the search path that has one.
+    pub fn operator_class_visible(
+        &self,
+        path: &SearchPath,
+        name: &str,
+        method: &str,
+    ) -> Option<Handle<OperatorClass>> {
+        let name = Name::new(name);
+        let method = Name::new(method);
+        path.schemas().iter().find_map(|schema| {
+            self.operator_class_by_name
+                .get(&(*schema, name.clone(), method.clone()))
+                .copied()
+        })
+    }
+
+    /// The qualified name of an operator class.
+    pub fn qualified_name_of_operator_class(&self, h: Handle<OperatorClass>) -> QualifiedName {
+        let entity = &self[h];
+        QualifiedName::new(self[entity.schema].name.clone(), entity.name.clone())
     }
 
     /// Every configuration parameter, in the order of the lower-case name.
@@ -720,6 +788,7 @@ impl_index!(Relation, relations);
 impl_index!(Function, functions);
 impl_index!(Operator, operators);
 impl_index!(Cast, casts);
+impl_index!(OperatorClass, operator_classes);
 
 /// The serialized form of a [`Catalog`].
 ///
@@ -739,6 +808,8 @@ struct CatalogData {
     operators: Vec<Operator>,
     casts: Vec<Cast>,
     #[serde(default)]
+    operator_classes: Vec<OperatorClass>,
+    #[serde(default)]
     parameters: Vec<Parameter>,
 }
 
@@ -756,6 +827,7 @@ struct CatalogDataRef<'a> {
     functions: &'a [Function],
     operators: &'a [Operator],
     casts: &'a [Cast],
+    operator_classes: &'a [OperatorClass],
     parameters: &'a [Parameter],
 }
 
@@ -772,6 +844,7 @@ impl serde::Serialize for Catalog {
             functions: &self.functions,
             operators: &self.operators,
             casts: &self.casts,
+            operator_classes: &self.operator_classes,
             parameters: &self.parameters,
         }
         .serialize(serializer)
@@ -816,6 +889,9 @@ impl<'de> serde::Deserialize<'de> for Catalog {
         }
         for entity in data.casts {
             builder.push_cast(entity);
+        }
+        for entity in data.operator_classes {
+            builder.push_operator_class(entity);
         }
         for entity in data.parameters {
             builder.push_parameter(entity);

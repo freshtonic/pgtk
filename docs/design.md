@@ -68,6 +68,17 @@ rest so that they are not re-decided.
   `check_functional_grouping` reads. `PrimaryKey::grouping_columns` is `None`
   for a deferrable key, which PostgreSQL does not accept as proof. No other
   constraint is loaded; the check does not use a unique constraint.
+- Constraints: `Relation.constraints: Vec<Constraint { name, kind, deferrable,
+  columns }>` in name order, for `ON CONFLICT ON CONSTRAINT`, which only finds
+  a constraint of the target by name. `primary_key` stays as the fast path
+  for the grouping check. No `NotNull` kind: PostgreSQL 14 to 17 do not store
+  it in `pg_constraint` for a relation.
+- Operator classes: an Entity with name, Schema, access method name, input
+  Type, and default flag, for `ON CONFLICT (col opclass)`. The key of a
+  lookup is (Schema, name, access method). No families and no members.
+- Rule text: `Rule.definition` is `pg_get_ruledef(oid, true)`. The rewriter
+  takes the result columns of `INSERT INTO view ... RETURNING` from the
+  action of a DO INSTEAD rule, and a consumer parses the text to get them.
 - DML on a view. The rewriter runs at Parse time, so a consumer needs three
   more facts about a Relation: `view_definition: Option<String>`
   (`pg_get_viewdef(oid, true)`, not parsed here), `rules: Vec<Rule>`, and

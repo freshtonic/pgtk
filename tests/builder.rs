@@ -2,11 +2,11 @@
 
 use pg_catalog::{
     ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
-    CatalogBuilder, Collation, CollationProvider, Column, CompositeDetail, DomainDetail, Encoding,
-    Extension, Field, FiresWhen, Function, FunctionKind, Handle, Identity, Metadata, Name, Oid,
-    Operator, OperatorKind, Parameter, ParameterKind, PrimaryKey, QualifiedName, Relation,
-    RelationKind, Rule, RuleEvent, Schema, SearchPath, Trigger, TriggerTiming, Type, TypeCategory,
-    TypeKind, Typmod, Volatility,
+    CatalogBuilder, Collation, CollationProvider, Column, CompositeDetail, Constraint,
+    ConstraintKind, DomainDetail, Encoding, Extension, Field, FiresWhen, Function, FunctionKind,
+    Handle, Identity, Metadata, Name, Oid, Operator, OperatorClass, OperatorKind, Parameter,
+    ParameterKind, PrimaryKey, QualifiedName, Relation, RelationKind, Rule, RuleEvent, Schema,
+    SearchPath, Trigger, TriggerTiming, Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -209,6 +209,7 @@ fn small_catalog() -> (Catalog, Handles) {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        constraints: Vec::new(),
         view_definition: None,
         rules: Vec::new(),
         triggers: Vec::new(),
@@ -489,6 +490,7 @@ fn temporary_catalog() -> (Catalog, TemporaryHandles) {
             of_type: None,
             parents: Vec::new(),
             primary_key: None,
+            constraints: Vec::new(),
             view_definition: None,
             rules: Vec::new(),
             triggers: Vec::new(),
@@ -758,6 +760,7 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        constraints: Vec::new(),
         view_definition: None,
         rules: Vec::new(),
         triggers: Vec::new(),
@@ -1008,6 +1011,7 @@ fn a_view_keeps_its_text_its_rules_and_its_triggers() {
         instead: true,
         unconditional: true,
         fires: FiresWhen::Origin,
+        definition: String::new(),
     }];
     // INSTEAD OF UPDATE FOR EACH ROW: 64 + 16 + 1.
     widget.triggers = vec![Trigger::from_tgtype(
@@ -1041,6 +1045,7 @@ fn a_disabled_or_conditional_rule_does_not_replace_a_statement() {
         instead,
         unconditional,
         fires,
+        definition: String::new(),
     };
     assert!(rule(true, true, FiresWhen::Origin).replaces(RuleEvent::Delete));
     assert!(rule(true, true, FiresWhen::Always).replaces(RuleEvent::Delete));
@@ -1275,6 +1280,94 @@ fn a_type_and_a_column_point_at_a_collation() {
     let widget = &catalog[h.widget];
     assert_eq!(widget.column("label").unwrap().collation, Some(default));
     assert_eq!(widget.column("id").unwrap().collation, None);
+}
+
+#[test]
+fn a_relation_answers_a_constraint_name() {
+    let (catalog, h) = small_catalog();
+    assert_eq!(catalog[h.widget].constraints, Vec::new());
+
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    builder.relation_mut(h.widget).constraints = vec![
+        Constraint {
+            name: Name::new("widget_label_key"),
+            kind: ConstraintKind::Unique,
+            deferrable: false,
+            columns: vec![2],
+        },
+        Constraint {
+            name: Name::new("widget_id_check"),
+            kind: ConstraintKind::Check,
+            deferrable: false,
+            columns: vec![1],
+        },
+    ];
+    let catalog = builder.finish().expect("the catalog builds");
+
+    let widget = &catalog[h.widget];
+    let unique = widget.constraint("widget_label_key").expect("it is there");
+    assert_eq!(unique.kind, ConstraintKind::Unique);
+    assert!(unique.kind.has_index());
+    assert!(!ConstraintKind::Check.has_index());
+    assert!(!ConstraintKind::ForeignKey.has_index());
+    assert!(widget.constraint("no_such_constraint").is_none());
+}
+
+#[test]
+fn an_operator_class_answers_a_name_and_an_access_method() {
+    let (catalog, h) = small_catalog();
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    let mut class = |oid: u32, schema, method: &str, is_default| {
+        builder.push_operator_class(OperatorClass {
+            oid: Oid(oid),
+            name: Name::new("int4_ops"),
+            schema,
+            method: Name::new(method),
+            input_type: h.int4,
+            is_default,
+            extension: None,
+        })
+    };
+    let btree = class(1978, h.pg_catalog, "btree", true);
+    let hash = class(1977, h.pg_catalog, "hash", true);
+    let public_btree = class(70000, h.public, "btree", false);
+    let catalog = builder.finish().expect("the catalog builds");
+
+    let name = QualifiedName::new("pg_catalog", "int4_ops");
+    assert_eq!(catalog.operator_class_named(&name, "btree"), Some(btree));
+    assert_eq!(catalog.operator_class_named(&name, "hash"), Some(hash));
+    assert_eq!(catalog.operator_class_named(&name, "gist"), None);
+    assert_eq!(
+        catalog.operator_class_named(&QualifiedName::new("nope", "int4_ops"), "btree"),
+        None
+    );
+
+    // `public` is after the implicit `pg_catalog` on this path.
+    let path = SearchPath::new(&catalog, ["public"]);
+    assert_eq!(
+        catalog.operator_class_visible(&path, "int4_ops", "btree"),
+        Some(btree)
+    );
+    let path = SearchPath::new(&catalog, ["public", "pg_catalog"]);
+    assert_eq!(
+        catalog.operator_class_visible(&path, "int4_ops", "btree"),
+        Some(public_btree)
+    );
+    // `public` has no `hash` class with the name, so the walk goes on.
+    assert_eq!(
+        catalog.operator_class_visible(&path, "int4_ops", "hash"),
+        Some(hash)
+    );
+
+    assert_eq!(catalog.operator_classes().len(), 3);
+    assert_eq!(catalog.operator_class_by_oid(Oid(1977)), Some(hash));
+    assert_eq!(
+        catalog.qualified_name_of_operator_class(public_btree),
+        QualifiedName::new("public", "int4_ops")
+    );
+    assert_eq!(catalog[btree].input_type, h.int4);
 }
 
 #[test]

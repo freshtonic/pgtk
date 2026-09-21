@@ -1,6 +1,7 @@
 //! Relations and their columns.
 
 use crate::collation::Collation;
+use crate::constraint::Constraint;
 use crate::extension::Extension;
 use crate::handle::Handle;
 use crate::name::Name;
@@ -59,6 +60,13 @@ pub struct Relation {
     /// No other constraint is in the model.
     #[cfg_attr(feature = "serde", serde(default))]
     pub primary_key: Option<PrimaryKey>,
+    /// The constraints of the relation, in name order.
+    ///
+    /// The primary key is here too, as a constraint with the kind
+    /// [`ConstraintKind::PrimaryKey`](crate::ConstraintKind::PrimaryKey).
+    /// [`primary_key`](Relation::primary_key) gives it without a search.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub constraints: Vec<Constraint>,
     /// The query of a view or of a materialized view, as SQL text.
     ///
     /// This is `pg_get_viewdef(oid, true)`. It is `None` for each other kind
@@ -86,6 +94,15 @@ impl Relation {
     /// The column with this name, when the relation has one.
     pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name.as_str() == name)
+    }
+
+    /// The constraint with this name, when the relation has one.
+    ///
+    /// `ON CONFLICT ON CONSTRAINT name` needs this lookup. PostgreSQL gives
+    /// the error `constraint "x" for table "t" does not exist` when it finds
+    /// nothing.
+    pub fn constraint(&self, name: &str) -> Option<&Constraint> {
+        self.constraints.iter().find(|c| c.name.as_str() == name)
     }
 
     /// The column at this attribute position, when the relation has one.

@@ -11,6 +11,7 @@ use crate::function::Function;
 use crate::handle::Handle;
 use crate::oid::Oid;
 use crate::operator::Operator;
+use crate::operator_class::OperatorClass;
 use crate::parameter::{self, Parameter};
 use crate::relation::Relation;
 use crate::schema::Schema;
@@ -32,6 +33,7 @@ pub struct CatalogBuilder {
     functions: Vec<Function>,
     operators: Vec<Operator>,
     casts: Vec<Cast>,
+    operator_classes: Vec<OperatorClass>,
     parameters: Vec<Parameter>,
     permit_missing_builtins: bool,
 }
@@ -142,6 +144,7 @@ impl CatalogBuilder {
             functions: Vec::new(),
             operators: Vec::new(),
             casts: Vec::new(),
+            operator_classes: Vec::new(),
             parameters: Vec::new(),
             permit_missing_builtins: false,
         }
@@ -162,6 +165,7 @@ impl CatalogBuilder {
             functions,
             operators,
             casts,
+            operator_classes,
             parameters,
         ) = catalog.into_parts();
         CatalogBuilder {
@@ -174,6 +178,7 @@ impl CatalogBuilder {
             functions,
             operators,
             casts,
+            operator_classes,
             parameters,
             permit_missing_builtins: false,
         }
@@ -228,6 +233,13 @@ impl CatalogBuilder {
     pub fn push_operator(&mut self, o: Operator) -> Handle<Operator> {
         let handle = Handle::new(self.operators.len() as u32);
         self.operators.push(o);
+        handle
+    }
+
+    /// Add an operator class and give back its handle.
+    pub fn push_operator_class(&mut self, c: OperatorClass) -> Handle<OperatorClass> {
+        let handle = Handle::new(self.operator_classes.len() as u32);
+        self.operator_classes.push(c);
         handle
     }
 
@@ -401,6 +413,11 @@ impl CatalogBuilder {
             check_opt(entity.negator, operators, "operator")?;
             check_opt(entity.extension, extensions, "extension")?;
         }
+        for entity in &self.operator_classes {
+            check(entity.schema, schemas, "schema")?;
+            check(entity.input_type, types, "type")?;
+            check_opt(entity.extension, extensions, "extension")?;
+        }
         for entity in &self.casts {
             check(entity.source, types, "type")?;
             check(entity.target, types, "type")?;
@@ -422,6 +439,10 @@ impl CatalogBuilder {
         check_oids(self.functions.iter().map(|e| e.oid), "function")?;
         check_oids(self.operators.iter().map(|e| e.oid), "operator")?;
         check_oids(self.casts.iter().map(|e| e.oid), "cast")?;
+        check_oids(
+            self.operator_classes.iter().map(|e| e.oid),
+            "operator class",
+        )?;
         let mut names = HashSet::new();
         for entity in &self.parameters {
             if !names.insert(parameter::lookup_key(&entity.name)) {
@@ -476,6 +497,7 @@ impl CatalogBuilder {
             self.functions,
             self.operators,
             self.casts,
+            self.operator_classes,
             self.parameters,
         ))
     }

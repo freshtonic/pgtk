@@ -95,6 +95,10 @@ pub enum QueryId {
     Parameters,
     /// Every collation in a loaded schema.
     Collations,
+    /// One row per column of every constraint of a relation.
+    Constraints,
+    /// Every operator class in a loaded schema.
+    OperatorClasses,
 }
 
 impl QueryId {
@@ -122,6 +126,8 @@ impl QueryId {
         QueryId::Triggers,
         QueryId::Parameters,
         QueryId::Collations,
+        QueryId::Constraints,
+        QueryId::OperatorClasses,
     ];
 }
 
@@ -152,6 +158,8 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Triggers => TRIGGERS,
         QueryId::Parameters => PARAMETERS,
         QueryId::Collations => COLLATIONS,
+        QueryId::Constraints => CONSTRAINTS,
+        QueryId::OperatorClasses => OPERATOR_CLASSES,
     }
 }
 
@@ -239,7 +247,7 @@ ORDER BY e.oid
 //
 // Columns:
 //   0  class_label  one of `type`, `class`, `proc`, `operator`, `cast`,
-//                   `namespace`, `collation`, or `other`
+//                   `namespace`, `collation`, `opclass`, or `other`
 //   1  objid        OID of the member object
 //   2  refobjid     OID of the extension that owns it
 //@sql ExtensionMembers
@@ -253,6 +261,7 @@ SELECT
         WHEN 'pg_catalog.pg_cast'::pg_catalog.regclass THEN 'cast'
         WHEN 'pg_catalog.pg_namespace'::pg_catalog.regclass THEN 'namespace'
         WHEN 'pg_catalog.pg_collation'::pg_catalog.regclass THEN 'collation'
+        WHEN 'pg_catalog.pg_opclass'::pg_catalog.regclass THEN 'opclass'
         ELSE 'other'
     END)::text AS class_label,
     d.objid::text,
@@ -707,6 +716,7 @@ ORDER BY i.inhrelid, i.inhseqno
 //   4  is_instead     `t` for a DO INSTEAD rule
 //   5  unconditional  `t` when the rule has no condition
 //   6  ev_enabled     firing letter: O D R A
+//   7  definition     SQL text of the whole CREATE RULE statement
 //@sql Rules
 const RULES: &str = r#"
 SELECT
@@ -716,7 +726,8 @@ SELECT
     r.ev_type::text,
     (CASE WHEN r.is_instead THEN 't' ELSE 'f' END)::text AS is_instead,
     (CASE WHEN r.ev_qual::text = '<>' THEN 't' ELSE 'f' END)::text AS unconditional,
-    r.ev_enabled::text
+    r.ev_enabled::text,
+    pg_catalog.pg_get_ruledef(r.oid, true)::text AS definition
 FROM pg_catalog.pg_rewrite r
 JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -803,6 +814,75 @@ SELECT
     c.collencoding::text
 FROM pg_catalog.pg_collation c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.collnamespace
+WHERE n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY c.oid
+"#;
+
+// One row per column of every constraint of a relation, in `conkey` order.
+//
+// A constraint with no column gives one row, with NULL in the last two
+// columns. A constraint of a domain has `conrelid` 0 and is not here. The
+// primary key is here, and the PrimaryKeys query gives it too.
+//
+// The schema filter applies to the schema of the relation.
+//
+// Columns:
+//   0  oid            constraint OID
+//   1  conrelid       OID of the relation
+//   2  conname        constraint name
+//   3  contype        kind letter: p u c f x t
+//   4  condeferrable  `t` when the constraint is deferrable
+//   5  n              position of the column in `conkey`, from 1, or NULL
+//   6  attnum         attribute number of the column, 0 for an expression of
+//                     an exclusion constraint, or NULL
+//@sql Constraints
+const CONSTRAINTS: &str = r#"
+SELECT
+    k.oid::text,
+    k.conrelid::text,
+    k.conname::text,
+    k.contype::text,
+    (CASE WHEN k.condeferrable THEN 't' ELSE 'f' END)::text AS condeferrable,
+    a.n::text,
+    a.attnum::text
+FROM pg_catalog.pg_constraint k
+JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS a(attnum, n) ON true
+WHERE k.conrelid <> 0
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY k.conrelid, k.conname, a.n
+"#;
+
+// One row per operator class in a loaded schema, for each access method.
+//
+// The operator family and the members of a class are not here. The
+// DefaultOperatorClasses query gives the operators of a default class.
+//
+// Columns:
+//   0  oid           operator class OID
+//   1  opcname       operator class name
+//   2  opcnamespace  OID of the schema that holds the class
+//   3  amname        access method name, such as `btree`
+//   4  opcintype     OID of the input type of the class
+//   5  opcdefault    `t` when the class is the default for its input type
+//@sql OperatorClasses
+const OPERATOR_CLASSES: &str = r#"
+SELECT
+    c.oid::text,
+    c.opcname::text,
+    c.opcnamespace::text,
+    am.amname::text,
+    c.opcintype::text,
+    (CASE WHEN c.opcdefault THEN 't' ELSE 'f' END)::text AS opcdefault
+FROM pg_catalog.pg_opclass c
+JOIN pg_catalog.pg_am am ON am.oid = c.opcmethod
+JOIN pg_catalog.pg_namespace n ON n.oid = c.opcnamespace
 WHERE n.nspname NOT LIKE 'pg\_toast%'
   AND (n.nspname NOT LIKE 'pg\_temp%'
        OR n.oid = pg_catalog.pg_my_temp_schema())

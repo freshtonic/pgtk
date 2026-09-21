@@ -91,6 +91,8 @@ pub enum EntityKind {
     Parameter,
     /// A collation.
     Collation,
+    /// A constraint of a relation.
+    Constraint,
 }
 
 impl EntityKind {
@@ -110,6 +112,7 @@ impl EntityKind {
             EntityKind::Trigger => "trigger",
             EntityKind::Parameter => "parameter",
             EntityKind::Collation => "collation",
+            EntityKind::Constraint => "constraint",
         }
     }
 }

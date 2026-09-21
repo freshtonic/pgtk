@@ -12,9 +12,9 @@ use crate::types::Type;
 ///
 /// An operator is a named symbol with an optional left operand type, a right
 /// operand type, a result type, and a function that does the work. The model
-/// holds no operator class and no operator family. It holds only the
-/// operators that the default btree and hash operator classes give a
-/// [`Type`]: see [`Type::btree`] and [`Type::hash_equality`].
+/// holds no operator family. An [`OperatorClass`](crate::OperatorClass) holds
+/// no member. The operators that the default btree and hash operator classes
+/// give a [`Type`] are in [`Type::btree`] and [`Type::hash_equality`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Operator {

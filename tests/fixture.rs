@@ -10,8 +10,8 @@
 
 use pg_catalog::{
     Builtin, CastContext, Catalog, CatalogBuilder, CollationProvider, Column, CompositeDetail,
-    Field, FiresWhen, FunctionKind, Name, Oid, ParameterKind, QualifiedName, Relation,
-    RelationKind, RuleEvent, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod,
+    ConstraintKind, Field, FiresWhen, FunctionKind, Name, Oid, ParameterKind, QualifiedName,
+    Relation, RelationKind, RuleEvent, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod,
     fixture::pg17,
 };
 
@@ -348,6 +348,96 @@ fn c_and_posix_are_visible_collations() {
 }
 
 #[test]
+fn pg_class_has_its_constraints_by_name() {
+    let catalog = pg17();
+    let handle = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
+        .expect("pg_class is a relation");
+    let relation = &catalog[handle];
+
+    let key = relation
+        .constraint("pg_class_oid_index")
+        .expect("the primary key is a constraint");
+    assert_eq!(key.kind, ConstraintKind::PrimaryKey);
+    assert_eq!(
+        Some(key.columns.as_slice()),
+        relation.primary_key.as_ref().map(|k| k.columns.as_slice())
+    );
+
+    let unique = relation
+        .constraint("pg_class_relname_nsp_index")
+        .expect("the unique constraint is there");
+    assert_eq!(unique.kind, ConstraintKind::Unique);
+    assert_eq!(unique.columns.len(), 2);
+    assert!(relation.constraint("no_such_constraint").is_none());
+
+    // Each primary key is also a constraint.
+    for (_, relation) in catalog.relations() {
+        let keys = relation
+            .constraints
+            .iter()
+            .filter(|c| c.kind == ConstraintKind::PrimaryKey)
+            .count();
+        assert_eq!(
+            keys,
+            usize::from(relation.primary_key.is_some()),
+            "{}",
+            relation.name
+        );
+    }
+}
+
+#[test]
+fn int4_ops_is_a_btree_class_and_a_hash_class() {
+    let catalog = pg17();
+    let int4 = catalog.builtin(Builtin::Int4);
+    let path = SearchPath::from_metadata(&catalog);
+    for method in ["btree", "hash"] {
+        let handle = catalog
+            .operator_class_visible(&path, "int4_ops", method)
+            .unwrap_or_else(|| panic!("int4_ops is a {method} class"));
+        let class = &catalog[handle];
+        assert_eq!(class.method.as_str(), method);
+        assert_eq!(class.input_type, int4);
+        assert!(class.is_default);
+    }
+    assert_eq!(
+        catalog.operator_class_visible(&path, "int4_ops", "gist"),
+        None
+    );
+    assert_eq!(
+        catalog.operator_class_visible(&path, "no_such_ops", "btree"),
+        None
+    );
+
+    // `text_pattern_ops` is a class that is not the default.
+    let pattern = catalog
+        .operator_class_named(
+            &QualifiedName::new("pg_catalog", "text_pattern_ops"),
+            "btree",
+        )
+        .expect("text_pattern_ops is there");
+    assert!(!catalog[pattern].is_default);
+    assert!(catalog.operator_classes().len() > 150);
+}
+
+#[test]
+fn a_rule_has_its_definition() {
+    let catalog = pg17();
+    let handle = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_settings"))
+        .expect("pg_settings is a relation");
+    for rule in &catalog[handle].rules {
+        assert!(
+            rule.definition.starts_with("CREATE RULE"),
+            "{}",
+            rule.definition
+        );
+        assert!(rule.definition.contains(rule.name.as_str()));
+    }
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -486,6 +576,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        constraints: Vec::new(),
         view_definition: None,
         rules: Vec::new(),
         triggers: Vec::new(),
