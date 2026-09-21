@@ -129,6 +129,33 @@ fn the_operator_class_lookup_is_for_the_exact_type() {
 }
 
 #[test]
+fn pg_class_has_its_oid_as_the_primary_key() {
+    let catalog = pg17();
+    let handle = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
+        .expect("pg_class is a relation");
+    let relation = &catalog[handle];
+    let key = relation
+        .primary_key
+        .as_ref()
+        .expect("pg_class has a primary key");
+    assert!(!key.deferrable);
+    let names: Vec<&str> = key
+        .grouping_columns()
+        .expect("the key is not deferrable")
+        .iter()
+        .map(|position| relation.column_at(*position).unwrap().name.as_str())
+        .collect();
+    assert_eq!(names, vec!["oid"]);
+
+    // A view has no primary key.
+    let view = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_tables"))
+        .expect("pg_tables is a relation");
+    assert_eq!(catalog[view].primary_key, None);
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -262,6 +289,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             generated: false,
             identity: false,
         }],
+        primary_key: None,
         extension: None,
     });
 

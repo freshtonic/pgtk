@@ -79,7 +79,7 @@ pub use loader::{Loaded, Loader, QueryId, Rows};
 pub use name::{Name, QualifiedName};
 pub use oid::Oid;
 pub use operator::{Operator, OperatorKind};
-pub use relation::{Column, Relation, RelationKind};
+pub use relation::{Column, PrimaryKey, Relation, RelationKind};
 pub use schema::Schema;
 pub use search_path::SearchPath;
 pub use types::{

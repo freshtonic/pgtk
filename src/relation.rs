@@ -29,6 +29,11 @@ pub struct Relation {
     pub row_type: Option<Handle<Type>>,
     /// The live columns, in attribute order.
     pub columns: Vec<Column>,
+    /// The primary key of the relation, when it has one.
+    ///
+    /// No other constraint is in the model.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub primary_key: Option<PrimaryKey>,
     /// The extension that owns this relation, when one does.
     pub extension: Option<Handle<Extension>>,
 }
@@ -37,6 +42,47 @@ impl Relation {
     /// The column with this name, when the relation has one.
     pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name.as_str() == name)
+    }
+
+    /// The column at this attribute position, when the relation has one.
+    ///
+    /// The position is [`Column::position`]. It is not an index into
+    /// [`columns`](Relation::columns), because a dropped attribute leaves a
+    /// gap in the positions.
+    pub fn column_at(&self, position: i16) -> Option<&Column> {
+        self.columns.iter().find(|c| c.position == position)
+    }
+}
+
+/// The primary key of a relation: a `pg_constraint` row with `contype` `p`.
+///
+/// PostgreSQL reads the primary key in its check of an ungrouped column.
+/// When each column of the key is in `GROUP BY`, each other column of the
+/// relation is functionally dependent on the key, and thus is grouped too.
+/// PostgreSQL applies this rule only when the key is not deferrable. See
+/// [`grouping_columns`](PrimaryKey::grouping_columns).
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct PrimaryKey {
+    /// The attribute positions of the key columns, in key order.
+    ///
+    /// This is `conkey`. Each position is the [`Column::position`] of a
+    /// column of the relation. Key order can be different from column order.
+    pub columns: Vec<i16>,
+    /// True when the constraint is `DEFERRABLE`.
+    ///
+    /// A deferrable key can hold duplicates inside a transaction, so
+    /// PostgreSQL does not use it to prove a functional dependency.
+    pub deferrable: bool,
+}
+
+impl PrimaryKey {
+    /// The key columns that prove a functional dependency in `GROUP BY`.
+    ///
+    /// This is `None` for a deferrable key, as in `check_functional_grouping`
+    /// of PostgreSQL.
+    pub fn grouping_columns(&self) -> Option<&[i16]> {
+        (!self.deferrable).then_some(self.columns.as_slice())
     }
 }
 

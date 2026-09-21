@@ -164,7 +164,24 @@ impl PseudoType {
 
 pub struct Relation {
     pub oid: Oid, pub name: Name, pub schema: Handle<Schema>, pub kind: RelationKind,
-    pub row_type: Option<Handle<Type>>, pub columns: Vec<Column>, pub extension: Option<Handle<Extension>>,
+    pub row_type: Option<Handle<Type>>, pub columns: Vec<Column>,
+    pub primary_key: Option<PrimaryKey>,   // #[serde(default)]
+    pub extension: Option<Handle<Extension>>,
+}
+impl Relation {
+    pub fn column(&self, name: &str) -> Option<&Column>;
+    /// By `Column::position` (attnum), not by index: a dropped attribute leaves a gap.
+    pub fn column_at(&self, position: i16) -> Option<&Column>;
+}
+/// pg_constraint with contype = 'p'. No other constraint is in the model.
+pub struct PrimaryKey {
+    pub columns: Vec<i16>,   // conkey: attribute positions, in key order
+    pub deferrable: bool,    // condeferrable
+}
+impl PrimaryKey {
+    /// `None` when deferrable, as in check_functional_grouping
+    /// (get_primary_key_attnos with deferrableOk = false).
+    pub fn grouping_columns(&self) -> Option<&[i16]>;
 }
 pub enum RelationKind { Table, View, MaterializedView, ForeignTable, PartitionedTable, Sequence }
 // relkind r v m f p S
@@ -306,7 +323,8 @@ impl Metadata { pub fn placeholder() -> Self; }  // version 0.0, database "place
 
 pub struct Catalog { /* private: arenas, metadata, builtins, indexes */ }
 impl Catalog {
-    pub const FORMAT_VERSION: u32 = 2;   // 2: Type gained btree and hash_equality
+    pub const FORMAT_VERSION: u32 = 3;   // 2: Type gained btree and hash_equality
+                                         // 3: Relation gained primary_key
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -435,6 +453,8 @@ pub enum BuildError {
     DuplicateOid { entity: &'static str, oid: Oid },
     #[error("built-in type {builtin:?} (oid {oid}) is missing")]
     MissingBuiltin { builtin: Builtin, oid: Oid },
+    /// A primary key names a position that no column of the relation has.
+    UnknownKeyColumn { relation: Oid, position: i16 },
 }
 ```
 
@@ -494,7 +514,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
-    Operators, Casts, DefaultOperatorClasses }
+    Operators, Casts, DefaultOperatorClasses, PrimaryKeys }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -586,6 +606,10 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `WHERE c.opcdefault AND am.amname IN ('btree','hash')`
   `ORDER BY c.oid, o.amopstrategy`. Cross-type family members
   (`amoplefttype <> amoprighttype`) are not read.
+- **PrimaryKeys**: `conrelid, condeferrable, n, attnum` from `pg_constraint k
+  JOIN pg_class c ON c.oid = k.conrelid` with the filter on `relnamespace`,
+  `CROSS JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS a(attnum, n)`,
+  `WHERE k.contype = 'p'` `ORDER BY conrelid, n`. One row per key column.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -632,6 +656,12 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
     `Skipped` with `IncompleteOperatorClass`; it sets `Type::btree`. A hash
     class sets `Type::hash_equality` from strategy 1. When two classes are the
     default for one type and one access method, the lower OID wins.
+10b. Primary keys: group the rows by `conrelid`, in `n` order. A relation
+    takes its key in step 7. A key of a relation that is not kept goes away
+    with no note, because the relation already has one. A key goes away, also
+    with no note, when one of its columns is not a column of the relation (the
+    column already has a `MissingReference`): a part of a key would let a
+    consumer accept a `GROUP BY` that the server rejects.
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.
