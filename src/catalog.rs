@@ -365,6 +365,15 @@ impl Catalog {
         self.schema_by_name.get(name).copied()
     }
 
+    /// The temporary schema of the session that the loader used.
+    ///
+    /// This is `None` when that session had no temporary schema.
+    pub fn temporary_schema(&self) -> Option<Handle<Schema>> {
+        self.schemas()
+            .find(|(_, schema)| schema.is_temporary)
+            .map(|(handle, _)| handle)
+    }
+
     /// The extension with this name.
     pub fn extension_named(&self, name: &str) -> Option<Handle<Extension>> {
         self.extension_by_name.get(name).copied()
@@ -433,10 +442,16 @@ impl Catalog {
     /// The order is search-path order, then OID order inside one schema. The
     /// hiding rule, where a function in an earlier schema hides one with the
     /// same signature, belongs to the consumer.
+    ///
+    /// The lookup skips a temporary schema. PostgreSQL never searches
+    /// `pg_temp` for the name of a function or of an operator, so that a
+    /// temporary object cannot take the place of a permanent one. A qualified
+    /// name still finds the function, through
+    /// [`functions_named`](Catalog::functions_named).
     pub fn functions_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Function>> {
         let key = Name::new(name);
         let mut found = Vec::new();
-        for schema in path.schemas() {
+        for schema in self.permanent_schemas(path) {
             if let Some(group) = self.functions_by_name.get(&(*schema, key.clone())) {
                 found.extend_from_slice(group);
             }
@@ -447,16 +462,27 @@ impl Catalog {
     /// Every operator with this name along the search path.
     ///
     /// The order is the same as for
-    /// [`functions_visible`](Catalog::functions_visible).
+    /// [`functions_visible`](Catalog::functions_visible). The lookup skips a
+    /// temporary schema, for the same reason.
     pub fn operators_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Operator>> {
         let key = Name::new(name);
         let mut found = Vec::new();
-        for schema in path.schemas() {
+        for schema in self.permanent_schemas(path) {
             if let Some(group) = self.operators_by_name.get(&(*schema, key.clone())) {
                 found.extend_from_slice(group);
             }
         }
         found
+    }
+
+    /// The schemas of a search path, without a temporary schema.
+    fn permanent_schemas<'a>(
+        &'a self,
+        path: &'a SearchPath,
+    ) -> impl Iterator<Item = &'a Handle<Schema>> {
+        path.schemas()
+            .iter()
+            .filter(|schema| !self[**schema].is_temporary)
     }
 
     /// The stored cast from one type to another, when the catalog holds one.

@@ -98,7 +98,13 @@ pattern-match. They are not `#[non_exhaustive]`; adding a field is a breaking
 change, and that is accepted.
 
 ```rust
-pub struct Schema { pub oid: Oid, pub name: Name, pub extension: Option<Handle<Extension>> }
+pub struct Schema {
+    pub oid: Oid, pub name: Name,
+    /// True for the temporary schema (`pg_temp_N`) of the loader's session.
+    /// At most one per catalog. `#[serde(default)]`, so a file without it loads.
+    pub is_temporary: bool,
+    pub extension: Option<Handle<Extension>>,
+}
 
 pub struct Extension { pub oid: Oid, pub name: Name, pub version: String, pub schema: Handle<Schema> }
 
@@ -309,6 +315,8 @@ impl Catalog {
 
     // By name
     pub fn schema_named(&self, name: &str) -> Option<Handle<Schema>>;
+    /// The temporary schema of the loader's session, if it had one.
+    pub fn temporary_schema(&self) -> Option<Handle<Schema>>;
     pub fn extension_named(&self, name: &str) -> Option<Handle<Extension>>;
     pub fn type_named(&self, name: &QualifiedName) -> Option<Handle<Type>>;
     pub fn relation_named(&self, name: &QualifiedName) -> Option<Handle<Relation>>;
@@ -321,6 +329,8 @@ impl Catalog {
     pub fn relation_visible(&self, path: &SearchPath, name: &str) -> Option<Handle<Relation>>;
     /// Every candidate in search-path order, then OID order within a schema.
     /// The hiding rule (identical signature in an earlier schema) is the consumer's.
+    /// Both skip a temporary schema: PostgreSQL never searches `pg_temp` for a
+    /// function or an operator. A qualified name still finds one.
     pub fn functions_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Function>>;
     pub fn operators_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Operator>>;
 
@@ -355,7 +365,10 @@ pub struct SearchPath { /* private: Vec<Handle<Schema>> */ }
 impl SearchPath {
     /// Resolve names against `catalog`. Unknown schemas are dropped, and a
     /// repeated schema keeps its first position.
-    /// `pg_catalog` is inserted first unless it appears explicitly.
+    /// Implicit schemas, in PostgreSQL's order: the temporary schema first
+    /// (when the catalog holds one), then `pg_catalog`. Each is inserted only
+    /// when the list does not name it. `pg_temp` is an alias for the temporary
+    /// schema; its `pg_temp_N` name works too.
     pub fn new<'a>(catalog: &Catalog, names: impl IntoIterator<Item = &'a str>) -> Self;
     /// From the names recorded at load: `catalog.metadata().search_path`.
     pub fn from_metadata(catalog: &Catalog) -> Self;
@@ -363,7 +376,8 @@ impl SearchPath {
 }
 ```
 
-`pg_temp` is not special-cased: temp schemas are never loaded.
+`pg_temp` names the temporary schema of the loader's session. Without such a
+schema, `pg_temp` matches nothing and is dropped, like any unknown name.
 
 ## 8. CatalogBuilder
 
@@ -492,13 +506,17 @@ documented in `queries.rs`; keep that shape when editing SQL.
 
 ### Query definitions (column order is the contract)
 
-Schema filter used everywhere: `nspname NOT LIKE 'pg\_toast%' AND nspname
-NOT LIKE 'pg\_temp%'` via a join on `pg_namespace`.
+Schema filter used everywhere: `nspname NOT LIKE 'pg\_toast%' AND (nspname
+NOT LIKE 'pg\_temp%' OR oid = pg_catalog.pg_my_temp_schema())` via a join on
+`pg_namespace`. It keeps the session's own temporary schema and drops those of
+other sessions. `pg_my_temp_schema()` is 0 when the session has none.
+`pg_toast_temp_N` matches `pg\_toast%`, so it stays out.
 
 - **Version**: `SELECT current_setting('server_version_num')`.
 - **Database**: `SELECT current_database()::text`.
 - **SearchPath**: `SELECT s::text FROM unnest(current_schemas(true)) WITH ORDINALITY AS t(s, n) ORDER BY n`.
-- **Schemas**: `oid, nspname` from `pg_namespace` with the filter, `ORDER BY oid`.
+- **Schemas**: `oid, nspname, (oid = pg_my_temp_schema()) AS is_temporary` from
+  `pg_namespace` with the filter, `ORDER BY oid`.
 - **Extensions**: `oid, extname, extversion, extnamespace` `ORDER BY oid`.
 - **ExtensionMembers**: from `pg_depend` where `deptype = 'e'` and
   `refclassid = 'pg_catalog.pg_extension'::regclass`: columns
