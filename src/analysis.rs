@@ -74,6 +74,73 @@ pub struct FunctionResolution {
     pub returns_set: bool,
 }
 
+/// `CollateStrength`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Strength {
+    /// A non-collatable expression.
+    None,
+    /// A collation derived implicitly.
+    Implicit,
+    /// A conflict of implicit collations.
+    Conflict,
+    /// A collation given by a COLLATE clause.
+    Explicit,
+}
+
+/// `assign_collations_context`: the collation state being merged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct CollContext {
+    pub collation: Option<pg_catalog::Handle<pg_catalog::Collation>>,
+    pub strength: Strength,
+    pub location: usize,
+    /// The second collation of a conflict.
+    pub collation2: Option<pg_catalog::Handle<pg_catalog::Collation>>,
+    pub location2: usize,
+}
+
+impl CollContext {
+    pub fn new() -> Self {
+        Self {
+            collation: None,
+            strength: Strength::None,
+            location: crate::diagnostic::NO_LOCATION,
+            collation2: None,
+            location2: crate::diagnostic::NO_LOCATION,
+        }
+    }
+
+    /// The state of a column whose collation was derived implicitly, or
+    /// of a non-collatable one.
+    pub fn implicit(collation: Option<Handle<pg_catalog::Collation>>, location: usize) -> Self {
+        Self {
+            collation,
+            strength: if collation.is_some() {
+                Strength::Implicit
+            } else {
+                Strength::None
+            },
+            location,
+            collation2: None,
+            location2: crate::diagnostic::NO_LOCATION,
+        }
+    }
+
+    /// The collation the state resolves to: none for a conflict.
+    pub fn resolved(&self) -> Option<Handle<pg_catalog::Collation>> {
+        if self.strength == Strength::Conflict {
+            None
+        } else {
+            self.collation
+        }
+    }
+}
+
+impl Default for CollContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// One entry of a target list, `TargetEntry`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetEntry {
@@ -92,6 +159,11 @@ pub struct TargetEntry {
     pub location: usize,
     /// The fields of a `record` entry whose row is known.
     pub(crate) fields: Option<Vec<RecordField>>,
+    /// `exprCollation` of the entry's expression, once assigned.
+    pub(crate) collation: Option<Handle<pg_catalog::Collation>>,
+    /// The collation state of the expression, for a set operation to
+    /// merge with its strength.
+    pub(crate) collation_state: CollContext,
 }
 
 /// One field of a `record` whose row is known: a row constructor, a

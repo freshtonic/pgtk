@@ -27,6 +27,11 @@ aggregate, WITHIN GROUP and a window.
 
 Open:
 
+- `expr COLLATE schema.name` does not parse: `Expr::Collate` holds one
+  `ColId`, while gram.y takes `any_name`. Reported 2026-09-21.
+- `CAST(x AS type COLLATE c)` parses (`CastAsInner.collate`), while gram.y
+  has no COLLATE after the Typename of a CAST; PostgreSQL answers a syntax
+  error there, as collate.sql expects. Reported 2026-09-21.
 - Promoting shared-pool types that carry Annotations (`SelectItem`,
   `QualifiedRef`, `PositionalParam`, `QueryBody`, `InsertStmt`, `UpdateStmt`)
   to typed pools is deferred until the Oracle harness gives a measurement,
@@ -34,7 +39,7 @@ Open:
 
 ## pg-catalog
 
-Done (pg-catalog main de06f4f): sequences; `Relation.primary_key` with
+Done (pg-catalog main 3fa026f): sequences; `Relation.primary_key` with
 deferrability; `Column.identity` as `Option<Identity>` (ALWAYS or BY DEFAULT);
 `Relation.parents` from `pg_inherits`, for `typeInheritsFrom`;
 `Function.default_types`, the type of each default expression, for the
@@ -42,23 +47,15 @@ polymorphic resolution of defaulted arguments; `Relation.of_type` for
 `typeIsOfTypedTable`; `Relation.view_definition`, `Relation.rules` and
 `Relation.triggers` for the Rewrite of a data-modifying Statement on a view;
 `Catalog::parameter`, the configuration parameter names from `pg_settings`,
-for the Result Descriptor of SHOW.
+for the Result Descriptor of SHOW; collations: the `Collation` Entity with
+`collation_named` and `collation_visible`, `Type.collation`,
+`Column.collation` and the database encoding, for `parse_collate`;
+`Relation.constraints` for ON CONFLICT ON CONSTRAINT; operator classes
+(`operator_class_visible`) for the operator class of an ON CONFLICT target;
+`Rule.definition` for RETURNING through a DO INSTEAD rule.
 
 Open:
 
-- Constraints other than the primary key are absent. `ON CONFLICT ON
-  CONSTRAINT name` looks the name up (`get_relation_constraint_attnos`), so
-  that form is Unsupported until unique and exclusion constraints are in the
-  Catalog.
-- A rule's actions are not loaded, only its event and kind. Whether an
-  INSTEAD rule returns rows is therefore unknown, so a data-modifying
-  Statement with RETURNING against a relation with an INSTEAD rule is
-  Unsupported.
-- Operator classes are absent, so an `ON CONFLICT` target with an operator
-  class or a `COLLATE` is Unsupported.
-- Collations are absent entirely: no `pg_collation`, no column, type or range
-  collation. Needed for `parse_collate` and every collation Diagnostic.
-  Planned as a milestone of its own, in both crates together.
 - `Column.generated` is a bool. PostgreSQL 18 adds virtual generated columns,
   so it becomes an enum then.
 

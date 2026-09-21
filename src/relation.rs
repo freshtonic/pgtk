@@ -64,12 +64,16 @@ pub enum RteKind {
     Values {
         /// The type and typmod of each column.
         columns: Vec<(TypeRef, Typmod)>,
+        /// The collation of each column.
+        collations: Vec<Option<Handle<pg_catalog::Collation>>>,
     },
     /// The result of `UNION`, `INTERSECT` or `EXCEPT`, visible to its
     /// `ORDER BY`.
     SetOperation {
         /// The type and typmod of each column.
         columns: Vec<(TypeRef, Typmod)>,
+        /// The collation of each column.
+        collations: Vec<Option<Handle<pg_catalog::Collation>>>,
     },
     /// One or more function calls in `FROM`.
     Function {
@@ -187,6 +191,8 @@ pub struct CteColumn {
     pub origin: Option<(Handle<Relation>, i16)>,
     /// The fields of a `record` column whose row is known.
     pub(crate) fields: Option<Vec<crate::analysis::RecordField>>,
+    /// The column's collation.
+    pub(crate) collation: Option<Handle<pg_catalog::Collation>>,
 }
 
 /// `CommonTableExpr` as the namespace sees it.
@@ -450,8 +456,8 @@ impl<'c> Relations<'c> {
                     typmod: columns[index].typmod,
                 },
                 RteKind::Function { columns, .. }
-                | RteKind::Values { columns }
-                | RteKind::SetOperation { columns } => Var {
+                | RteKind::Values { columns, .. }
+                | RteKind::SetOperation { columns, .. } => Var {
                     varno: rt_index,
                     varattno: attnum,
                     levelsup,

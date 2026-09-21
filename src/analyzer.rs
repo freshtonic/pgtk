@@ -19,6 +19,11 @@ use pg_sql::ast::dml::select::{
 };
 use pg_sql::ast::dml::values::{FlatSelectClause, FlatSetQuantifier};
 use pg_sql::ast::session::set_reset::{FlatShowStmt, FlatShowTarget};
+
+mod collate;
+use crate::analysis::{CollContext, Strength};
+use collate::SublinkInfo;
+use pg_catalog::Collation;
 use pg_sql::ast::shared::expr::{
     FlatArrayElement, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
     FlatSubstringTail, FlatTrimDir, FlatTrimTail, FlatTrimValuesRest,
@@ -288,6 +293,12 @@ impl<'c> Analyzer<'c> {
             outer_agg_levels: Vec::new(),
             agg_refs: Vec::new(),
             outer_grouping_calls: Vec::new(),
+            collate_exprs: std::collections::HashMap::new(),
+            expr_collations: std::collections::HashMap::new(),
+            sublink_info: std::collections::HashMap::new(),
+            clause_exprs: Vec::new(),
+            expr_depth: 0,
+            extra_sortgroup_refs: Vec::new(),
             cte_refs: Vec::new(),
             window_locations: Vec::new(),
             record_fields: std::collections::HashMap::new(),
@@ -436,6 +447,22 @@ struct Walker<'a, 'input, 'c> {
     /// Every WITH query reference of the statement so far, with the level
     /// the query is defined at.
     cte_refs: Vec<CteRef>,
+    /// Each COLLATE expression's collation and the clause's location.
+    collate_exprs:
+        std::collections::HashMap<Handle<FlatExpr>, (pg_catalog::Handle<Collation>, usize)>,
+    /// `exprCollation` of each expression once assigned.
+    expr_collations:
+        std::collections::HashMap<Handle<FlatExpr>, Option<pg_catalog::Handle<Collation>>>,
+    /// What each sublink contributes to collation assignment.
+    sublink_info: std::collections::HashMap<Handle<FlatExpr>, SublinkInfo>,
+    /// The top-level expressions of the query level's clauses, for
+    /// collation assignment.
+    clause_exprs: Vec<Handle<FlatExpr>>,
+    /// Depth of expression transformation, to know a clause's top.
+    expr_depth: usize,
+    /// Target entries that are sort or group keys of a window or of
+    /// DISTINCT ON, besides ORDER BY and GROUP BY.
+    extra_sortgroup_refs: Vec<usize>,
     /// Locations of the window function calls of the query level.
     window_locations: Vec<usize>,
     /// The fields of expressions of type `record` whose shape is known: a
@@ -667,6 +694,9 @@ struct SetColumn {
     name: String,
     ty: TypeRef,
     typmod: Typmod,
+    /// The column's collation state: a leaf's expression as assigned,
+    /// a set operation's as `select_common_collation` merges it.
+    state: CollContext,
     origin: Option<(pg_catalog::Handle<pg_catalog::Relation>, i16)>,
     /// `exprLocation` of the node's entry: the leaf's expression, or the
     /// expression that decided the merged type.
@@ -1364,6 +1394,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             std::mem::take(&mut self.window_locations),
         );
         let saved_srf = self.last_srf.take();
+        let saved_collate = (
+            std::mem::take(&mut self.clause_exprs),
+            std::mem::replace(&mut self.expr_depth, 0),
+            std::mem::take(&mut self.extra_sortgroup_refs),
+        );
         self.has_aggs = false;
         self.has_target_srfs = false;
         self.in_agg_args = 0;
@@ -1385,6 +1420,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         ) = saved;
         (self.windows, self.has_window_funcs, self.window_locations) = saved_windows;
         self.last_srf = saved_srf;
+        (
+            self.clause_exprs,
+            self.expr_depth,
+            self.extra_sortgroup_refs,
+        ) = saved_collate;
         let here = self.level();
         if self.outer_agg_levels.contains(&here) {
             self.has_aggs = true;
@@ -1465,6 +1505,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let mut target_list: Vec<TargetEntry> = columns
             .iter()
             .map(|c| TargetEntry {
+                collation_state: c.state,
+                collation: c.state.resolved(),
                 name: c.name.clone(),
                 ty: c.ty,
                 typmod: c.typmod,
@@ -1480,6 +1522,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         scope.rtable.push(crate::relation::RangeTableEntry {
             kind: RteKind::SetOperation {
                 columns: columns.iter().map(|c| (c.ty, c.typmod)).collect(),
+                collations: columns.iter().map(|c| c.state.resolved()).collect(),
             },
             alias: None,
             eref_name: "unnamed_join".to_owned(),
@@ -1695,10 +1738,44 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .at(best)
                         .into());
                     }
+                    // select_common_collation over the two columns, each
+                    // with its strength; a UNION ALL takes a conflict.
+                    let mut ctx = CollContext::new();
+                    for side in [lc, rc] {
+                        self.merge_collation_state(
+                            side.state.collation,
+                            side.state.strength,
+                            side.state.location,
+                            side.state.collation2,
+                            side.state.location2,
+                            &mut ctx,
+                        )?;
+                    }
+                    let collation = if ctx.strength == Strength::Conflict {
+                        if *op == SetOpKind::Union && *all {
+                            None
+                        } else {
+                            return Err(self.implicit_mismatch(&ctx).into());
+                        }
+                    } else {
+                        ctx.collation
+                    };
+                    let state = CollContext {
+                        collation,
+                        strength: if collation.is_some() {
+                            Strength::Implicit
+                        } else {
+                            Strength::None
+                        },
+                        location: best,
+                        collation2: None,
+                        location2: NO_LOCATION,
+                    };
                     out.push(SetColumn {
                         name: lc.name.clone(),
                         ty: rescoltype,
                         typmod,
+                        state,
                         origin: lc.origin,
                         location: best,
                         leftmost_location: lc.leftmost_location,
@@ -1721,12 +1798,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let aliases: Vec<String> = entry.columns.iter().map(|c| c.name.clone()).collect();
         let mut columns = Vec::with_capacity(left.len());
         for (i, c) in left.iter().enumerate() {
-            let (ty, typmod) = if self.types().is_unknown(c.ty) {
-                (text, -1)
+            // An unknown column reads as text with the default collation.
+            let (ty, typmod, collation) = if self.types().is_unknown(c.ty) {
+                (text, -1, self.type_collation(text))
             } else {
-                (c.ty, c.typmod)
+                (c.ty, c.typmod, c.state.resolved())
             };
             columns.push(CteColumn {
+                collation,
                 name: aliases.get(i).cloned().unwrap_or_else(|| c.name.clone()),
                 ty,
                 typmod,
@@ -1790,6 +1869,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 name: t.name,
                 ty: t.ty,
                 typmod: t.typmod,
+                state: t.collation_state,
                 origin: t.origin,
                 location: t.location,
                 leftmost_location: t.location,
@@ -1860,6 +1940,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         self.expr_kind = saved_kind;
         let mut coltypes: Vec<(TypeRef, Typmod)> = Vec::with_capacity(columns.len());
+        let mut colcollations: Vec<Option<pg_catalog::Handle<Collation>>> =
+            Vec::with_capacity(columns.len());
         for col in &columns {
             let types_of: Vec<TypeRef> = col.iter().map(|(_, t)| t.ty).collect();
             let coltype = match self.coercer().common_type(&types_of) {
@@ -1895,11 +1977,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 -1
             };
             coltypes.push((coltype, typmod));
+            let exprs: Vec<Handle<FlatExpr>> = col.iter().map(|(e, _)| *e).collect();
+            colcollations.push(self.select_common_collation(&scope, &exprs, true)?);
         }
         let count = coltypes.len();
         scope.rtable.push(crate::relation::RangeTableEntry {
             kind: RteKind::Values {
                 columns: coltypes.clone(),
+                collations: colcollations.clone(),
             },
             alias: None,
             eref_name: "*VALUES*".to_owned(),
@@ -1912,6 +1997,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             .iter()
             .enumerate()
             .map(|(i, (ty, typmod))| TargetEntry {
+                collation_state: CollContext::implicit(
+                    colcollations.get(i).copied().flatten(),
+                    NO_LOCATION,
+                ),
+                collation: colcollations.get(i).copied().flatten(),
                 name: format!("column{}", i + 1),
                 ty: *ty,
                 typmod: *typmod,
@@ -1974,6 +2064,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn show_statement(&mut self, s: Handle<FlatShowStmt>) -> Result<()> {
         let text = self.types().builtin(Builtin::Text);
         let column = |name: String| TargetEntry {
+            collation_state: CollContext::new(),
+            collation: None,
             name,
             ty: text,
             typmod: -1,
@@ -2118,6 +2210,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 })
                 .unwrap_or(a.ty);
             columns.push(TargetEntry {
+                collation_state: CollContext::new(),
+                collation: None,
                 name: a
                     .name
                     .as_ref()
@@ -2175,6 +2269,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 columns: cols
                     .iter()
                     .map(|n| CteColumn {
+                        collation: None,
                         name: n.clone(),
                         ty: self.types().builtin(Builtin::Text),
                         typmod: -1,
@@ -2310,6 +2405,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let (seq, _) = self.col_id(sc.set_column)?;
             let depth = matches!(self.get(sc.direction), FlatSearchDirection::Depth);
             extra_columns.push(CteColumn {
+                collation: None,
                 name: seq,
                 ty: self.types().builtin(if depth {
                     Builtin::RecordArray
@@ -2326,6 +2422,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let (mark, _) = self.alias_name(self.get(cc.set_column).name)?;
             let (path, _) = self.alias_name(cc.using_column)?;
             extra_columns.push(CteColumn {
+                collation: None,
                 name: mark,
                 ty: mark_ty,
                 typmod: mark_typmod,
@@ -2333,6 +2430,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 fields: None,
             });
             extra_columns.push(CteColumn {
+                collation: None,
                 name: path,
                 ty: self.types().builtin(Builtin::RecordArray),
                 typmod: -1,
@@ -2393,6 +2491,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let mut columns = Vec::with_capacity(outputs.len());
         for (j, t) in outputs.iter().enumerate() {
             columns.push(CteColumn {
+                collation: t.collation,
                 name: items.aliases[i]
                     .get(j)
                     .cloned()
@@ -2423,6 +2522,24 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             && let Some(fixed) = state.fixed
         {
             for (j, (c, f)) in columns.iter().zip(&fixed).enumerate() {
+                if c.ty == f.ty && c.typmod == f.typmod && c.collation != f.collation {
+                    let name = |w: &Self, c: Option<pg_catalog::Handle<Collation>>| {
+                        c.map_or_else(String::new, |c| w.collation_name(c))
+                    };
+                    return Err(Diagnostic::new(
+                            "42P21",
+                            format!(
+                                "recursive query \"{}\" column {} has collation \"{}\" in non-recursive term but collation \"{}\" overall",
+                                entry.name,
+                                j + 1,
+                                name(self, f.collation),
+                                name(self, c.collation)
+                            ),
+                        )
+                        .hint("Use the COLLATE clause to set the collation of the non-recursive term.")
+                        .at(outputs[j].location)
+                        .into());
+                }
                 if c.ty != f.ty || c.typmod != f.typmod {
                     return Err(Diagnostic::new(
                             "42804",
@@ -2572,6 +2689,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             if let (Some(seq), Some(sc)) = (search_seq, def.search) {
                 let depth = matches!(self.get(self.get(sc).direction), FlatSearchDirection::Depth);
                 columns.push(CteColumn {
+                    collation: None,
                     name: seq,
                     ty: if depth { record_array } else { record },
                     typmod: -1,
@@ -2581,6 +2699,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             if let (Some((mark, path)), Some((mark_ty, mark_typmod))) = (cycle_names, cycle_mark) {
                 columns.push(CteColumn {
+                    collation: None,
                     name: mark,
                     ty: mark_ty,
                     typmod: mark_typmod,
@@ -2588,6 +2707,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     fields: None,
                 });
                 columns.push(CteColumn {
+                    collation: None,
                     name: path,
                     ty: record_array,
                     typmod: -1,
@@ -3944,6 +4064,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 entry.typmod = -1;
             }
         }
+        let exprs: Vec<Option<Handle<FlatExpr>>> = vec![None; list.len()];
+        self.assign_query_collations(scope, &mut list, &exprs, &[])?;
         Ok(list)
     }
 
@@ -4945,7 +5067,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         && let FlatParenContent::Subquery(sub) = self.get(self.get(*p).content)
                     {
                         self.sublinks.insert(source);
-                        let columns = self.sublink_columns(scope, *sub)?;
+                        let columns = self.sublink_columns(scope, source, *sub)?;
                         if columns.len() != targets.len() {
                             return Err(Diagnostic::new(
                                 "42601",
@@ -5652,6 +5774,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
                 result.push(index);
             }
+            self.extra_sortgroup_refs.extend(result.iter().copied());
         }
         // transformDistinctClause.
         if distinct {
@@ -5837,6 +5960,21 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
             }
         }
+        // assign_query_collations: DISTINCT makes every output column a
+        // group key.
+        let mut sortgroup: Vec<usize> = sort_refs.clone();
+        sortgroup.extend(grouping.refs.iter().copied());
+        sortgroup.extend(std::mem::take(&mut self.extra_sortgroup_refs));
+        if distinct {
+            sortgroup.extend(
+                target_list
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| !t.junk)
+                    .map(|(i, _)| i),
+            );
+        }
+        self.assign_query_collations(&scope, &mut target_list, &target_exprs, &sortgroup)?;
         self.last_target_exprs = target_exprs;
         self.analysis
             .range_tables
@@ -6075,6 +6213,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
         }
         target_list.push(TargetEntry {
+            collation_state: CollContext::new(),
+            collation: None,
             name: String::new(),
             ty: typed.ty,
             typmod: typed.typmod,
@@ -8595,6 +8735,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     None
                 };
                 out.push(TargetEntry {
+                    collation_state: CollContext::new(),
+                    collation: None,
                     name,
                     ty: typed.ty,
                     typmod: typed.typmod,
@@ -9450,7 +9592,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatJsonArrayArgs::Query(q) => {
                 let q = self.get(*q);
                 self.sublinks.insert(handle);
-                let columns = self.sublink_columns(scope, q.query)?;
+                let columns = self.sublink_columns(scope, handle, q.query)?;
                 if columns.len() != 1 {
                     return Err(
                         Diagnostic::new("42601", "subquery must return only one column")
@@ -10074,6 +10216,24 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .into(),
                 );
             }
+            let exprcoll = self
+                .assign_expr_collations(scope, e)?
+                .or_else(|| self.type_collation(t.ty));
+            if let (Some(tc), Some(ec)) = (self.type_collation(ret_ty), exprcoll)
+                && tc != ec
+            {
+                return Err(Diagnostic::new(
+                    "42P21",
+                    "collation of DEFAULT expression conflicts with RETURNING clause",
+                )
+                .detail(format!(
+                    "\"{}\" versus \"{}\"",
+                    self.collation_name(ec),
+                    self.collation_name(tc)
+                ))
+                .at(t.location)
+                .into());
+            }
             if t.ty == ret_ty {
                 continue;
             }
@@ -10263,6 +10423,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         Ok(fields
             .into_iter()
             .map(|f| TargetEntry {
+                collation_state: CollContext::new(),
+                collation: None,
                 name: f.name,
                 ty: f.ty,
                 typmod: f.typmod,
@@ -10701,6 +10863,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 _ => None,
             };
             out.push(TargetEntry {
+                collation_state: CollContext::new(),
+                collation: self
+                    .var_collation_at(scope, &Var { levelsup: 0, ..var })
+                    .unwrap_or(None),
                 name: name.clone(),
                 ty: var.ty,
                 typmod: var.typmod,
@@ -11508,8 +11674,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// `transformExprRecurse`. Records the expression's type and returns
     /// its type facts.
     fn expr(&mut self, scope: &Scope, handle: Handle<FlatExpr>) -> Result<Typed> {
-        let typed = self.expr_inner(scope, handle)?;
+        let top = self.expr_depth == 0;
+        self.expr_depth += 1;
+        let typed = self.expr_inner(scope, handle);
+        self.expr_depth -= 1;
+        let typed = typed?;
         self.record_type(handle, &typed);
+        if top {
+            self.clause_exprs.push(handle);
+        }
         Ok(typed)
     }
 
@@ -11797,7 +11970,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                         FlatParenContent::Subquery(sub) => {
                             self.sublinks.insert(handle);
-                            let columns = self.sublink_columns(scope, *sub)?;
+                            let columns = self.sublink_columns(scope, handle, *sub)?;
                             if let Some(first) = columns.first() {
                                 self.sublink_names.insert(handle, first.name.clone());
                             }
@@ -11836,7 +12009,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     FlatParenContent::Subquery(sub) => {
                         // EXPR_SUBLINK: the single column's type.
                         self.sublinks.insert(handle);
-                        let columns = self.sublink_columns(scope, *sub)?;
+                        let columns = self.sublink_columns(scope, handle, *sub)?;
                         if let Some(first) = columns.first() {
                             self.sublink_names.insert(handle, first.name.clone());
                         }
@@ -11868,7 +12041,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Exists(e) => {
                 self.sublinks.insert(handle);
                 let sub = self.get(*e).subquery;
-                self.sublink_columns(scope, sub)?;
+                self.sublink_columns(scope, handle, sub)?;
                 Ok(Typed {
                     ty: self.types().builtin(Builtin::Bool),
                     typmod: -1,
@@ -12034,7 +12207,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 };
                 self.sublinks.insert(handle);
                 let sub = self.get(*sub).subquery;
-                let columns = self.sublink_columns(scope, sub)?;
+                let columns = self.sublink_columns(scope, handle, sub)?;
                 if columns.len() != 1 {
                     return Err(
                         Diagnostic::new("42601", "subquery must return only one column")
@@ -12974,6 +13147,48 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     returns_set: t.returns_set,
                 })
             }
+            FlatExpr::Collate(arg, name) => {
+                // transformCollateClause: a collatable argument and a
+                // collation the Search Path finds for the encoding.
+                let t = self.expr(scope, *arg)?;
+                let at = self.next_token_start(self.span(*arg).end);
+                if !self.types().is_unknown(t.ty) && self.type_collation(t.ty).is_none() {
+                    return Err(Diagnostic::new(
+                        "42804",
+                        format!(
+                            "collations are not supported by type {}",
+                            self.types().format(t.ty)
+                        ),
+                    )
+                    .at(at)
+                    .into());
+                }
+                let (collname, _) = self.col_id(*name)?;
+                let Some(c) = self
+                    .catalog()
+                    .collation_visible(self.resolver.search_path, &collname)
+                else {
+                    return Err(Diagnostic::new(
+                        "42704",
+                        format!(
+                            "collation \"{collname}\" for encoding \"{}\" does not exist",
+                            self.catalog().metadata().encoding.name
+                        ),
+                    )
+                    .at(at)
+                    .into());
+                };
+                self.collate_exprs.insert(handle, (c, at));
+                // coerce_type looks through a CollateExpr to its argument,
+                // so an unknown literal under COLLATE still reads as one.
+                Ok(Typed {
+                    ty: t.ty,
+                    typmod: t.typmod,
+                    form: t.form,
+                    location: t.location,
+                    returns_set: t.returns_set,
+                })
+            }
             FlatExpr::Coalesce(c) => {
                 let args = self.list1(self.get(*c).args).to_vec();
                 self.common_type_call(scope, handle, &args, "COALESCE", location)
@@ -13407,12 +13622,21 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn sublink_columns(
         &mut self,
         scope: &Scope,
+        handle: Handle<FlatExpr>,
         sub: Handle<FlatSubquery>,
     ) -> Result<Vec<TargetEntry>> {
         self.subquery_depth += 1;
         let target_list = self.subquery(scope, sub, false);
         self.subquery_depth -= 1;
-        Ok(target_list?.into_iter().filter(|t| !t.junk).collect())
+        let columns: Vec<TargetEntry> = target_list?.into_iter().filter(|t| !t.junk).collect();
+        self.sublink_info.insert(
+            handle,
+            SublinkInfo {
+                span: self.span(sub),
+                first: columns.first().and_then(|c| c.collation),
+            },
+        );
+        Ok(columns)
     }
 
     /// `expr op ANY/SOME/ALL (...)` with the operator read from the
@@ -13489,7 +13713,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         sub: Handle<FlatSubquery>,
     ) -> Result<Typed> {
         self.sublinks.insert(handle);
-        let columns = self.sublink_columns(scope, sub)?;
+        let columns = self.sublink_columns(scope, handle, sub)?;
         let lt = self.expr(scope, left)?;
         // A row constructor on the left compares element by element.
         let left_list: Vec<(Option<Handle<FlatExpr>>, Typed)> = match self.row_elements(left) {
@@ -14203,6 +14427,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         target_list,
                         target_exprs,
                     )?;
+                    self.extra_sortgroup_refs.push(index);
                     let entry = &mut target_list[index];
                     if self.types().is_unknown(entry.ty) {
                         entry.ty = self.types().builtin(Builtin::Text);
@@ -14239,6 +14464,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             for &expr in &def.partition {
                 let index =
                     self.find_targetlist_entry_sql99(scope, expr, target_list, target_exprs)?;
+                self.extra_sortgroup_refs.push(index);
                 let entry = &mut target_list[index];
                 if self.types().is_unknown(entry.ty) {
                     entry.ty = self.types().builtin(Builtin::Text);
@@ -14590,6 +14816,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
         }
         target_list.push(TargetEntry {
+            collation_state: CollContext::new(),
+            collation: None,
             name: String::new(),
             ty: typed.ty,
             typmod: typed.typmod,
