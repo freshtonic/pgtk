@@ -12,6 +12,7 @@ use crate::handle::Handle;
 use crate::name::{Name, QualifiedName};
 use crate::oid::Oid;
 use crate::operator::Operator;
+use crate::parameter::{self, Parameter};
 use crate::relation::Relation;
 use crate::schema::Schema;
 use crate::search_path::SearchPath;
@@ -90,6 +91,7 @@ pub struct Catalog {
     functions: Vec<Function>,
     operators: Vec<Operator>,
     casts: Vec<Cast>,
+    parameters: Vec<Parameter>,
     builtins: Vec<Option<Handle<Type>>>,
     schema_by_oid: HashMap<Oid, Handle<Schema>>,
     extension_by_oid: HashMap<Oid, Handle<Extension>>,
@@ -106,6 +108,7 @@ pub struct Catalog {
     operators_by_name: HashMap<(Handle<Schema>, Name), Vec<Handle<Operator>>>,
     cast_by_pair: HashMap<(Handle<Type>, Handle<Type>), Handle<Cast>>,
     casts_by_source: HashMap<Handle<Type>, Vec<Handle<Cast>>>,
+    parameter_by_name: HashMap<String, usize>,
 }
 
 /// Make handles for an arena, then pair each handle with its entity.
@@ -120,7 +123,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 7;
+    pub const FORMAT_VERSION: u32 = 8;
 
     /// Make a catalog and build its indexes.
     ///
@@ -135,7 +138,17 @@ impl Catalog {
         functions: Vec<Function>,
         operators: Vec<Operator>,
         casts: Vec<Cast>,
+        mut parameters: Vec<Parameter>,
     ) -> Self {
+        // A parameter has no OID. The order is that of the lookup key, so
+        // that two loads of one server give one order.
+        parameters.sort_by_key(|entity| parameter::lookup_key(&entity.name));
+        let parameter_by_name = parameters
+            .iter()
+            .enumerate()
+            .map(|(index, entity)| (parameter::lookup_key(&entity.name), index))
+            .collect();
+
         let type_by_oid: HashMap<Oid, Handle<Type>> = with_handles(&types)
             .map(|(handle, entity)| (entity.oid, handle))
             .collect();
@@ -215,6 +228,8 @@ impl Catalog {
             operators_by_name,
             cast_by_pair,
             casts_by_source,
+            parameter_by_name,
+            parameters,
             builtins,
             metadata,
             schemas,
@@ -241,6 +256,7 @@ impl Catalog {
         Vec<Function>,
         Vec<Operator>,
         Vec<Cast>,
+        Vec<Parameter>,
     ) {
         (
             self.metadata,
@@ -251,6 +267,7 @@ impl Catalog {
             self.functions,
             self.operators,
             self.casts,
+            self.parameters,
         )
     }
 
@@ -323,6 +340,29 @@ impl Catalog {
     /// Every cast, in OID order.
     pub fn casts(&self) -> impl ExactSizeIterator<Item = (Handle<Cast>, &Cast)> {
         with_handles(&self.casts)
+    }
+
+    /// Every configuration parameter, in the order of the lower-case name.
+    ///
+    /// The list is what `pg_settings` gave the session of the loader. It does
+    /// not hold a parameter that the role of that session cannot see. It does
+    /// not hold a custom parameter, such as `myapp.setting`, which is the
+    /// state of a session. It holds a parameter of a loadable module, such as
+    /// `plpgsql.variable_conflict`, only when that session had the module in
+    /// memory.
+    pub fn parameters(&self) -> &[Parameter] {
+        &self.parameters
+    }
+
+    /// The configuration parameter with this name.
+    ///
+    /// The comparison does not see the case of an ASCII letter, as in the
+    /// server. The result holds the canonical spelling: a lookup of
+    /// `timezone` gives the parameter with the name `TimeZone`.
+    pub fn parameter(&self, name: &str) -> Option<&Parameter> {
+        self.parameter_by_name
+            .get(&parameter::lookup_key(name))
+            .map(|index| &self.parameters[*index])
     }
 
     /// The schema with this OID.
@@ -595,6 +635,8 @@ struct CatalogData {
     functions: Vec<Function>,
     operators: Vec<Operator>,
     casts: Vec<Cast>,
+    #[serde(default)]
+    parameters: Vec<Parameter>,
 }
 
 /// The borrowed twin of `CatalogData`, so that serialization copies nothing.
@@ -610,6 +652,7 @@ struct CatalogDataRef<'a> {
     functions: &'a [Function],
     operators: &'a [Operator],
     casts: &'a [Cast],
+    parameters: &'a [Parameter],
 }
 
 #[cfg(feature = "serde")]
@@ -624,6 +667,7 @@ impl serde::Serialize for Catalog {
             functions: &self.functions,
             operators: &self.operators,
             casts: &self.casts,
+            parameters: &self.parameters,
         }
         .serialize(serializer)
     }
@@ -664,6 +708,9 @@ impl<'de> serde::Deserialize<'de> for Catalog {
         }
         for entity in data.casts {
             builder.push_cast(entity);
+        }
+        for entity in data.parameters {
+            builder.push_parameter(entity);
         }
         builder.finish().map_err(D::Error::custom)
     }

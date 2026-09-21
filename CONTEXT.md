@@ -207,6 +207,14 @@ _Avoid_: Namespace (in prose)
 A `pg_extension` row. An installed package that owns Entities; ownership comes
 from `pg_depend`.
 
+**Parameter**:
+A configuration parameter of the server, from `pg_settings`: its name in the
+canonical spelling, such as `TimeZone`, and its kind of value. `SHOW` gives
+its result column that name. A lookup does not see the case of an ASCII
+letter. The Catalog holds no value of a Parameter and no custom Parameter,
+because both are the state of a session. A Parameter is not an Entity: it has
+no OID and no Handle.
+
 **Search Path**:
 An ordered list of Schemas used to resolve an unqualified name, with
 PostgreSQL's implicit rules already applied: the temporary Schema first, then

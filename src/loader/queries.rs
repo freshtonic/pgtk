@@ -91,6 +91,8 @@ pub enum QueryId {
     Rules,
     /// Every trigger of a relation, except the internal triggers.
     Triggers,
+    /// Every configuration parameter that the session can see.
+    Parameters,
 }
 
 impl QueryId {
@@ -116,6 +118,7 @@ impl QueryId {
         QueryId::Inherits,
         QueryId::Rules,
         QueryId::Triggers,
+        QueryId::Parameters,
     ];
 }
 
@@ -144,6 +147,7 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Inherits => INHERITS,
         QueryId::Rules => RULES,
         QueryId::Triggers => TRIGGERS,
+        QueryId::Parameters => PARAMETERS,
     }
 }
 
@@ -737,4 +741,23 @@ WHERE NOT t.tgisinternal
   AND (n.nspname NOT LIKE 'pg\_temp%'
        OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY t.tgrelid, t.tgname
+"#;
+
+// One row per configuration parameter that the session can see.
+//
+// `pg_settings` does not show a parameter that the role of the session has no
+// right to read. It shows a parameter of a loadable module only when the
+// session has the module in memory. The value of a parameter is the state of
+// a session, so it is not here.
+//
+// Columns:
+//   0  name     parameter name, in the canonical spelling
+//   1  vartype  kind of value: bool, integer, real, string, enum
+//@sql Parameters
+const PARAMETERS: &str = r#"
+SELECT
+    s.name::text,
+    s.vartype::text
+FROM pg_catalog.pg_settings s
+ORDER BY s.name
 "#;

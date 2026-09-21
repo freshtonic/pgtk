@@ -49,7 +49,8 @@ mod sync_tests {
     use super::{lock_server, skip, url};
     use pg_catalog::{
         ArgMode, Builtin, CastMethod, Catalog, FiresWhen, FunctionKind, Identity, Loaded, Name,
-        PrimaryKey, QualifiedName, RelationKind, RuleEvent, SearchPath, TriggerTiming, TypeKind,
+        ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent, SearchPath,
+        TriggerTiming, TypeKind,
     };
     use postgres::{Client, NoTls};
     use std::panic::AssertUnwindSafe;
@@ -159,6 +160,16 @@ mod sync_tests {
                 function.name
             );
         }
+
+        // `SHOW timezone` names its column `TimeZone`.
+        let timezone = catalog.parameter("timezone").expect("TimeZone is there");
+        assert_eq!(timezone.name, "TimeZone");
+        assert_eq!(timezone.kind, ParameterKind::String);
+        assert_eq!(
+            catalog.parameter("WORK_MEM").map(|p| p.kind),
+            Some(ParameterKind::Integer)
+        );
+        assert_eq!(catalog.parameter("no_such_parameter"), None);
 
         // `text` to `varchar` is a binary cast.
         let text = catalog.builtin(Builtin::Text);

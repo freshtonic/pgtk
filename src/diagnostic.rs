@@ -87,6 +87,8 @@ pub enum EntityKind {
     Rule,
     /// A trigger.
     Trigger,
+    /// A configuration parameter.
+    Parameter,
 }
 
 impl EntityKind {
@@ -104,6 +106,7 @@ impl EntityKind {
             EntityKind::OperatorClass => "operator class",
             EntityKind::Rule => "rule",
             EntityKind::Trigger => "trigger",
+            EntityKind::Parameter => "parameter",
         }
     }
 }
