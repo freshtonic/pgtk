@@ -52,6 +52,8 @@ struct SchemaRow {
     oid: Oid,
     /// The name of the schema.
     name: Name,
+    /// True for the temporary schema of this session.
+    is_temporary: bool,
 }
 
 /// One row of [`QueryId::Extensions`].
@@ -321,6 +323,7 @@ fn schema_rows(rows: &Rows) -> Result<Vec<SchemaRow>, LoadError> {
         Ok(SchemaRow {
             oid: row.oid(0)?,
             name: row.name(1)?,
+            is_temporary: row.bool(2)?,
         })
     })
 }
@@ -1102,6 +1105,7 @@ pub(crate) fn assemble(
         builder.push_schema(Schema {
             oid: row.oid,
             name: row.name.clone(),
+            is_temporary: row.is_temporary,
             extension: owner(MemberClass::Namespace, row.oid),
         });
     }
@@ -1684,7 +1688,10 @@ mod tests {
         let mut rows = empty_rows();
         rows.insert(
             QueryId::Schemas,
-            vec![row(&["11", "pg_catalog"]), row(&["2200", "public"])],
+            vec![
+                row(&["11", "pg_catalog", "f"]),
+                row(&["2200", "public", "f"]),
+            ],
         );
         rows.insert(
             QueryId::Extensions,
@@ -1922,7 +1929,7 @@ mod tests {
     #[test]
     fn a_missing_attribute_type_takes_the_composite_and_the_relation_with_it() {
         let mut rows = empty_rows();
-        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public", "f"])]);
         rows.insert(
             QueryId::Types,
             vec![
@@ -1985,7 +1992,7 @@ mod tests {
     #[test]
     fn an_unknown_typtype_is_reported_and_the_type_goes() {
         let mut rows = empty_rows();
-        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public", "f"])]);
         rows.insert(
             QueryId::Types,
             vec![row(&[
@@ -2008,7 +2015,7 @@ mod tests {
     #[test]
     fn the_composite_of_a_sequence_goes_without_a_note() {
         let mut rows = empty_rows();
-        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public", "f"])]);
         rows.insert(
             QueryId::Types,
             vec![row(&[
@@ -2024,7 +2031,7 @@ mod tests {
     #[test]
     fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
         let mut rows = empty_rows();
-        rows.insert(QueryId::Schemas, vec![row(&["2200", "public"])]);
+        rows.insert(QueryId::Schemas, vec![row(&["2200", "public", "f"])]);
         rows.insert(
             QueryId::Types,
             vec![
@@ -2074,5 +2081,25 @@ mod tests {
                 ("is_called", boolean)
             ]
         );
+    }
+
+    #[test]
+    fn the_temporary_schema_of_the_session_keeps_its_flag() {
+        let mut rows = empty_rows();
+        rows.insert(
+            QueryId::Schemas,
+            vec![
+                row(&["2200", "public", "f"]),
+                row(&["16500", "pg_temp_3", "t"]),
+            ],
+        );
+        let loaded = load(rows);
+        assert_eq!(loaded.diagnostics, Vec::new());
+
+        let catalog = &loaded.catalog;
+        let temporary = catalog.schema_named("pg_temp_3").unwrap();
+        assert!(catalog[temporary].is_temporary);
+        assert_eq!(catalog.temporary_schema(), Some(temporary));
+        assert!(!catalog[catalog.schema_named("public").unwrap()].is_temporary);
     }
 }

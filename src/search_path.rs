@@ -9,7 +9,14 @@ use crate::schema::Schema;
 /// A catalog does not hold a search path. Each lookup takes one as an
 /// argument.
 ///
-/// `pg_temp` is not special here. The loader never keeps a temporary schema.
+/// # The temporary schema
+///
+/// The loader keeps the temporary schema of its own session, when the session
+/// has one. The server names it `pg_temp_N`. A search path accepts that name,
+/// and also the alias `pg_temp`, as `SET search_path` does.
+///
+/// A lookup of a relation or of a type reads the temporary schema. A lookup
+/// of a function or of an operator skips it, as PostgreSQL does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SearchPath {
     schemas: Vec<Handle<Schema>>,
@@ -19,22 +26,31 @@ impl SearchPath {
     /// Resolve schema names against a catalog.
     ///
     /// A name that matches no schema is dropped. A name that repeats is kept
-    /// once, at its first place. `pg_catalog` goes first, unless the list
-    /// names it, in which case it stays where the list puts it.
+    /// once, at its first place.
+    ///
+    /// Two schemas are on the path when the list does not name them, in the
+    /// order that PostgreSQL uses. The temporary schema goes first, when the
+    /// catalog holds one. `pg_catalog` goes next. A schema that the list does
+    /// name stays where the list puts it. The list names the temporary schema
+    /// with `pg_temp` or with its `pg_temp_N` name.
     pub fn new<'a>(catalog: &Catalog, names: impl IntoIterator<Item = &'a str>) -> Self {
-        let names: Vec<&str> = names.into_iter().collect();
-        let mut schemas: Vec<Handle<Schema>> = Vec::with_capacity(names.len() + 1);
+        let temporary = catalog.temporary_schema();
+        let resolve = |name: &str| match name {
+            "pg_temp" => temporary,
+            name => catalog.schema_named(name),
+        };
+        let named: Vec<Handle<Schema>> = names.into_iter().filter_map(resolve).collect();
+        let mut schemas: Vec<Handle<Schema>> = Vec::with_capacity(named.len() + 2);
 
-        if !names.contains(&"pg_catalog")
-            && let Some(handle) = catalog.schema_named("pg_catalog")
-        {
-            schemas.push(handle);
+        let implicit = [temporary, catalog.schema_named("pg_catalog")];
+        for handle in implicit.into_iter().flatten() {
+            if !named.contains(&handle) {
+                schemas.push(handle);
+            }
         }
 
-        for name in names {
-            if let Some(handle) = catalog.schema_named(name)
-                && !schemas.contains(&handle)
-            {
+        for handle in named {
+            if !schemas.contains(&handle) {
                 schemas.push(handle);
             }
         }

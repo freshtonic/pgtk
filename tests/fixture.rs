@@ -142,6 +142,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
     let schema = builder.push_schema(Schema {
         oid: Oid(900_000),
         name: Name::new("app"),
+        is_temporary: false,
         extension: None,
     });
     let row_type = builder.next_type_handle();
