@@ -11,8 +11,10 @@ use crate::types::Type;
 /// A `pg_operator` row.
 ///
 /// An operator is a named symbol with an optional left operand type, a right
-/// operand type, a result type, and a function that does the work. An
-/// operator class and an operator family are out of scope.
+/// operand type, a result type, and a function that does the work. The model
+/// holds no operator class and no operator family. It holds only the
+/// operators that the default btree and hash operator classes give a
+/// [`Type`]: see [`Type::btree`] and [`Type::hash_equality`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Operator {

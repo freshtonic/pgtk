@@ -80,6 +80,9 @@ pub enum QueryId {
     Operators,
     /// Every cast.
     Casts,
+    /// The same-type operators of every default btree and hash operator
+    /// class.
+    DefaultOperatorClasses,
 }
 
 impl QueryId {
@@ -100,6 +103,7 @@ impl QueryId {
         QueryId::Aggregates,
         QueryId::Operators,
         QueryId::Casts,
+        QueryId::DefaultOperatorClasses,
     ];
 }
 
@@ -123,6 +127,7 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Aggregates => AGGREGATES,
         QueryId::Operators => OPERATORS,
         QueryId::Casts => CASTS,
+        QueryId::DefaultOperatorClasses => DEFAULT_OPERATOR_CLASSES,
     }
 }
 
@@ -531,4 +536,48 @@ SELECT
     c.castmethod::text
 FROM pg_catalog.pg_cast c
 ORDER BY c.oid
+"#;
+
+// One row per operator that a default btree or hash operator class gives its
+// input type.
+//
+// A row is a member of the operator family of the class, for a search
+// (`amoppurpose` is `s`), with the input type of the class on both sides. A
+// cross-type member, such as `int4 < int8`, is not here. A class is here only
+// when it is the default for its input type, so one type has at most one
+// class for each access method.
+//
+// The schema filter applies to the schema of the class.
+//
+// Columns:
+//   0  oid           operator class OID
+//   1  opcname       operator class name
+//   2  amname        access method name: `btree` or `hash`
+//   3  opcintype     OID of the input type of the class
+//   4  amopstrategy  strategy number: 1 to 5 for a btree, 1 for a hash
+//   5  amopopr       OID of the operator
+//@sql DefaultOperatorClasses
+const DEFAULT_OPERATOR_CLASSES: &str = r#"
+SELECT
+    c.oid::text,
+    c.opcname::text,
+    am.amname::text,
+    c.opcintype::text,
+    o.amopstrategy::text,
+    o.amopopr::text
+FROM pg_catalog.pg_opclass c
+JOIN pg_catalog.pg_am am ON am.oid = c.opcmethod
+JOIN pg_catalog.pg_namespace n ON n.oid = c.opcnamespace
+JOIN pg_catalog.pg_amop o
+    ON o.amopfamily = c.opcfamily
+   AND o.amopmethod = c.opcmethod
+   AND o.amoplefttype = c.opcintype
+   AND o.amoprighttype = c.opcintype
+   AND o.amoppurpose = 's'
+WHERE c.opcdefault
+  AND am.amname IN ('btree', 'hash')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY c.oid, o.amopstrategy
 "#;

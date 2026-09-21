@@ -117,7 +117,17 @@ pub struct Type {
     pub is_collatable: bool,          // typcollation <> 0
     pub array: Option<Handle<Type>>,  // typarray, None for array types and when 0
     pub kind: TypeKind,
+    /// From the default btree operator class whose opcintype is this type.
+    pub btree: Option<BtreeOperators>,          // #[serde(default)]
+    /// Strategy 1 of the default hash operator class whose opcintype is this type.
+    pub hash_equality: Option<Handle<Operator>>, // #[serde(default)]
     pub extension: Option<Handle<Extension>>,
+}
+
+/// pg_amop strategies 1..5 of a btree, each with the type on both sides.
+pub struct BtreeOperators {
+    pub lt: Handle<Operator>, pub le: Handle<Operator>, pub eq: Handle<Operator>,
+    pub ge: Handle<Operator>, pub gt: Handle<Operator>,
 }
 
 pub enum TypeKind {
@@ -296,7 +306,7 @@ impl Metadata { pub fn placeholder() -> Self; }  // version 0.0, database "place
 
 pub struct Catalog { /* private: arenas, metadata, builtins, indexes */ }
 impl Catalog {
-    pub const FORMAT_VERSION: u32 = 1;
+    pub const FORMAT_VERSION: u32 = 2;   // 2: Type gained btree and hash_equality
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -333,6 +343,13 @@ impl Catalog {
     /// function or an operator. A qualified name still finds one.
     pub fn functions_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Function>>;
     pub fn operators_visible(&self, path: &SearchPath, name: &str) -> Vec<Handle<Operator>>;
+
+    // Sort operators (what get_sort_group_operators reads). Exact type only:
+    // no domain base type, no binary-coercible type, no anyarray / anyenum /
+    // anyrange / anymultirange / record fallback. Those rules are the
+    // consumer's. The pseudo-types themselves do have an answer.
+    pub fn btree_ordering(&self, ty: Handle<Type>) -> Option<BtreeOperators>;
+    pub fn hash_equality(&self, ty: Handle<Type>) -> Option<Handle<Operator>>;
 
     // Relationships
     /// The stored cast from `from` to `to`, if any.
@@ -440,9 +457,9 @@ pub enum Diagnostic {
     /// Skipped for a stated reason (e.g. shell operator with no function).
     Skipped { entity: EntityKind, oid: Oid, name: Name, reason: SkipReason },
 }
-pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast }
+pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass }
 #[non_exhaustive]
-pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char) }
+pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char), IncompleteOperatorClass }
 impl Display for Diagnostic;
 // EntityKind has as_str() and Display; SkipReason has Display.
 
@@ -477,7 +494,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
-    Operators, Casts }
+    Operators, Casts, DefaultOperatorClasses }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -561,6 +578,14 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   oprresult, oprcode, oprcom, oprnegate` with the filter, `ORDER BY oid`.
 - **Casts**: `oid, castsource, casttarget, castfunc, castcontext, castmethod`
   `ORDER BY oid`.
+- **DefaultOperatorClasses**: `c.oid, opcname, amname, opcintype, amopstrategy,
+  amopopr` from `pg_opclass c JOIN pg_am am ON am.oid = c.opcmethod` with the
+  filter on `opcnamespace`, `JOIN pg_amop o ON o.amopfamily = c.opcfamily AND
+  o.amopmethod = c.opcmethod AND o.amoplefttype = c.opcintype AND
+  o.amoprighttype = c.opcintype AND o.amoppurpose = 's'`,
+  `WHERE c.opcdefault AND am.amname IN ('btree','hash')`
+  `ORDER BY c.oid, o.amopstrategy`. Cross-type family members
+  (`amoplefttype <> amoprighttype`) are not read.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -601,6 +626,12 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
    point at a non-kept operator, with a `MissingReference`.
 10. Casts: keep when source and target are kept and, for method `f`, the
     function is kept.
+10a. Default operator classes: group the rows by class OID. Drop the class
+    with a `MissingReference` (entity `OperatorClass`) when `opcintype` or any
+    `amopopr` is not kept. A btree class needs strategies 1 to 5, else
+    `Skipped` with `IncompleteOperatorClass`; it sets `Type::btree`. A hash
+    class sets `Type::hash_equality` from strategy 1. When two classes are the
+    default for one type and one access method, the lower OID wins.
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.

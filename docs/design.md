@@ -58,6 +58,16 @@ rest so that they are not re-decided.
   `void`. No language, source, cost, security, parallel safety.
 - Operator: kind (prefix, infix), `left: Option<Handle<Type>>`, right, result,
   Function, commutator, negator. No planner columns.
+- Sort Operators: a Type holds `btree: Option<BtreeOperators { lt, le, eq, ge,
+  gt }>` and `hash_equality: Option<Handle<Operator>>`, from the default btree
+  and hash operator classes whose input type is that Type. These are what
+  `get_sort_group_operators` reads, so a consumer can tell that `json` has no
+  ordering operator and `xml` has no equality operator. The operator class
+  itself is not an Entity (ADR 0001: a semantic model, not a row mirror). The
+  lookup is exact-type: the domain, binary-coercible, and
+  `anyarray`/`anyenum`/`anyrange`/`anymultirange`/`record` fallbacks of
+  `GetDefaultOpClass`, and the element-type checks of the type cache, are the
+  consumer's algorithm. Cross-type family members are not loaded.
 - Cast: source, target, Cast Context, method
   `Function(Handle<Function>) | Binary | InOut`. Stored casts only; synthetic
   casts (I/O to text, domain/base, array element, composite) are the

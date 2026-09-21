@@ -136,6 +136,17 @@ mod sync_tests {
             Name::new("int4pl")
         );
 
+        // `int4` sorts and hashes. `json` does neither.
+        let btree = catalog
+            .btree_ordering(int4)
+            .expect("int4 has a default btree operator class");
+        assert_eq!(catalog[btree.lt].name, Name::new("<"));
+        assert_eq!(catalog[btree.gt].name, Name::new(">"));
+        assert_eq!(catalog.hash_equality(int4), Some(btree.eq));
+        let json = catalog.builtin(Builtin::Json);
+        assert_eq!(catalog.btree_ordering(json), None);
+        assert_eq!(catalog.hash_equality(json), None);
+
         // `text` to `varchar` is a binary cast.
         let text = catalog.builtin(Builtin::Text);
         let varchar = catalog.builtin(Builtin::Varchar);

@@ -50,6 +50,85 @@ fn the_array_of_int4_is_int4_array() {
 }
 
 #[test]
+fn int4_has_the_btree_operators_and_a_hash_equality() {
+    let catalog = pg17();
+    let int4 = catalog.builtin(Builtin::Int4);
+    let boolean = catalog.builtin(Builtin::Bool);
+
+    let btree = catalog
+        .btree_ordering(int4)
+        .expect("int4 has a default btree operator class");
+    let members = [
+        (btree.lt, "<"),
+        (btree.le, "<="),
+        (btree.eq, "="),
+        (btree.ge, ">="),
+        (btree.gt, ">"),
+    ];
+    for (handle, symbol) in members {
+        let operator = &catalog[handle];
+        assert_eq!(operator.name.as_str(), symbol);
+        assert_eq!(operator.left, Some(int4), "{symbol} takes int4 on the left");
+        assert_eq!(operator.right, int4, "{symbol} takes int4 on the right");
+        assert_eq!(operator.result, boolean);
+    }
+
+    // The hash class and the btree class agree on the equality operator.
+    assert_eq!(catalog.hash_equality(int4), Some(btree.eq));
+    assert_eq!(catalog[int4].btree, Some(btree));
+}
+
+#[test]
+fn json_and_xml_have_no_ordering_and_no_equality() {
+    let catalog = pg17();
+    for builtin in [Builtin::Json, Builtin::Xml] {
+        let ty = catalog.builtin(builtin);
+        assert_eq!(catalog.btree_ordering(ty), None, "{builtin:?}");
+        assert_eq!(catalog.hash_equality(ty), None, "{builtin:?}");
+    }
+}
+
+#[test]
+fn xid_has_a_hash_equality_and_no_ordering() {
+    let catalog = pg17();
+    let xid = catalog.builtin(Builtin::Xid);
+    assert_eq!(catalog.btree_ordering(xid), None);
+    let eq = catalog.hash_equality(xid).expect("xid has a hash class");
+    assert_eq!(catalog[eq].name.as_str(), "=");
+    assert_eq!(catalog[eq].right, xid);
+}
+
+#[test]
+fn the_operator_class_lookup_is_for_the_exact_type() {
+    let catalog = pg17();
+
+    // `varchar` sorts through the class of `text`, because it is
+    // binary-coercible to `text`. The lookup does not follow that rule.
+    assert_eq!(
+        catalog.btree_ordering(catalog.builtin(Builtin::Varchar)),
+        None
+    );
+    assert!(
+        catalog
+            .btree_ordering(catalog.builtin(Builtin::Text))
+            .is_some()
+    );
+
+    // An array sorts through the class of `anyarray`.
+    assert_eq!(
+        catalog.btree_ordering(catalog.builtin(Builtin::Int4Array)),
+        None
+    );
+    let anyarray = catalog.builtin(Builtin::Anyarray);
+    let btree = catalog
+        .btree_ordering(anyarray)
+        .expect("anyarray has a default btree operator class");
+    assert_eq!(catalog[btree.lt].name.as_str(), "<");
+    assert_eq!(catalog[btree.lt].right, anyarray);
+    assert!(catalog.hash_equality(anyarray).is_some());
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -155,6 +234,8 @@ fn the_builder_adds_a_table_to_the_fixture() {
         is_preferred: false,
         is_collatable: false,
         array: None,
+        btree: None,
+        hash_equality: None,
         kind: TypeKind::Composite(CompositeDetail {
             fields: vec![Field {
                 name: Name::new("id"),

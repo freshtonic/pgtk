@@ -4,6 +4,7 @@ use crate::extension::Extension;
 use crate::handle::Handle;
 use crate::name::Name;
 use crate::oid::Oid;
+use crate::operator::Operator;
 use crate::relation::Relation;
 use crate::schema::Schema;
 use crate::typmod::Typmod;
@@ -34,8 +35,43 @@ pub struct Type {
     pub array: Option<Handle<Type>>,
     /// The kind of the type and the detail that belongs to that kind.
     pub kind: TypeKind,
+    /// The comparison operators of the default btree operator class of this
+    /// type, when the type has one.
+    ///
+    /// See [`Catalog::btree_ordering`](crate::Catalog::btree_ordering) for
+    /// the rules.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub btree: Option<BtreeOperators>,
+    /// The `=` operator of the default hash operator class of this type,
+    /// when the type has one.
+    ///
+    /// See [`Catalog::hash_equality`](crate::Catalog::hash_equality) for the
+    /// rules.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub hash_equality: Option<Handle<Operator>>,
     /// The extension that owns this type, when one does.
     pub extension: Option<Handle<Extension>>,
+}
+
+/// The five comparison operators that a default btree operator class gives
+/// a type.
+///
+/// Each operator takes the type on both sides. The strategy numbers are those
+/// of `pg_amop.amopstrategy` for a btree. PostgreSQL sorts with `lt` and `gt`
+/// and groups with `eq`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BtreeOperators {
+    /// The `<` operator. Strategy 1.
+    pub lt: Handle<Operator>,
+    /// The `<=` operator. Strategy 2.
+    pub le: Handle<Operator>,
+    /// The `=` operator. Strategy 3.
+    pub eq: Handle<Operator>,
+    /// The `>=` operator. Strategy 4.
+    pub ge: Handle<Operator>,
+    /// The `>` operator. Strategy 5.
+    pub gt: Handle<Operator>,
 }
 
 /// The kind of a type, with the detail that belongs to it.
