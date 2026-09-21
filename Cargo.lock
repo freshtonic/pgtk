@@ -564,6 +564,7 @@ dependencies = [
  "pg-psql",
  "pg-sql",
  "postgres",
+ "recursa",
  "serde",
  "serde_json",
  "thiserror",

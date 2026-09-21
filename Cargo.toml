@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 pg-sql = { path = "../pg-sql", features = ["spans"] }
 pg-catalog = { path = "../pg-catalog" }
+recursa = { path = "../recursa/recursa", default-features = false }
 thiserror = "2"
 
 [dev-dependencies]

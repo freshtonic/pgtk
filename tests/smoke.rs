@@ -1,0 +1,109 @@
+//! Smoke checks against the bundled PostgreSQL 17 Catalog: no server needed.
+
+use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
+use pg_catalog::Catalog;
+
+fn catalog() -> Catalog {
+    pg_catalog::fixture::pg17()
+}
+
+fn describe(catalog: &Catalog, sql: &str) -> String {
+    let settings = Settings::new(catalog, TargetVersion::V17, ["public"]);
+    let analyzer = Analyzer::new(catalog, settings);
+    match analyzer.analyze_sql(sql, &[]) {
+        Ok(analysis) => analysis
+            .result
+            .columns
+            .iter()
+            .map(|c| {
+                let ty = &catalog[c.ty];
+                format!("{}:{}({})", c.name, ty.name, c.typmod)
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+        Err(AnalyzeError::Diagnostic(d)) => {
+            format!("ERROR {} {} @{:?}", d.sqlstate, d.message, d.position)
+        }
+        Err(AnalyzeError::Unsupported(u)) => format!("UNSUPPORTED {}", u.what),
+    }
+}
+
+#[test]
+fn constants_and_operators() {
+    let catalog = catalog();
+    assert_eq!(describe(&catalog, "SELECT 1"), "?column?:int4(-1)");
+    assert_eq!(describe(&catalog, "SELECT 1 + 1"), "?column?:int4(-1)");
+    assert_eq!(describe(&catalog, "SELECT 1 + 1.5"), "?column?:numeric(-1)");
+    assert_eq!(describe(&catalog, "SELECT 'a' || 'b'"), "?column?:text(-1)");
+    assert_eq!(describe(&catalog, "SELECT 'abc'"), "?column?:text(-1)");
+    assert_eq!(describe(&catalog, "SELECT NULL"), "?column?:text(-1)");
+    assert_eq!(describe(&catalog, "SELECT -1"), "?column?:int4(-1)");
+    assert_eq!(describe(&catalog, "SELECT 3000000000"), "?column?:int8(-1)");
+    assert_eq!(
+        describe(&catalog, "SELECT true AND false"),
+        "?column?:bool(-1)"
+    );
+    assert_eq!(describe(&catalog, "SELECT 1 = '1'"), "?column?:bool(-1)");
+}
+
+#[test]
+fn casts_and_functions() {
+    let catalog = catalog();
+    assert_eq!(describe(&catalog, "SELECT 1::int8"), "int8:int8(-1)");
+    assert_eq!(
+        describe(&catalog, "SELECT CAST('x' AS varchar(10))"),
+        "varchar:varchar(14)"
+    );
+    assert_eq!(describe(&catalog, "SELECT int4 '1'"), "int4:int4(-1)");
+    assert_eq!(describe(&catalog, "SELECT abs(-1)"), "abs:int4(-1)");
+    assert_eq!(
+        describe(&catalog, "SELECT length('abc')"),
+        "length:int4(-1)"
+    );
+    assert_eq!(describe(&catalog, "SELECT now()"), "now:timestamptz(-1)");
+    assert_eq!(
+        describe(&catalog, "SELECT coalesce(1, 2.5)"),
+        "coalesce:numeric(-1)"
+    );
+    assert_eq!(describe(&catalog, "SELECT nullif(1, 2)"), "nullif:int4(-1)");
+}
+
+#[test]
+fn columns_and_errors() {
+    let catalog = catalog();
+    assert_eq!(
+        describe(
+            &catalog,
+            "SELECT relname, relkind FROM pg_class WHERE relname = 'x'"
+        ),
+        "relname:name(-1), relkind:char(-1)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT c.oid FROM pg_class c"),
+        "oid:oid(-1)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT nosuch FROM pg_class"),
+        "ERROR 42703 column \"nosuch\" does not exist @Some(8)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT 1 FROM nosuch"),
+        "ERROR 42P01 relation \"nosuch\" does not exist @Some(15)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT 1 + 'a'::text"),
+        "ERROR 42883 operator does not exist: integer + text @Some(10)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT nosuchfunc(1)"),
+        "ERROR 42883 function nosuchfunc(integer) does not exist @Some(8)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT 1 FROM pg_class WHERE 1"),
+        "ERROR 42804 argument of WHERE must be type boolean, not type integer @Some(30)"
+    );
+    assert_eq!(
+        describe(&catalog, "SELECT *"),
+        "ERROR 42601 SELECT * with no tables specified is not valid @Some(8)"
+    );
+}

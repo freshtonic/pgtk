@@ -48,6 +48,54 @@ pub trait Subject: Send {
     fn analyze(&mut self, catalog: &Catalog, search_path: &[String], sql: &str) -> SubjectOutcome;
 }
 
+/// The real Analyzer as a Subject.
+#[derive(Clone, Copy)]
+pub struct AnalyzerSubject;
+
+impl Subject for AnalyzerSubject {
+    fn wants(&self, shape: Shape) -> bool {
+        shape.has_query
+    }
+
+    fn analyze(&mut self, catalog: &Catalog, search_path: &[String], sql: &str) -> SubjectOutcome {
+        use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
+        let settings = Settings::new(
+            catalog,
+            TargetVersion::V17,
+            search_path.iter().map(String::as_str),
+        );
+        let analyzer = Analyzer::new(catalog, settings);
+        match analyzer.analyze_sql(sql, &[]) {
+            Ok(analysis) => SubjectOutcome::Analysed {
+                params: analysis
+                    .result
+                    .params
+                    .iter()
+                    .map(|&t| catalog[t].oid.0)
+                    .collect(),
+                columns: analysis
+                    .result
+                    .columns
+                    .iter()
+                    .map(|c| SubjectColumn {
+                        name: c.name.clone(),
+                        type_oid: catalog[c.ty].oid.0,
+                        typmod: c.typmod,
+                        table_oid: c.origin.map(|(r, _)| catalog[r].oid.0),
+                        column_id: c.origin.map(|(_, attnum)| attnum),
+                    })
+                    .collect(),
+            },
+            Err(AnalyzeError::Diagnostic(d)) => SubjectOutcome::Diagnostic {
+                sqlstate: d.sqlstate.to_owned(),
+                message: d.message,
+                position: d.position,
+            },
+            Err(AnalyzeError::Unsupported(u)) => SubjectOutcome::Unsupported(u.what),
+        }
+    }
+}
+
 /// The Subject before there is an analyzer: everything is Unsupported.
 #[derive(Clone, Copy)]
 pub struct Stub;
