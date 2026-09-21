@@ -148,10 +148,14 @@ impl PseudoType {
 
 pub struct Relation {
     pub oid: Oid, pub name: Name, pub schema: Handle<Schema>, pub kind: RelationKind,
-    pub row_type: Handle<Type>, pub columns: Vec<Column>, pub extension: Option<Handle<Extension>>,
+    pub row_type: Option<Handle<Type>>, pub columns: Vec<Column>, pub extension: Option<Handle<Extension>>,
 }
-pub enum RelationKind { Table, View, MaterializedView, ForeignTable, PartitionedTable }
-// relkind r v m f p
+pub enum RelationKind { Table, View, MaterializedView, ForeignTable, PartitionedTable, Sequence }
+// relkind r v m f p S
+// A sequence has three columns: last_value int8, log_cnt int8, is_called bool.
+// PostgreSQL 14 and later give a sequence no pg_type row (reltype = 0), so
+// row_type is None for a Sequence and Some for each other kind.
+// The model holds no pg_sequence detail (start, increment, cycle).
 pub struct Column {
     pub name: Name, pub position: i16, pub ty: Handle<Type>, pub typmod: Typmod,
     pub not_null: bool, pub has_default: bool, pub generated: bool, pub identity: bool,
@@ -514,12 +518,12 @@ NOT LIKE 'pg\_temp%'` via a join on `pg_namespace`.
   `ORDER BY oid`.
 - **EnumLabels**: `enumtypid, enumsortorder, enumlabel` `ORDER BY enumtypid, enumsortorder`.
 - **Relations**: `oid, relname, relnamespace, relkind, reltype` from
-  `pg_class` joined with the filter, `WHERE relkind IN ('r','v','m','f','p')`
+  `pg_class` joined with the filter, `WHERE relkind IN ('r','v','m','f','p','S')`
   `ORDER BY oid`.
 - **Attributes**: `attrelid, attnum, attname, atttypid, atttypmod, attnotnull,
   atthasdef, (attgenerated <> '') AS generated, (attidentity <> '') AS identity`
   from `pg_attribute a JOIN pg_class c ON c.oid = a.attrelid` with the filter,
-  `WHERE attnum > 0 AND NOT attisdropped AND relkind IN ('r','v','m','f','p','c')`
+  `WHERE attnum > 0 AND NOT attisdropped AND relkind IN ('r','v','m','f','p','S','c')`
   `ORDER BY attrelid, attnum`.
 - **Functions**: `oid, proname, pronamespace, prokind, provariadic,
   pronargdefaults, prorettype, proretset, proisstrict, provolatile` with the
@@ -561,8 +565,11 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
    attribute type of a composite. Arrays: `is_array` decides; `typelem` on a
    non-array is ignored. `typarray = 0` gives `array: None`.
 5. **Relations, kept set.** Rows whose schema is loaded and whose `reltype`
-   is a kept type. A relation's columns are the Attributes rows for its OID;
-   all their types are kept by step 4, since the row type is a composite.
+   is a kept type. A sequence (`relkind` `S`) has `reltype = 0`, so only its
+   schema decides, and its `row_type` is `None`. A relation's columns are the
+   Attributes rows for its OID; all their types are kept by step 4, since the
+   row type is a composite. The columns of a sequence are `int8` and `bool`;
+   a column whose type is not kept gives `MissingReference` and goes.
 6. Assign handles: sort each kept set by OID; handle = position.
 7. Build types and relations. A composite type gets
    `relation = Some(h)` when `relkind` in `r v m f p` and that relation is

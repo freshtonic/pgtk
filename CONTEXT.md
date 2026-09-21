@@ -111,8 +111,12 @@ _Avoid_: Typmod (in prose), length, precision
 
 **Relation**:
 A `pg_class` row that has Columns and can be named in a `FROM` clause: a
-table, view, materialized view, foreign table, or partitioned table.
-Sequences, indexes, and TOAST tables are not Relations in this model.
+table, view, materialized view, foreign table, partitioned table, or
+sequence. A sequence has exactly three Columns: `last_value`, `log_cnt`, and
+`is_called`. The server gives a sequence no row Type, so a sequence is the
+one Relation without one. The model holds no parameter of a sequence, such as
+the start or the increment. Indexes and TOAST tables are not Relations in
+this model.
 
 **Column**:
 One live attribute of a Relation, with its Type, Type Modifier, and
