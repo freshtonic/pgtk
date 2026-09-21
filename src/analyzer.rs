@@ -84,7 +84,8 @@ use pg_sql::ast::dml::select::{
     FlatTableSampleClause,
 };
 use pg_sql::ast::dml::select::{
-    FlatFuncTableAlias, FlatFuncTableAliasAfterAs, FlatRowsFromColDef, FlatRowsFromFunc,
+    FlatFuncTableAlias, FlatFuncTableAliasAfterAs, FlatFuncTableAliasColumnList,
+    FlatFuncTableAliasColumns, FlatFuncTableColumnDef, FlatRowsFromColDef, FlatRowsFromFunc,
 };
 use pg_sql::ast::dml::select::{
     FlatJoinCondition, FlatJoinSuffix, FlatJoinType, FlatJoinedTable, FlatLateralBody,
@@ -201,36 +202,8 @@ impl<'c> Analyzer<'c> {
     /// What the rewriter needs to know about a view's query, from its
     /// definition text as `pg_get_viewdef` prints it.
     fn view_info(&self, sql: &str) -> Result<ViewInfo> {
-        let lexed = pg_sql::lex(sql);
-        if lexed.errors().next().is_some() {
-            return Err(unsupported("view definition does not lex", None));
-        }
-        let terminator = lexed
-            .tokens()
-            .last()
-            .filter(|token| token.kind() == pg_sql::TokenKind::SEMI)
-            .map(|token| token.span());
-        let lexed = match terminator {
-            None => lexed,
-            Some(terminator) => {
-                let mut builder = pg_sql::LexBuilder::new(sql);
-                for token in lexed.tokens() {
-                    if token.span() != terminator
-                        && builder.append(token.kind(), token.span()).is_err()
-                    {
-                        return Err(unsupported("view definition does not lex", None));
-                    }
-                }
-                builder.finish()
-            }
-        };
-        let mut input = lexed.input();
-        let Ok(statement) = pg_sql::ast::Statement::parse_flat(&mut input) else {
-            return Err(unsupported("view definition does not parse", None));
-        };
-        if !input.is_eof() {
-            return Err(unsupported("view definition does not parse", None));
-        }
+        let statement = parse_definition(sql)
+            .ok_or_else(|| unsupported("view definition does not parse", None))?;
         let mut walker = self.walker(sql, &statement);
         walker.statement()?;
         walker.view_shape()
@@ -724,6 +697,76 @@ type CallBodyItems = (
 
 /// The ORDER BY expressions and the FILTER expression of an aggregate call.
 type AggregateClauses = (Vec<Handle<FlatExpr>>, Option<Handle<FlatExpr>>);
+
+/// The text of a view or rule definition, as `pg_get_viewdef` or
+/// `pg_get_ruledef` gives it, parsed as one Statement without its
+/// terminator.
+fn parse_definition(sql: &str) -> Option<Statement<'_>> {
+    let lexed = pg_sql::lex(sql);
+    if lexed.errors().next().is_some() {
+        return None;
+    }
+    let terminator = lexed
+        .tokens()
+        .last()
+        .filter(|token| token.kind() == pg_sql::TokenKind::SEMI)
+        .map(|token| token.span());
+    let lexed = match terminator {
+        None => lexed,
+        Some(terminator) => {
+            let mut builder = pg_sql::LexBuilder::new(sql);
+            for token in lexed.tokens() {
+                if token.span() != terminator && builder.append(token.kind(), token.span()).is_err()
+                {
+                    return None;
+                }
+            }
+            builder.finish()
+        }
+    };
+    let mut input = lexed.input();
+    let statement = pg_sql::ast::Statement::parse_flat(&mut input).ok()?;
+    if !input.is_eof() {
+        return None;
+    }
+    Some(statement)
+}
+
+/// Whether a CREATE RULE statement has an action with a RETURNING list.
+fn rule_action_returns(statement: &Statement<'_>) -> bool {
+    use pg_sql::ast::ddl::rule::{FlatRuleActionStmt, FlatRuleActions, FlatRuleWithBody};
+    fn node<'s, N>(st: &'s Statement<'_>, h: Handle<N>) -> &'s N
+    where
+        N: recursa::FlatNode,
+        for<'i> Statement<'i>: recursa::FlatStorage<N>,
+    {
+        st.get(h).expect("handle came from this AST")
+    }
+    let FlatStatement::CreateRule(r) = node(statement, statement.root()) else {
+        return false;
+    };
+    let actions = node(
+        statement,
+        node(statement, node(statement, *r).do_clause).actions,
+    );
+    let list: Vec<Handle<FlatRuleActionStmt>> = match actions {
+        FlatRuleActions::Nothing => Vec::new(),
+        FlatRuleActions::Single(a) => vec![*a],
+        FlatRuleActions::Multi(l) => statement.lists().get(node(statement, *l).actions).to_vec(),
+    };
+    list.into_iter().any(|a| match node(statement, a) {
+        FlatRuleActionStmt::Insert(i) => node(statement, *i).returning.is_some(),
+        FlatRuleActionStmt::Update(u) => node(statement, *u).returning.is_some(),
+        FlatRuleActionStmt::Delete(d) => node(statement, *d).returning.is_some(),
+        FlatRuleActionStmt::With(w) => match node(statement, node(statement, *w).body) {
+            FlatRuleWithBody::Insert(i) => node(statement, *i).returning.is_some(),
+            FlatRuleWithBody::Update(u) => node(statement, *u).returning.is_some(),
+            FlatRuleWithBody::Delete(d) => node(statement, *d).returning.is_some(),
+            FlatRuleWithBody::Query(_) => false,
+        },
+        FlatRuleActionStmt::Query(_) | FlatRuleActionStmt::Notify(_) => false,
+    })
+}
 
 /// The items of one WITH clause while they are analysed.
 struct WithItems {
@@ -4359,11 +4402,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         if let Some(target) = clause.target {
             match self.get(target) {
-                FlatConflictTarget::Constraint(_) => {
-                    return Err(unsupported(
-                        "ON CONFLICT ON CONSTRAINT",
-                        Some(location..location),
-                    ));
+                FlatConflictTarget::Constraint(c) => {
+                    // get_relation_constraint_attnos: the constraint must be
+                    // one of the target table's.
+                    let (name, _) = self.col_id(self.get(*c).name)?;
+                    if self.catalog()[relation].constraint(&name).is_none() {
+                        return Err(Diagnostic::new(
+                            "42704",
+                            format!("constraint \"{name}\" for table \"{relname}\" does not exist"),
+                        )
+                        .into());
+                    }
                 }
                 FlatConflictTarget::Index(list) => {
                     // gram.y locates the inference clause at its parenthesis.
@@ -4378,19 +4427,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     self.expr_kind = ExprKind::IndexExpression;
                     for item in items {
                         let it = self.get(item);
-                        if it.collate.is_some() {
-                            return Err(unsupported(
-                                "COLLATE in an ON CONFLICT target",
-                                Some(infer_location..infer_location),
-                            ));
-                        }
-                        if it.opclass.is_some() {
-                            return Err(unsupported(
-                                "operator class in an ON CONFLICT target",
-                                Some(infer_location..infer_location),
-                            ));
-                        }
-                        match self.get(it.target) {
+                        // resolve_unique_index_expr: the element, then its
+                        // collation, then its btree operator class.
+                        let expr_location = match self.get(it.target) {
                             FlatIndexTarget::Col(c) => {
                                 let (name, _) = self.col_id(*c)?;
                                 if self
@@ -4403,9 +4442,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                         .error_missing_column(None, &name, infer_location)
                                         .into());
                                 }
+                                infer_location
                             }
                             FlatIndexTarget::Expr(e) => {
                                 self.expr(scope, *e)?;
+                                self.span(*e).start
                             }
                             FlatIndexTarget::Func(f) => {
                                 let func = self.function_item(*f, None)?;
@@ -4420,6 +4461,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     None,
                                     func.location,
                                 )?;
+                                func.location
                             }
                             FlatIndexTarget::Json(_) | FlatIndexTarget::Common(_) => {
                                 return Err(unsupported(
@@ -4427,6 +4469,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     Some(infer_location..infer_location),
                                 ));
                             }
+                        };
+                        if let Some(cl) = it.collate {
+                            self.lookup_collation(self.get(cl).name, expr_location)?;
+                        }
+                        if let Some(oc) = it.opclass {
+                            let (opcname, _) = self.col_id(oc)?;
+                            self.lookup_operator_class_parts(None, opcname, "btree")?;
                         }
                     }
                     self.expr_kind = saved;
@@ -4651,8 +4700,26 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 relation = info.base.expect("an updatable view has a base");
                 updatable_view = true;
             } else if (instead || qual_instead) && has_returning {
-                // Whether the rule actions return rows is not in the Catalog.
-                return Err(unsupported("RETURNING through a DO INSTEAD rule", None));
+                // The rewriter keeps the Statement's own RETURNING list, with
+                // the view's columns replaced by the rule action's RETURNING
+                // expressions, so the Result Descriptor is the list as written
+                // against the view; without such an action it refuses.
+                if !self.rule_returns(relation, event) {
+                    let what = match event {
+                        DmlEvent::Insert => "INSERT",
+                        DmlEvent::Update => "UPDATE",
+                        DmlEvent::Delete => "DELETE",
+                        DmlEvent::Merge => "MERGE",
+                    };
+                    return Err(Diagnostic::new(
+                        "0A000",
+                        format!("cannot perform {what} RETURNING on relation \"{relname}\""),
+                    )
+                    .hint(format!(
+                        "You need an unconditional ON {what} DO INSTEAD rule with a RETURNING clause."
+                    ))
+                    .into());
+                }
             }
             if has_on_conflict && (product || has_update_rule) && !updatable_view {
                 return Err(Diagnostic::new(
@@ -4669,6 +4736,118 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// `view_has_instead_trigger`.
+    /// The parts of a possibly qualified name: at most a schema and a
+    /// name, as `DeconstructQualifiedName` allows.
+    fn schema_and_name(
+        &self,
+        qn: Handle<FlatQualifiedName>,
+        at: usize,
+    ) -> Result<(Option<String>, String)> {
+        let qn = self.get(qn);
+        let (first, _) = self.col_id(qn.first)?;
+        let mut parts = vec![first];
+        for part in self.list(qn.rest) {
+            let part = self.get(*part);
+            parts.push(self.col_label(part.name)?);
+        }
+        if parts.len() > 2 {
+            return Err(Diagnostic::new(
+                "42601",
+                format!(
+                    "improper qualified name (too many dotted names): {}",
+                    parts.join(".")
+                ),
+            )
+            .at(at)
+            .into());
+        }
+        let name = parts.pop().expect("at least one part");
+        Ok((parts.pop(), name))
+    }
+
+    /// `LookupCollation`: by name through the Search Path, for the
+    /// database encoding.
+    fn lookup_collation(
+        &self,
+        qn: Handle<FlatQualifiedName>,
+        at: usize,
+    ) -> Result<pg_catalog::Handle<Collation>> {
+        let (schema, name) = self.schema_and_name(qn, at)?;
+        let catalog = self.catalog();
+        let found = match &schema {
+            Some(schema) => catalog.collation_named(&pg_catalog::QualifiedName::new(
+                schema.as_str(),
+                name.as_str(),
+            )),
+            None => catalog.collation_visible(self.resolver.search_path, &name),
+        };
+        found.ok_or_else(|| {
+            let written = match &schema {
+                Some(schema) => format!("{schema}.{name}"),
+                None => name.clone(),
+            };
+            Diagnostic::new(
+                "42704",
+                format!(
+                    "collation \"{written}\" for encoding \"{}\" does not exist",
+                    catalog.metadata().encoding.name
+                ),
+            )
+            .at(at)
+            .into()
+        })
+    }
+
+    /// `get_opclass_oid` for an access method, without a position.
+    fn lookup_operator_class_parts(
+        &self,
+        schema: Option<String>,
+        name: String,
+        method: &str,
+    ) -> Result<pg_catalog::Handle<pg_catalog::OperatorClass>> {
+        let catalog = self.catalog();
+        let found = match &schema {
+            Some(schema) => catalog.operator_class_named(
+                &pg_catalog::QualifiedName::new(schema.as_str(), name.as_str()),
+                method,
+            ),
+            None => catalog.operator_class_visible(self.resolver.search_path, &name, method),
+        };
+        found.ok_or_else(|| {
+            let written = match &schema {
+                Some(schema) => format!("{schema}.{name}"),
+                None => name.clone(),
+            };
+            Diagnostic::new(
+                "42704",
+                format!(
+                    "operator class \"{written}\" does not exist for access method \"{method}\""
+                ),
+            )
+            .into()
+        })
+    }
+
+    /// Whether a DO INSTEAD rule for the event has an action with a
+    /// RETURNING list, read from the rule's definition.
+    fn rule_returns(
+        &self,
+        relation: pg_catalog::Handle<pg_catalog::Relation>,
+        event: DmlEvent,
+    ) -> bool {
+        let rule_event = match event {
+            DmlEvent::Insert => RuleEvent::Insert,
+            DmlEvent::Update => RuleEvent::Update,
+            DmlEvent::Delete => RuleEvent::Delete,
+            DmlEvent::Merge => return false,
+        };
+        self.catalog()[relation].rules.iter().any(|r| {
+            r.event == rule_event
+                && r.instead
+                && parse_definition(&r.definition).is_some_and(|st| rule_action_returns(&st))
+        })
+    }
+
     fn view_has_instead_trigger(
         &self,
         relation: pg_catalog::Handle<pg_catalog::Relation>,
@@ -7388,49 +7567,62 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let Some(alias) = alias else {
             return Ok((None, Vec::new(), None, None));
         };
+        // The alias is a name with an optional column list, which names
+        // the columns or defines them, or a bare definition list after AS.
+        enum Columns {
+            Names(Vec<Handle<FlatColId>>),
+            Definitions(Vec<Handle<FlatFuncTableColumnDef>>),
+        }
+        let list_of = |w: &Self, c: Option<Handle<FlatFuncTableAliasColumns>>| match c {
+            None => Columns::Names(Vec::new()),
+            Some(c) => match w.get(w.get(c).columns) {
+                FlatFuncTableAliasColumnList::Names(l) => Columns::Names(w.list1(*l).to_vec()),
+                FlatFuncTableAliasColumnList::Definitions(l) => {
+                    Columns::Definitions(w.list1(*l).to_vec())
+                }
+            },
+        };
         let (name, columns) = match self.get(alias) {
             FlatFuncTableAlias::WithAs(w) => match self.get(self.get(*w).body) {
                 FlatFuncTableAliasAfterAs::Named(n) => {
                     let n = self.get(*n);
-                    (Some(n.name), n.columns)
+                    (Some(n.name), list_of(self, n.columns))
                 }
-                FlatFuncTableAliasAfterAs::Columns(c) => (None, Some(*c)),
+                FlatFuncTableAliasAfterAs::Definitions(d) => (
+                    None,
+                    Columns::Definitions(self.list1(self.get(*d).columns).to_vec()),
+                ),
             },
             FlatFuncTableAlias::Named(n) => {
                 let n = self.get(*n);
-                (Some(n.name), n.columns)
+                (Some(n.name), list_of(self, n.columns))
             }
-            FlatFuncTableAlias::Columns(c) => (None, Some(*c)),
         };
         let name = match name {
             Some(n) => Some(self.col_id(n)?.0),
             None => None,
         };
-        let Some(columns) = columns else {
-            return Ok((name, Vec::new(), None, None));
-        };
-        let columns = self.get(columns);
-        let mut plain = Vec::new();
-        let mut defs = Vec::new();
-        let mut first = None;
-        for c in self.list1(columns.columns) {
-            if first.is_none() {
-                first = Some(self.span(*c).start);
+        match columns {
+            Columns::Names(names) => {
+                let mut plain = Vec::with_capacity(names.len());
+                for c in names {
+                    plain.push(self.col_id(c)?.0);
+                }
+                Ok((name, plain, None, None))
             }
-            let c = self.get(*c);
-            let colname = self.col_id(c.name)?.0;
-            match c.type_name {
-                None => plain.push(colname),
-                Some(t) => defs.push((colname, t)),
+            Columns::Definitions(list) => {
+                let first = list.first().map(|c| self.span(*c).start);
+                let mut defs = Vec::with_capacity(list.len());
+                for c in list {
+                    let c = self.get(c);
+                    if let Some(cl) = c.collate {
+                        let at = self.span(cl).start;
+                        self.lookup_collation(self.get(cl).name, at)?;
+                    }
+                    defs.push((self.col_id(c.name)?.0, c.type_name));
+                }
+                Ok((name, Vec::new(), Some(defs), first))
             }
-        }
-        if !plain.is_empty() && !defs.is_empty() {
-            return Err(unsupported("mixed column alias and definition list", None));
-        }
-        if defs.is_empty() {
-            Ok((name, plain, None, None))
-        } else {
-            Ok((name, Vec::new(), Some(defs), first))
         }
     }
 
@@ -11198,6 +11390,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 name: Some("normalize".to_owned()),
                 strength: 2,
             },
+            FlatExpr::CollationFor(_) => Colname {
+                name: Some("pg_collation_for".to_owned()),
+                strength: 2,
+            },
             FlatExpr::Coalesce(_) => Colname {
                 name: Some("coalesce".to_owned()),
                 strength: 2,
@@ -12136,9 +12332,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::CastCall(c) => {
                 let c = self.get(*c);
                 let inner = self.get(c.inner);
-                if inner.collate.is_some() {
-                    return Err(unsupported("COLLATE", Some(location..location)));
-                }
                 let (value, target) = (inner.value, inner.target);
                 let arg = self.cast_operand(scope, value, target)?;
                 self.type_cast(handle, value, &arg, target, location)
@@ -13106,6 +13299,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 };
                 self.resolve_call(handle, name, &handles, &args, location, None)
             }
+            FlatExpr::CollationFor(c) => {
+                // gram.y: pg_catalog.pg_collation_for(arg) as a FuncCall.
+                let arg_handle = self.get(*c).arg;
+                let arg = self.expr(scope, arg_handle)?;
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "pg_collation_for".to_owned(),
+                };
+                self.resolve_call(handle, name, &[arg_handle], &[arg], location, None)
+            }
             FlatExpr::IsNormalized(e, tail) => {
                 // gram.y: pg_catalog.is_normalized(arg [, 'FORM']) as a
                 // FuncCall located at IS, under NOT for IS NOT NORMALIZED.
@@ -13163,21 +13366,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     .at(at)
                     .into());
                 }
-                let (collname, _) = self.col_id(*name)?;
-                let Some(c) = self
-                    .catalog()
-                    .collation_visible(self.resolver.search_path, &collname)
-                else {
-                    return Err(Diagnostic::new(
-                        "42704",
-                        format!(
-                            "collation \"{collname}\" for encoding \"{}\" does not exist",
-                            self.catalog().metadata().encoding.name
-                        ),
-                    )
-                    .at(at)
-                    .into());
-                };
+                let c = self.lookup_collation(*name, at)?;
                 self.collate_exprs.insert(handle, (c, at));
                 // coerce_type looks through a CollateExpr to its argument,
                 // so an unknown literal under COLLATE still reads as one.

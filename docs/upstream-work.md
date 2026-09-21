@@ -5,7 +5,7 @@ Each item belongs to the named crate, not here.
 
 ## pg-sql
 
-Done (pg-sql main 1974ba1): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
+Done (pg-sql main 67b7f09): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
 their own nodes; infix `OPERATOR(schema.op)`; the identifier folding helper;
 `SELECT DISTINCT` requires a target list; `ROLLUP` and `CUBE` are grouping
 clauses; `SELECT ALL` parses; a set operation chain is a left-recursive
@@ -23,15 +23,13 @@ table reference holds a subquery or a join only (`ParenTableRef::Query` and
 `func_application` (`CallStmt.call` is a `FunctionApplicationExpr`), so
 qualified names, named arguments and `VARIADIC` parse; `ORDER BY x USING op`
 takes any `qual_all_Op` as one `SortOrder` with ASC/DESC, in a query, an
-aggregate, WITHIN GROUP and a window.
+aggregate, WITHIN GROUP and a window; `COLLATE any_name` and the collation
+and operator class names of index elements are `QualifiedName`; a CAST
+takes no COLLATE; function table aliases follow gram.y's `TableFuncElement`
+list, with a collation per column definition.
 
 Open:
 
-- `expr COLLATE schema.name` does not parse: `Expr::Collate` holds one
-  `ColId`, while gram.y takes `any_name`. Reported 2026-09-21.
-- `CAST(x AS type COLLATE c)` parses (`CastAsInner.collate`), while gram.y
-  has no COLLATE after the Typename of a CAST; PostgreSQL answers a syntax
-  error there, as collate.sql expects. Reported 2026-09-21.
 - Promoting shared-pool types that carry Annotations (`SelectItem`,
   `QualifiedRef`, `PositionalParam`, `QueryBody`, `InsertStmt`, `UpdateStmt`)
   to typed pools is deferred until the Oracle harness gives a measurement,
