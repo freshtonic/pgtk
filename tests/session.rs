@@ -56,10 +56,10 @@ fn prepare_then_execute() {
 
     // PREPARE is a Utility Statement: its own answer is empty.
     assert_eq!(describe(&catalog, &session, sql), "");
-    assert_eq!(
-        describe(&catalog, &session, "EXECUTE p1(1)"),
-        "ERROR 26000 prepared statement \"p1\" does not exist @None"
-    );
+    // A name the Session does not hold answers with no columns, as
+    // `UtilityTupleDescriptor` does. PostgreSQL raises `26000` when the
+    // Statement runs, not when a Describe asks.
+    assert_eq!(describe(&catalog, &session, "EXECUTE p1(1)"), "");
 
     run(&catalog, &mut session, sql);
     let prepared = session.prepared("p1").expect("the Effect added it");
@@ -136,10 +136,10 @@ fn execute_analyses_the_prepared_query_again() {
 fn declare_then_fetch() {
     let catalog = catalog();
     let mut session = Session::new();
-    assert_eq!(
-        describe(&catalog, &session, "FETCH ALL FROM c1"),
-        "ERROR 34000 cursor \"c1\" does not exist @None"
-    );
+    // A cursor the Session does not hold answers with no columns, as
+    // `UtilityTupleDescriptor` does. PostgreSQL raises `34000` when the
+    // Statement runs, not when a Describe asks.
+    assert_eq!(describe(&catalog, &session, "FETCH ALL FROM c1"), "");
 
     let sql = "DECLARE c1 CURSOR FOR SELECT relname FROM pg_class";
     // The query is analysed, and the cursor is the Effect.
@@ -158,10 +158,7 @@ fn declare_then_fetch() {
     );
     // A MOVE reads the cursor and answers with no columns.
     assert_eq!(describe(&catalog, &session, "MOVE FORWARD 1 IN c1"), "");
-    assert_eq!(
-        describe(&catalog, &session, "MOVE ALL IN nosuch"),
-        "ERROR 34000 cursor \"nosuch\" does not exist @None"
-    );
+    assert_eq!(describe(&catalog, &session, "MOVE ALL IN nosuch"), "");
 
     run(&catalog, &mut session, "CLOSE c1");
     assert!(session.cursor("c1").is_none());

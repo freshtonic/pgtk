@@ -32,7 +32,7 @@ The configuration that changes what a Statement means, supplied by the caller fo
 _Avoid_: GUCs, config, options, session state
 
 **Session**:
-The objects a PostgreSQL session holds that a Parse or a Describe reads: its prepared statements, its open cursors and the custom configuration placeholders a SET created. A Session is a snapshot the caller supplies next to the Settings; an empty Session is the default. Analysis reads it and never changes it: EXECUTE answers with the prepared statement's Result Descriptor, FETCH with the cursor's, SHOW of a placeholder with its name.
+The objects a PostgreSQL session holds that a Parse or a Describe reads: its prepared statements, its open cursors and the custom configuration placeholders a SET created. A Session is a snapshot the caller supplies next to the Settings; an empty Session is the default. Analysis reads it and never changes it: EXECUTE answers with the prepared statement's Result Descriptor, FETCH with the cursor's, SHOW of a placeholder with its name. A prepared statement or a cursor the Session does not hold answers with an empty Result Descriptor and no Diagnostic, because a Describe answers that way and PostgreSQL raises the error only when the Statement runs.
 _Avoid_: connection, backend, portal, plan cache
 
 **Session Effect**:

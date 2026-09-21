@@ -94,12 +94,9 @@ These details follow:
   and 42602), domain checks folded at parse time (class 23), scanner-level
   syntax (42601, 0A000), the rewriter's policy and view checks (42P17,
   55000), and catalog lookups done by `reg*` input functions on unknown
-  literals. One divergence runs the other way: Analysis reports the `26000`
-  or `34000` PostgreSQL raises for an EXECUTE or a FETCH of a name the
-  Session does not hold, while the Describe itself answers with no columns,
-  because `UtilityTupleDescriptor` says that raising the error is "not our
-  business". The same verdict covers the cursors the harness cannot see,
-  the ones a function opened. The rule is `compare` in `replay.rs`.
+  literals. One divergence runs the other way: an EXECUTE or a FETCH whose
+  name the harness's Session misses, although the server holds it. The rule
+  is `compare` in `replay.rs`.
 - **Search path.** `current_schemas(false)` is read before every comparison,
   so `SET search_path` and `SET ROLE` need no tracking.
 - **The Session.** EXECUTE, FETCH and SHOW of a custom parameter are
@@ -112,10 +109,14 @@ These details follow:
   while it is failed closes every cursor, since it rolls everything back.
   A Session holds Catalog handles, so it is rewritten against the new
   Catalog whenever the harness reloads one, and a reconnection empties it.
-  A prepared statement or a cursor the Session does not hold is a known
-  divergence, not an agreement, in both directions: the Describe itself
-  never raises the error, and the Session the harness keeps misses a cursor
-  a function opened, since it sees only the statements it replays.
+  A name the Session does not hold answers with an empty Result Descriptor,
+  as the server's Describe answers it, so the two agree. The Session the
+  harness keeps can still miss a name the server holds, since it sees only
+  the statements it replays: a cursor a function or a plpgsql body opened
+  is invisible to it, and so is one whose columns come from a table that
+  was dropped, because a Catalog Handle names a live relation. The Subject
+  then answers with no columns while the server answers with the cursor's,
+  which is the known divergence above.
 - **Failed transactions.** PostgreSQL rejects everything after an error inside
   a transaction with `25P02`, which is not an analysis outcome. The harness
   probes the session before each statement and skips while it is failed.

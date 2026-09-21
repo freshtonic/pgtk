@@ -117,6 +117,8 @@ pub struct Shape {
     /// It loads a shared library, which deletes the placeholders in the
     /// extension's namespace.
     pub loads_library: bool,
+    /// Its whole answer is read from the Session: EXECUTE, FETCH and MOVE.
+    pub reads_session: bool,
 }
 
 /// Render one frozen item as psql would send it to the server: psql's own
@@ -170,6 +172,10 @@ pub fn parse(sql: &str) -> Option<Shape> {
         ),
         rolls_back: matches!(statement, Statement::Rollback(_) | Statement::Abort(_)),
         loads_library: matches!(statement, Statement::Load(_)),
+        reads_session: matches!(
+            statement,
+            Statement::Execute(_) | Statement::Fetch(_) | Statement::Move(_)
+        ),
     })
 }
 
@@ -287,7 +293,7 @@ fn has_query(statement: &Statement<'_>) -> bool {
     )
 }
 
-fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
+fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome, shape: Shape) -> Verdict {
     match (oracle, subject) {
         (_, SubjectOutcome::Unsupported(_)) => Verdict::Unsupported,
         (
@@ -308,24 +314,19 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
                 });
             if params == subject_params && same_columns {
                 Verdict::Agree
+            } else if shape.reads_session && subject_columns.is_empty() {
+                // The Session the harness keeps holds only what the
+                // statements it replays made, so it misses a cursor a
+                // function or a plpgsql body opened, and one whose columns
+                // come from a table that was dropped, since a Catalog
+                // Handle names a live relation. Analysis then answers with
+                // the empty descriptor `UtilityTupleDescriptor` gives a
+                // name it does not find, while the server answers from the
+                // entry it holds.
+                Verdict::KnownDivergence
             } else {
                 Verdict::Disagree
             }
-        }
-        // A prepared statement or a cursor the Session does not hold.
-        // Analysis reports the Diagnostic PostgreSQL raises when the
-        // Statement runs, because that is what the Statement means for a
-        // consumer, while the Describe itself answers with no columns:
-        // `UtilityTupleDescriptor` says that raising the error is "not our
-        // business". The Session the harness keeps can also miss one that
-        // the Describe does answer, because it holds only what the
-        // statements it replays made: a cursor a function opened is
-        // invisible to it, and so is one whose columns come from a table
-        // that was dropped, since a Catalog Handle names a live relation.
-        (OracleOutcome::Accepted { .. }, SubjectOutcome::Diagnostic { sqlstate, .. })
-            if matches!(sqlstate.as_str(), "26000" | "34000") =>
-        {
-            Verdict::KnownDivergence
         }
         // Rejections raised outside parse analysis while the Subject
         // analysed: data errors from input functions (class 22, 54 and 55,
@@ -654,7 +655,7 @@ fn replay_one(
     let catalog = session.catalog.as_ref().expect("catalog loaded above");
     let answer = subject.analyze(catalog, &search_path, sql, &session.session);
     let subject_outcome = answer.outcome;
-    let verdict = compare(&oracle_outcome, &subject_outcome);
+    let verdict = compare(&oracle_outcome, &subject_outcome, shape);
     if let SubjectOutcome::Unsupported(reason) = &subject_outcome {
         *unsupported.entry(reason.clone()).or_default() += 1;
     }

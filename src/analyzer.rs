@@ -73,8 +73,8 @@ use pg_sql::ast::dml::insert::{
     FlatInsertRest, FlatInsertSource, FlatInsertStmt, FlatOverridingKind,
 };
 use pg_sql::ast::dml::merge::{
-    FlatInsertAction, FlatInsertBody, FlatMatchedAction, FlatMergeStmt, FlatNotMatchedAction,
-    FlatNotMatchedBy, FlatUpdateAction, FlatWhenClause,
+    FlatInsertAction, FlatMatchedAction, FlatMatchedKind, FlatMergeStmt, FlatNotMatchedAction,
+    FlatUpdateAction, FlatWhenClause,
 };
 use pg_sql::ast::dml::select::{
     FlatCubeItem, FlatFetchFirstBody, FlatFetchFirstClause, FlatFetchMode, FlatForUpdateWait,
@@ -559,9 +559,23 @@ struct RecursionState {
     references: usize,
 }
 
+/// What a `FROM` item calls. gram.y's `func_table` takes a
+/// `func_expr_windowless`, which is a `func_application` or one of the
+/// special expressions of `func_expr_common_subexpr`.
+#[derive(Clone, Copy)]
+enum FromFuncCall {
+    /// A call, whose arguments and name resolve a function.
+    Application(Handle<FlatFunctionCallApplication>),
+    /// A special expression, which the ordinary expression walker
+    /// analyses.
+    Special(Handle<FlatExpr>),
+}
+
 /// One function of a `FROM` item before it is transformed.
 struct FromFunc {
-    site: Handle<FlatFunctionCallApplication>,
+    call: FromFuncCall,
+    /// The name of a `func_application`, or the name `FigureColname`
+    /// gives a special expression, which is the name of its form.
     name: ObjectName,
     coldef: Option<Vec<(String, Handle<pg_sql::ast::shared::expr::FlatCastType>)>>,
     coldef_location: Option<usize>,
@@ -2201,16 +2215,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// the prepared statement the Session holds. The argument expressions
     /// are not analysed and their count is not checked, because PostgreSQL
     /// does both only when the Statement runs.
+    ///
+    /// A name the Session does not hold answers with no columns, as
+    /// `UtilityTupleDescriptor` does: raising `26000` there is "not our
+    /// business", and PostgreSQL raises it when the Statement runs.
     fn execute_statement(&mut self, e: Handle<FlatExecuteStmt>) -> Result<()> {
         let stmt = self.get(e);
         let (name, _) = self.alias_name(stmt.name)?;
         let session = self.session;
         let Some(prepared) = session.prepared(&name) else {
-            return Err(Diagnostic::new(
-                "26000",
-                format!("prepared statement \"{name}\" does not exist"),
-            )
-            .into());
+            return self.utility();
         };
         let columns = self.revalidate(prepared)?;
         self.analysis.result = ResultDescriptor {
@@ -2278,15 +2292,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// The result columns of the cursor a FETCH or a MOVE names.
+    ///
+    /// A name the Session does not hold answers with no columns, as
+    /// `UtilityTupleDescriptor` does: raising `34000` there is "not our
+    /// business", and PostgreSQL raises it when the Statement runs.
     fn cursor_columns(&mut self, cursor: Handle<FlatColId>) -> Result<Vec<ResultColumn>> {
         let (name, _) = self.col_id(cursor)?;
         let session = self.session;
-        match session.cursor(&name) {
-            Some(cursor) => Ok(cursor.result.columns.clone()),
-            None => {
-                Err(Diagnostic::new("34000", format!("cursor \"{name}\" does not exist")).into())
-            }
-        }
+        Ok(session
+            .cursor(&name)
+            .map_or_else(Vec::new, |c| c.result.columns.clone()))
     }
 
     /// The query of a PREPARE, analysed with the parameter types the
@@ -4772,16 +4787,19 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                 }
                                 infer_location
                             }
-                            FlatIndexTarget::Expr(e) => {
+                            // A parenthesized expression and a special
+                            // expression are both an `a_expr` here.
+                            FlatIndexTarget::Expr(e) | FlatIndexTarget::Special(e) => {
                                 self.expr(scope, *e)?;
                                 self.span(*e).start
                             }
                             FlatIndexTarget::Func(f) => {
+                                let application = self.get(*f).application;
                                 let func = self.function_item(*f, None)?;
-                                let app = self.get(func.site);
+                                let app = self.get(application);
                                 self.call(
                                     scope,
-                                    CallSite::From(func.site),
+                                    CallSite::From(application),
                                     func.name.clone(),
                                     app.body,
                                     None,
@@ -4790,12 +4808,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     func.location,
                                 )?;
                                 func.location
-                            }
-                            FlatIndexTarget::Json(_) | FlatIndexTarget::Common(_) => {
-                                return Err(unsupported(
-                                    "ON CONFLICT target expression form",
-                                    Some(infer_location..infer_location),
-                                ));
                             }
                         };
                         if let Some(cl) = it.collate {
@@ -5652,24 +5664,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let mut terminal = [false; 3];
         let whens: Vec<Handle<FlatWhenClause>> = self.list1(stmt.when_clauses).to_vec();
         for w in &whens {
+            // gram.y groups WHEN NOT MATCHED BY SOURCE with WHEN MATCHED,
+            // because its actions need a target row.
             let (kind, unconditional) = match self.get(*w) {
-                FlatWhenClause::Matched(m) => (0usize, self.get(*m).and.is_none()),
-                FlatWhenClause::NotMatched(n) => {
-                    let n = self.get(*n);
-                    let by_source =
-                        matches!(n.by.map(|b| self.get(b)), Some(FlatNotMatchedBy::Source));
-                    // gram.y: only INSERT and DO NOTHING when not matched by
-                    // target; only UPDATE, DELETE and DO NOTHING by source.
-                    let insert = matches!(self.get(n.action), FlatNotMatchedAction::Insert(_));
-                    let update_or_delete = matches!(
-                        self.get(n.action),
-                        FlatNotMatchedAction::Update(_) | FlatNotMatchedAction::Delete
-                    );
-                    if (by_source && insert) || (!by_source && update_or_delete) {
-                        return Err(unsupported("statement does not parse", None));
-                    }
-                    (if by_source { 1 } else { 2 }, n.and.is_none())
+                FlatWhenClause::Matched(m) => {
+                    let m = self.get(*m);
+                    let kind = match self.get(m.kind) {
+                        FlatMatchedKind::Matched => 0usize,
+                        FlatMatchedKind::NotMatchedBySource => 1,
+                    };
+                    (kind, m.and.is_none())
                 }
+                FlatWhenClause::NotMatched(n) => (2usize, self.get(*n).and.is_none()),
             };
             if terminal[kind] {
                 return Err(Diagnostic::new(
@@ -5722,34 +5728,29 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 },
                 FlatWhenClause::NotMatched(n) => match self.get(self.get(*n).action) {
                     FlatNotMatchedAction::Insert(_) => MergeKind::Insert,
-                    FlatNotMatchedAction::Update(_) => MergeKind::Update,
-                    FlatNotMatchedAction::Delete => MergeKind::Delete,
                     FlatNotMatchedAction::DoNothing => MergeKind::Nothing,
                 },
             });
             let (target_visible, source_visible, condition, action) = match self.get(w) {
                 FlatWhenClause::Matched(m) => {
                     let m = self.get(*m);
+                    // WHEN NOT MATCHED BY SOURCE sees the target only.
+                    let by_source = matches!(self.get(m.kind), FlatMatchedKind::NotMatchedBySource);
                     let action = match self.get(m.action) {
                         FlatMatchedAction::Update(u) => MergeAction::Update(*u),
                         FlatMatchedAction::Delete | FlatMatchedAction::DoNothing => {
                             MergeAction::None
                         }
                     };
-                    (true, true, m.and, action)
+                    (true, !by_source, m.and, action)
                 }
                 FlatWhenClause::NotMatched(n) => {
                     let n = self.get(*n);
-                    let by_source =
-                        matches!(n.by.map(|b| self.get(b)), Some(FlatNotMatchedBy::Source));
                     let action = match self.get(n.action) {
                         FlatNotMatchedAction::Insert(i) => MergeAction::Insert(*i),
-                        FlatNotMatchedAction::Update(u) => MergeAction::Update(*u),
-                        FlatNotMatchedAction::Delete | FlatNotMatchedAction::DoNothing => {
-                            MergeAction::None
-                        }
+                        FlatNotMatchedAction::DoNothing => MergeAction::None,
                     };
-                    (by_source, !by_source, n.and, action)
+                    (false, true, n.and, action)
                 }
             };
             // setNamespaceVisibilityForRTE on the target and the source.
@@ -5784,16 +5785,21 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     });
                 }
                 MergeAction::Insert(i) => {
-                    let i = self.get(i);
-                    if i.into.is_some() {
-                        return Err(unsupported("statement does not parse", None));
-                    }
-                    let override_kind = i.overriding.map(|o| *self.get(self.get(o).which));
+                    // `INSERT DEFAULT VALUES` takes no column list, no
+                    // OVERRIDING and no values.
+                    let (columns, overriding, values) = match self.get(i) {
+                        FlatInsertAction::Default => (None, None, None),
+                        FlatInsertAction::Values(v) => {
+                            let v = self.get(*v);
+                            (v.columns, v.overriding, Some(v.values))
+                        }
+                    };
+                    let override_kind = overriding.map(|o| *self.get(self.get(o).which));
                     // checkInsertTargets
                     let mut icolumns: Vec<InsertColumn> = Vec::new();
                     let mut attnums: Vec<i16> = Vec::new();
-                    let cols_given = i.columns.is_some();
-                    match i.columns {
+                    let cols_given = columns.is_some();
+                    match columns {
                         Some(c) => {
                             let mut seen = std::collections::HashSet::new();
                             for a in self.list1(self.get(c).0) {
@@ -5837,13 +5843,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                     }
                     let mut vals: Vec<InsertValue> = Vec::new();
-                    if let FlatInsertBody::Values(v) = self.get(i.body) {
-                        let rows = self.list(self.get(*v).rows).to_vec();
-                        if rows.len() != 1 {
-                            return Err(unsupported("statement does not parse", None));
-                        }
+                    if let Some(values) = values {
+                        // gram.y's `merge_values_clause` is one row.
                         self.expr_kind = ExprKind::ValuesSingle;
-                        for e in self.list(self.get(rows[0]).0).to_vec() {
+                        for e in self.list1(self.get(values).values).to_vec() {
                             if let FlatExpr::Default = self.get(e) {
                                 vals.push(InsertValue::Default(self.span(e).start));
                             } else {
@@ -7858,29 +7861,65 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let location = self.span(f).start;
         let f = self.get(f);
         let name = self.func_call_name(f.name, location)?;
-        let (coldef, coldef_location) = match coldef {
-            None => (None, None),
-            Some(cd) => {
-                let cd = self.get(cd);
-                let mut cols = Vec::new();
-                let mut first = None;
-                for c in self.list(cd.columns) {
-                    if first.is_none() {
-                        first = Some(self.span(*c).start);
-                    }
-                    let c = self.get(*c);
-                    cols.push((self.col_id(c.name)?.0, c.type_name));
-                }
-                (Some(cols), first)
-            }
-        };
+        let (coldef, coldef_location) = self.rows_from_coldef(coldef)?;
         Ok(FromFunc {
-            site: f.application,
+            call: FromFuncCall::Application(f.application),
             name,
             coldef,
             coldef_location,
             location,
         })
+    }
+
+    /// One special expression of a `FROM` item, as
+    /// `transformRangeFunction` takes it: an expression the ordinary
+    /// walker analyses, named by `FigureColname`, which gives the name of
+    /// its form (`coalesce`, `nullif`, `trim`, and so on).
+    fn special_function_item(
+        &self,
+        e: Handle<FlatExpr>,
+        coldef: Option<Handle<FlatRowsFromColDef>>,
+    ) -> Result<FromFunc> {
+        let (coldef, coldef_location) = self.rows_from_coldef(coldef)?;
+        Ok(FromFunc {
+            call: FromFuncCall::Special(e),
+            name: ObjectName {
+                schema: None,
+                name: self
+                    .figure_colname(e)
+                    .name
+                    .unwrap_or_else(|| "?column?".to_owned()),
+            },
+            coldef,
+            coldef_location,
+            location: self.span(e).start,
+        })
+    }
+
+    /// The column definition list of one `ROWS FROM()` item, with the
+    /// location of its first entry.
+    #[allow(clippy::type_complexity)]
+    fn rows_from_coldef(
+        &self,
+        coldef: Option<Handle<FlatRowsFromColDef>>,
+    ) -> Result<(
+        Option<Vec<(String, Handle<pg_sql::ast::shared::expr::FlatCastType>)>>,
+        Option<usize>,
+    )> {
+        let Some(cd) = coldef else {
+            return Ok((None, None));
+        };
+        let cd = self.get(cd);
+        let mut cols = Vec::new();
+        let mut first = None;
+        for c in self.list(cd.columns) {
+            if first.is_none() {
+                first = Some(self.span(*c).start);
+            }
+            let c = self.get(*c);
+            cols.push((self.col_id(c.name)?.0, c.type_name));
+        }
+        Ok((Some(cols), first))
     }
 
     /// A `func_alias_clause`: the alias name, plain column aliases, and a
@@ -7992,7 +8031,44 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         // definition list, and the pg_proc row when it is one.
         let mut resolved: Vec<ResolvedFromFunc> = Vec::new();
         for f in &funcs {
-            let app = self.get(f.site);
+            // A special expression is not a call: `transformRangeFunction`
+            // analyses it with the ordinary expression walker, and
+            // `FigureColname` has already named it.
+            let site = match f.call {
+                FromFuncCall::Application(site) => site,
+                FromFuncCall::Special(e) => {
+                    let srf_before = self.last_srf;
+                    let typed = self.expr(scope, e)?;
+                    if self.last_srf != srf_before && self.last_srf != Some(f.location) {
+                        return Err(Diagnostic::new(
+                            "0A000",
+                            "set-returning functions must appear at top level of FROM",
+                        )
+                        .at(self.last_srf.unwrap_or(f.location))
+                        .into());
+                    }
+                    if f.coldef.is_some() && alias_coldef.is_some() {
+                        return Err(Diagnostic::new(
+                            "42601",
+                            "multiple column definition lists are not allowed for the same function",
+                        )
+                        .at(alias_coldef_location.unwrap_or(location))
+                        .into());
+                    }
+                    resolved.push(ResolvedFromFunc {
+                        ty: typed.ty,
+                        typmod: typed.typmod,
+                        funcname: f.name.name.clone(),
+                        coldef: f.coldef.clone(),
+                        coldef_location: f.coldef_location,
+                        func: None,
+                        actual: Vec::new(),
+                        location: f.location,
+                    });
+                    continue;
+                }
+            };
+            let app = self.get(site);
             // UNNEST(a, b, ...) is ROWS FROM(unnest(a), unnest(b), ...).
             if f.name.schema.is_none()
                 && f.name.name == "unnest"
@@ -8072,7 +8148,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let srf_before = self.last_srf;
             let typed = self.call(
                 scope,
-                CallSite::From(f.site),
+                CallSite::From(site),
                 f.name.clone(),
                 app.body,
                 None,
@@ -8097,7 +8173,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 .into());
             }
             let (func, declared) = self
-                .resolved_function(CallSite::From(f.site))
+                .resolved_function(CallSite::From(site))
                 .map_or((None, Vec::new()), |r| {
                     (Some(r.function), r.declared.clone())
                 });
@@ -8980,7 +9056,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         Some(FlatNamedTableRefTail::Function(t)) => {
                             let t = self.get(*t);
                             let func = FromFunc {
-                                site: t.application,
+                                call: FromFuncCall::Application(t.application),
                                 name: ObjectName { schema, name },
                                 coldef: None,
                                 coldef_location: None,
@@ -9091,17 +9167,27 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let mut funcs = Vec::new();
                     for item in self.list1(self.get(r.items).0) {
                         let item = self.get(*item);
-                        let FlatRowsFromFunc::Func(f) = self.get(item.func) else {
-                            return Err(unsupported(
-                                "special function in FROM",
-                                Some(location..location),
-                            ));
-                        };
-                        funcs.push(self.function_item(*f, item.coldef)?);
+                        funcs.push(match self.get(item.func) {
+                            FlatRowsFromFunc::Func(f) => self.function_item(*f, item.coldef)?,
+                            FlatRowsFromFunc::Special(e) => {
+                                self.special_function_item(*e, item.coldef)?
+                            }
+                        });
                     }
                     return self.function_ref(scope, funcs, r.ordinality, r.alias, true, location);
                 }
-                _ => return Err(unsupported("FROM item", Some(location..location))),
+                FlatSimpleTableRef::SpecialFunc(r) => {
+                    let r = self.get(*r);
+                    let func = self.special_function_item(r.func, None)?;
+                    return self.function_ref(
+                        scope,
+                        vec![func],
+                        r.ordinality,
+                        r.alias,
+                        false,
+                        location,
+                    );
+                }
             };
             let (alias_name, column_aliases) = self.plain_alias(alias)?;
             // getNSItemForSpecialRelationTypes: an unqualified name may be a
@@ -11784,6 +11870,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     strength: 1,
                 }
             }
+            // TREAT is a FuncCall named after the type, so `FigureColname`
+            // sees the name of that type.
+            FlatExpr::Treat(t) => Colname {
+                name: self.cast_type_last_name(self.get(self.get(*t).inner).target),
+                strength: 2,
+            },
             FlatExpr::CastFunc(f) => Colname {
                 name: self.typed_literal_type_name(*f),
                 strength: 1,
@@ -12666,6 +12758,19 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let (value, target) = (inner.value, inner.target);
                 let arg = self.cast_operand(scope, value, target)?;
                 self.type_cast(handle, value, &arg, target, location)
+            }
+            FlatExpr::Treat(t) => {
+                // gram.y: TREAT(expr AS type) is a FuncCall named after the
+                // type, through `SystemFuncName` of the last part of the
+                // type name, with the expression as its only argument.
+                let inner = self.get(self.get(*t).inner);
+                let (value, target) = (inner.value, inner.target);
+                let arg = self.expr(scope, value)?;
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: self.type_name(target)?.name,
+                };
+                self.resolve_call(handle, name, &[value], &[arg], location, None)
             }
             FlatExpr::CastFunc(f) => self.typed_literal(handle, *f, location),
             FlatExpr::TimestampLit(t) => {

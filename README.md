@@ -77,10 +77,13 @@ The `Session` is the state a Describe reads: the prepared statements, the
 open cursors and the custom configuration placeholders a SET made. EXECUTE
 answers with the prepared statement's Result Descriptor, analysing the
 prepared query again as PostgreSQL's plan cache does; FETCH answers with the
-cursor's descriptor, and SHOW of a placeholder with its name. A name the Session does
-not hold is the Diagnostic PostgreSQL raises for it. Analysis never changes
-the Session: PREPARE, DECLARE, SET, DEALLOCATE, CLOSE and the end of a
-transaction report a Session Effect, and the caller applies it.
+cursor's descriptor, and SHOW of a placeholder with its name. A prepared
+statement or a cursor the Session does not hold answers with an empty Result
+Descriptor, as PostgreSQL's Describe does; PostgreSQL raises the error when
+the Statement runs. A configuration parameter that does not exist is the
+Diagnostic PostgreSQL raises for it. Analysis never changes the Session:
+PREPARE, DECLARE, SET, DEALLOCATE, CLOSE and the end of a transaction report
+a Session Effect, and the caller applies it.
 
 The crate depends on the sibling checkouts `../pg-sql`, `../pg-catalog` and
 `../recursa`.
