@@ -10,6 +10,7 @@ use crate::function::Function;
 use crate::handle::Handle;
 use crate::oid::Oid;
 use crate::operator::Operator;
+use crate::parameter::{self, Parameter};
 use crate::relation::Relation;
 use crate::schema::Schema;
 use crate::types::{Type, TypeKind};
@@ -29,6 +30,7 @@ pub struct CatalogBuilder {
     functions: Vec<Function>,
     operators: Vec<Operator>,
     casts: Vec<Cast>,
+    parameters: Vec<Parameter>,
     permit_missing_builtins: bool,
 }
 
@@ -69,6 +71,13 @@ pub enum BuildError {
         relation: Oid,
         /// The attribute position that the key names.
         position: i16,
+    },
+    /// Two parameters have the same name. The comparison does not see the
+    /// case of an ASCII letter.
+    #[error("duplicate parameter {name}")]
+    DuplicateParameter {
+        /// The name that repeats, as the second parameter spells it.
+        name: String,
     },
     /// A function does not have one default type for each default.
     #[error("function {function} has {default_count} defaults and {default_types} default types")]
@@ -130,6 +139,7 @@ impl CatalogBuilder {
             functions: Vec::new(),
             operators: Vec::new(),
             casts: Vec::new(),
+            parameters: Vec::new(),
             permit_missing_builtins: false,
         }
     }
@@ -139,8 +149,17 @@ impl CatalogBuilder {
     /// A test usually starts from the fixture. The metadata of the catalog
     /// stays as it is.
     pub fn from_catalog(catalog: Catalog) -> Self {
-        let (metadata, schemas, extensions, types, relations, functions, operators, casts) =
-            catalog.into_parts();
+        let (
+            metadata,
+            schemas,
+            extensions,
+            types,
+            relations,
+            functions,
+            operators,
+            casts,
+            parameters,
+        ) = catalog.into_parts();
         CatalogBuilder {
             metadata,
             schemas,
@@ -150,6 +169,7 @@ impl CatalogBuilder {
             functions,
             operators,
             casts,
+            parameters,
             permit_missing_builtins: false,
         }
     }
@@ -204,6 +224,14 @@ impl CatalogBuilder {
         let handle = Handle::new(self.operators.len() as u32);
         self.operators.push(o);
         handle
+    }
+
+    /// Add a configuration parameter.
+    ///
+    /// A parameter has no handle, because no entity points at one. The
+    /// catalog sorts the parameters by name.
+    pub fn push_parameter(&mut self, p: Parameter) {
+        self.parameters.push(p);
     }
 
     /// Add a cast and give back its handle.
@@ -374,6 +402,14 @@ impl CatalogBuilder {
         check_oids(self.functions.iter().map(|e| e.oid), "function")?;
         check_oids(self.operators.iter().map(|e| e.oid), "operator")?;
         check_oids(self.casts.iter().map(|e| e.oid), "cast")?;
+        let mut names = HashSet::new();
+        for entity in &self.parameters {
+            if !names.insert(parameter::lookup_key(&entity.name)) {
+                return Err(BuildError::DuplicateParameter {
+                    name: entity.name.clone(),
+                });
+            }
+        }
         Ok(())
     }
 
@@ -398,7 +434,8 @@ impl CatalogBuilder {
     ///
     /// The check runs in three steps. First, every handle must point inside
     /// its arena, and every column of a primary key must be a column of its
-    /// relation. Second, the OIDs of each arena must be unique. Third, the
+    /// relation. Second, the OIDs of each arena must be unique, and so must
+    /// the names of the parameters. Third, the
     /// catalog must hold every built-in type, unless
     /// [`permit_missing_builtins`](CatalogBuilder::permit_missing_builtins)
     /// says otherwise.
@@ -418,6 +455,7 @@ impl CatalogBuilder {
             self.functions,
             self.operators,
             self.casts,
+            self.parameters,
         ))
     }
 }

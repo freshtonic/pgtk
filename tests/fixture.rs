@@ -10,8 +10,8 @@
 
 use pg_catalog::{
     Builtin, CastContext, Catalog, CatalogBuilder, Column, CompositeDetail, Field, FiresWhen,
-    FunctionKind, Name, Oid, QualifiedName, Relation, RelationKind, RuleEvent, Schema, SearchPath,
-    Type, TypeCategory, TypeKind, Typmod, fixture::pg17,
+    FunctionKind, Name, Oid, ParameterKind, QualifiedName, Relation, RelationKind, RuleEvent,
+    Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, fixture::pg17,
 };
 
 #[test]
@@ -258,6 +258,41 @@ fn only_a_view_has_view_text() {
             relation.name
         );
     }
+}
+
+#[test]
+fn show_timezone_has_the_canonical_name() {
+    let catalog = pg17();
+    let parameter = catalog.parameter("timezone").expect("TimeZone is there");
+    assert_eq!(parameter.name, "TimeZone");
+    assert_eq!(parameter.kind, ParameterKind::String);
+
+    assert_eq!(
+        catalog.parameter("work_mem").map(|p| p.kind),
+        Some(ParameterKind::Integer)
+    );
+    assert_eq!(
+        catalog.parameter("enable_seqscan").map(|p| p.kind),
+        Some(ParameterKind::Bool)
+    );
+    assert_eq!(
+        catalog.parameter("client_min_messages").map(|p| p.kind),
+        Some(ParameterKind::Enum)
+    );
+    assert_eq!(
+        catalog.parameter("seq_page_cost").map(|p| p.kind),
+        Some(ParameterKind::Real)
+    );
+    assert_eq!(catalog.parameter("no_such_parameter"), None);
+    assert!(catalog.parameters().len() > 300);
+}
+
+#[test]
+fn the_parameters_survive_a_serde_round_trip() {
+    let catalog = pg17();
+    let json = serde_json::to_string(&catalog).expect("the catalog serializes");
+    let again: Catalog = serde_json::from_str(&json).expect("the catalog deserializes");
+    assert_eq!(again.parameters(), catalog.parameters());
 }
 
 #[test]

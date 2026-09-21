@@ -35,6 +35,7 @@ use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
+use crate::parameter::{Parameter, ParameterKind};
 use crate::relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
 use crate::rule::{FiresWhen, Rule, RuleEvent};
 use crate::schema::Schema;
@@ -648,6 +649,13 @@ fn trigger_rows(rows: &Rows) -> Result<Vec<TriggerRow>, LoadError> {
     })
 }
 
+/// Read [`QueryId::Parameters`] into a name and a `vartype` for each row.
+fn parameter_rows(rows: &Rows) -> Result<Vec<(String, String)>, LoadError> {
+    read(rows, QueryId::Parameters, |row| {
+        Ok((row.text(0)?.to_owned(), row.text(1)?.to_owned()))
+    })
+}
+
 /// When a rule or a trigger fires, from its letter.
 fn fires_when(letter: char) -> Option<FiresWhen> {
     match letter {
@@ -788,6 +796,8 @@ struct Input {
     rules: Vec<RuleRow>,
     /// Every trigger.
     triggers: Vec<TriggerRow>,
+    /// The name and the `vartype` of every parameter.
+    parameters: Vec<(String, String)>,
 }
 
 impl Input {
@@ -813,6 +823,7 @@ impl Input {
             parents: inherits_rows(rows_of(rows, QueryId::Inherits)?)?,
             rules: rule_rows(rows_of(rows, QueryId::Rules)?)?,
             triggers: trigger_rows(rows_of(rows, QueryId::Triggers)?)?,
+            parameters: parameter_rows(rows_of(rows, QueryId::Parameters)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -1430,6 +1441,23 @@ pub(crate) fn assemble(
     }
     for cast in casts {
         builder.push_cast(cast);
+    }
+    // A parameter with a kind of value that the loader does not know goes,
+    // with a note. A parameter has no OID, so the note holds 0 and the value
+    // holds the name.
+    for (name, vartype) in &input.parameters {
+        match ParameterKind::from_vartype(vartype) {
+            Some(kind) => builder.push_parameter(Parameter {
+                name: name.clone(),
+                kind,
+            }),
+            None => diagnostics.push(Diagnostic::UnparsableValue {
+                entity: EntityKind::Parameter,
+                oid: Oid(0),
+                column: "vartype",
+                value: format!("{vartype} (parameter {name})"),
+            }),
+        }
     }
 
     let catalog = builder.finish()?;
@@ -2974,5 +3002,32 @@ mod tests {
                 value: value.to_owned(),
             }));
         }
+    }
+
+    #[test]
+    fn the_catalog_takes_the_parameters_and_sorts_them() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Parameters,
+            vec![
+                row(&["work_mem", "integer"]),
+                row(&["TimeZone", "string"]),
+                row(&["odd_one", "tensor"]),
+            ],
+        );
+        let loaded = load(rows);
+        let names: Vec<&str> = loaded
+            .catalog
+            .parameters()
+            .iter()
+            .map(|parameter| parameter.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["TimeZone", "work_mem"]);
+        assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+            entity: EntityKind::Parameter,
+            oid: Oid(0),
+            column: "vartype",
+            value: "tensor (parameter odd_one)".to_owned(),
+        }));
     }
 }

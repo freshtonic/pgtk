@@ -8,6 +8,12 @@ rest so that they are not re-decided.
 
 - Entities: Schema, Type, Relation, Column, Function (with optional Aggregate
   detail), Operator, Cast, Extension.
+- Parameters: the names and value kinds of `pg_settings`, for `SHOW` and
+  `SET`. `Catalog::parameter(name)` ignores ASCII case and gives the canonical
+  spelling, which is the name of the result column of `SHOW name`. No value,
+  no custom placeholder (session state). Not an Entity: no OID, no Handle.
+  The list is what the loader's role can see, and holds a module's parameters
+  only when the loader's session had the module in memory.
 - Relations: tables, views, materialized views, foreign tables, partitioned
   tables, sequences. A sequence is a Relation with its three columns
   (`last_value`, `log_cnt`, `is_called`), no row type, and no `pg_sequence`

@@ -182,6 +182,10 @@ pub struct Relation {
     pub extension: Option<Handle<Extension>>,
 }
 
+pub struct Parameter { pub name: String, pub kind: ParameterKind }   // pg_settings.name, vartype
+pub enum ParameterKind { Bool, Integer, Real, String, Enum }
+impl ParameterKind { pub fn from_vartype(vartype: &str) -> Option<Self>; }
+
 pub struct Rule {
     pub name: Name, pub event: RuleEvent, pub instead: bool,
     pub unconditional: bool,   // ev_qual::text = '<>' (ev_qual is never NULL)
@@ -383,6 +387,7 @@ impl Catalog {
                                          // 5: Relation gained parents, Function gained default_types
                                          // 6: Relation gained of_type
                                          // 7: Relation gained view_definition, rules, triggers
+                                         // 8: Catalog gained parameters
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -432,6 +437,12 @@ impl Catalog {
     pub fn cast(&self, from: Handle<Type>, to: Handle<Type>) -> Option<Handle<Cast>>;
     /// Casts whose source is `from`, OID order.
     pub fn casts_from(&self, from: Handle<Type>) -> &[Handle<Cast>];
+
+    // Configuration parameters (pg_settings). Not an arena: no OID, no handle.
+    /// Sorted by the ASCII-lower-case name.
+    pub fn parameters(&self) -> &[Parameter];
+    /// ASCII-case-insensitive, as guc_name_compare. Gives the canonical spelling.
+    pub fn parameter(&self, name: &str) -> Option<&Parameter>;
     pub fn qualified_name_of_type(&self, h: Handle<Type>) -> QualifiedName;
     // same for relation, function, operator
 }
@@ -492,6 +503,7 @@ impl CatalogBuilder {
     pub fn push_function(&mut self, f: Function) -> Handle<Function>;
     pub fn push_operator(&mut self, o: Operator) -> Handle<Operator>;
     pub fn push_cast(&mut self, c: Cast) -> Handle<Cast>;
+    pub fn push_parameter(&mut self, p: Parameter);   // no handle
     /// The handle the next push_type will return (for forward references in cycles).
     pub fn next_type_handle(&self) -> Handle<Type>;
     pub fn next_relation_handle(&self) -> Handle<Relation>;
@@ -515,6 +527,8 @@ pub enum BuildError {
     UnknownKeyColumn { relation: Oid, position: i16 },
     /// default_types.len() != default_count.
     DefaultTypesLength { function: Oid, default_count: u16, default_types: usize },
+    /// Two parameters with one ASCII-lower-case name.
+    DuplicateParameter { name: String },
 }
 ```
 
@@ -537,7 +551,7 @@ pub enum Diagnostic {
     /// Skipped for a stated reason (e.g. shell operator with no function).
     Skipped { entity: EntityKind, oid: Oid, name: Name, reason: SkipReason },
 }
-pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger }
+pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger, Parameter }
 #[non_exhaustive]
 pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char), IncompleteOperatorClass }
 impl Display for Diagnostic;
@@ -574,7 +588,8 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
-    Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits, Rules, Triggers }
+    Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits, Rules, Triggers,
+    Parameters }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -685,6 +700,7 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   JOIN pg_class c ON c.oid = t.tgrelid` with the filter on `relnamespace`,
   `WHERE NOT tgisinternal` and the relation relkinds,
   `ORDER BY tgrelid, tgname`.
+- **Parameters**: `name, vartype` from `pg_settings` `ORDER BY name`. No value.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -768,6 +784,9 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.
+11a. Parameters: `vartype` maps to `ParameterKind { Bool, Integer, Real,
+    String, Enum }`. Another `vartype` gives `UnparsableValue` (entity
+    `Parameter`, OID 0, the value names the parameter) and the parameter goes.
 12. Push everything into `CatalogBuilder` in handle order and `finish`.
     Cycles (composite <-> relation, type <-> array) are closed by pushing
     with handles computed in step 6; nothing is patched afterwards.

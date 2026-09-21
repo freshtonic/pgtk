@@ -3,9 +3,9 @@
 use pg_catalog::{
     ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
     CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, FiresWhen, Function,
-    FunctionKind, Handle, Identity, Metadata, Name, Oid, Operator, OperatorKind, PrimaryKey,
-    QualifiedName, Relation, RelationKind, Rule, RuleEvent, Schema, SearchPath, Trigger,
-    TriggerTiming, Type, TypeCategory, TypeKind, Typmod, Volatility,
+    FunctionKind, Handle, Identity, Metadata, Name, Oid, Operator, OperatorKind, Parameter,
+    ParameterKind, PrimaryKey, QualifiedName, Relation, RelationKind, Rule, RuleEvent, Schema,
+    SearchPath, Trigger, TriggerTiming, Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -1043,6 +1043,67 @@ fn a_disabled_or_conditional_rule_does_not_replace_a_statement() {
     assert!(!rule(true, false, FiresWhen::Origin).replaces(RuleEvent::Delete));
     assert!(!rule(true, true, FiresWhen::Disabled).replaces(RuleEvent::Delete));
     assert!(!rule(true, true, FiresWhen::Replica).replaces(RuleEvent::Delete));
+}
+
+/// A catalog that holds only these parameters.
+fn catalog_with_parameters(parameters: &[(&str, ParameterKind)]) -> Result<Catalog, BuildError> {
+    let mut builder = CatalogBuilder::new(Metadata::placeholder());
+    builder.permit_missing_builtins();
+    for (name, kind) in parameters {
+        builder.push_parameter(Parameter {
+            name: (*name).to_owned(),
+            kind: *kind,
+        });
+    }
+    builder.finish()
+}
+
+#[test]
+fn a_parameter_answers_a_name_in_any_case_with_its_canonical_spelling() {
+    let catalog = catalog_with_parameters(&[
+        ("work_mem", ParameterKind::Integer),
+        ("TimeZone", ParameterKind::String),
+        ("DateStyle", ParameterKind::String),
+    ])
+    .expect("the catalog builds");
+
+    for spelling in ["timezone", "TIMEZONE", "TimeZone"] {
+        let parameter = catalog.parameter(spelling).expect("the parameter is there");
+        assert_eq!(parameter.name, "TimeZone");
+        assert_eq!(parameter.kind, ParameterKind::String);
+    }
+    assert_eq!(catalog.parameter("nope"), None);
+
+    // The order is that of the lower-case name.
+    let names: Vec<&str> = catalog
+        .parameters()
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["DateStyle", "TimeZone", "work_mem"]);
+}
+
+#[test]
+fn two_parameters_with_one_name_are_rejected() {
+    let error = catalog_with_parameters(&[
+        ("TimeZone", ParameterKind::String),
+        ("timezone", ParameterKind::String),
+    ])
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        BuildError::DuplicateParameter { name } if name == "timezone"
+    ));
+}
+
+#[test]
+fn a_catalog_keeps_its_parameters_through_a_builder() {
+    let catalog =
+        catalog_with_parameters(&[("TimeZone", ParameterKind::String)]).expect("it builds");
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    let catalog = builder.finish().expect("the catalog builds");
+    assert_eq!(catalog.parameters().len(), 1);
 }
 
 #[test]
