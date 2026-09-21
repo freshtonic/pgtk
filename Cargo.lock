@@ -561,6 +561,7 @@ name = "pg-analyze"
 version = "0.1.0"
 dependencies = [
  "pg-catalog",
+ "pg-psql",
  "pg-sql",
  "postgres",
  "serde",
@@ -577,6 +578,16 @@ dependencies = [
  "serde_json",
  "thiserror",
  "zstd",
+]
+
+[[package]]
+name = "pg-psql"
+version = "0.1.0"
+dependencies = [
+ "derive_more",
+ "pg-sql",
+ "recursa",
+ "recursa-codegen",
 ]
 
 [[package]]

@@ -14,6 +14,7 @@ thiserror = "2"
 
 [dev-dependencies]
 pg-catalog = { path = "../pg-catalog", features = ["fixture", "postgres"] }
+pg-psql = { path = "../pg-sql/pg-psql" }
 postgres = "0.19"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

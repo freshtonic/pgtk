@@ -29,15 +29,23 @@ This is the pattern `pg-sql` uses for its own differential baseline.
 
 ## How the corpus is split
 
+The corpus is the `vendor/postgres` submodule, pinned to the same
+PostgreSQL 17.9 commit `pg-sql` vendors, so both crates read the same bytes.
 The regression files are psql documents. Ninety-seven of them use
 meta-commands such as `\set`, `\d` and `\if` that neither `pg-sql` nor
 `pg-psql` model, so the strict document parser rejects those files whole. The
 harness therefore reads the statement byte ranges `pg-sql` froze when it
-captured its own baseline, at `../pg-sql/baselines/postgresql-17.9-statements.json`,
+captured its own baseline, copied to `baselines/postgresql-17.9-statements.json`,
 and treats every item that split marked as a non-statement as Skipped. The
-design session chose the document parser as the primary splitter with the
+reader checks that the submodule is at the commit the ranges were frozen from.
+The design session chose the document parser as the primary splitter with the
 frozen ranges as a cross-check; that is reversed until the meta-command gap in
 `pg-psql` closes.
+
+Each item is rendered through `pg-psql` before anything else, which strips
+psql's own terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) the
+way psql does before sending. That leaves eight statements `pg-sql` rejects,
+all of which PostgreSQL rejects at parse too.
 
 ## Order and state
 
