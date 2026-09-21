@@ -287,7 +287,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             not_null: true,
             has_default: false,
             generated: false,
-            identity: false,
+            identity: None,
         }],
         primary_key: None,
         extension: None,

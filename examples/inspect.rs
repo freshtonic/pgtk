@@ -12,8 +12,8 @@
 //! ```
 
 use pg_catalog::{
-    Argument, Catalog, Function, Handle, Operator, QualifiedName, Relation, SearchPath, Type,
-    TypeKind,
+    Argument, Catalog, Function, Handle, Identity, Operator, QualifiedName, Relation, SearchPath,
+    Type, TypeKind,
 };
 
 fn main() {
@@ -231,8 +231,10 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         if column.generated {
             notes.push("generated");
         }
-        if column.identity {
-            notes.push("identity");
+        match column.identity {
+            Some(Identity::Always) => notes.push("identity always"),
+            Some(Identity::ByDefault) => notes.push("identity by default"),
+            None => {}
         }
         let line = format!(
             "    {:>3}  {:<24} {:<24} {}",
