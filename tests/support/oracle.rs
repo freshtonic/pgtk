@@ -2,6 +2,9 @@
 //! what it makes of one statement. A Parse plus Describe is the closest thing
 //! to `parse_analyze` a stock server exposes: it reports acceptance with the
 //! parameter and result column types, or the Diagnostic analysis raised.
+//!
+//! [`Server`] is an administrative connection that makes and drops
+//! databases. [`Oracle`] is one session in one database.
 
 use pg_catalog::Loaded;
 use postgres::error::ErrorPosition;
@@ -37,16 +40,6 @@ pub enum OracleOutcome {
     Rejected(OracleError),
 }
 
-/// The connection to the Oracle.
-pub struct Oracle {
-    config: postgres::Config,
-    client: Client,
-}
-
-/// The database the replay runs in. It is dropped and made again on every
-/// connect from the URL's own database, so a run always starts clean.
-const REPLAY_DATABASE: &str = "pg_analyze_oracle";
-
 /// The session settings pg_regress applies, so message text, date literals
 /// and the like match the expected output files.
 const SESSION_SETUP: &str = "
@@ -62,37 +55,94 @@ const SESSION_SETUP: &str = "
     SET statement_timeout TO '60s';
 ";
 
-impl Oracle {
-    /// Make a fresh replay database on the server the URL names, connect to
-    /// it, and apply the pg_regress session settings.
+/// An administrative connection to the server the URL names.
+pub struct Server {
+    config: postgres::Config,
+    client: Client,
+}
+
+impl Server {
     pub fn connect(url: &str) -> Result<Self, postgres::Error> {
-        let admin_config: postgres::Config = url.parse()?;
-        let mut admin = admin_config.connect(NoTls)?;
-        // One statement per call: a multi-statement simple query runs in one
-        // implicit transaction, and CREATE DATABASE refuses to run in one.
-        admin.batch_execute(&format!(
-            "DROP DATABASE IF EXISTS {REPLAY_DATABASE} WITH (FORCE)"
-        ))?;
-        admin.batch_execute(&format!(
-            "CREATE DATABASE {REPLAY_DATABASE} TEMPLATE template0 LOCALE 'C'"
-        ))?;
-        let mut config = admin_config;
-        config.dbname(REPLAY_DATABASE);
-        let client = Self::session(&config)?;
+        let config: postgres::Config = url.parse()?;
+        let client = config.connect(NoTls)?;
         Ok(Self { config, client })
     }
 
-    fn session(config: &postgres::Config) -> Result<Client, postgres::Error> {
+    /// The connection settings, so another thread can open its own
+    /// connections with [`Server::from_config`]. A `Client` is `Send` but
+    /// not `Sync`, so a `Server` itself is never shared.
+    pub fn config(&self) -> &postgres::Config {
+        &self.config
+    }
+
+    /// A new administrative connection with the same settings.
+    pub fn from_config(config: &postgres::Config) -> Result<Self, postgres::Error> {
+        let client = config.connect(NoTls)?;
+        Ok(Self {
+            config: config.clone(),
+            client,
+        })
+    }
+
+    /// Database names matching a `LIKE` pattern.
+    pub fn databases_like(&mut self, pattern: &str) -> Vec<String> {
+        self.client
+            .query(
+                "SELECT datname FROM pg_database WHERE datname LIKE $1 ORDER BY datname",
+                &[&pattern],
+            )
+            .expect("list databases")
+            .iter()
+            .map(|row| row.get(0))
+            .collect()
+    }
+
+    /// Make `name` as a copy of `template`. The template must have no
+    /// sessions open, which is why every session is closed before a snapshot.
+    pub fn create_database(&mut self, name: &str, template: &str) {
+        self.client
+            .batch_execute(&format!(
+                "CREATE DATABASE {name} TEMPLATE {template} LOCALE 'C'"
+            ))
+            .unwrap_or_else(|error| {
+                panic!("cannot create database {name} from {template}: {error}")
+            });
+    }
+
+    /// Drop `name` if it exists, ending any session in it.
+    pub fn drop_database(&mut self, name: &str) {
+        self.client
+            .batch_execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
+            .unwrap_or_else(|error| panic!("cannot drop database {name}: {error}"));
+    }
+
+    /// Open a session in `database` with the pg_regress settings applied.
+    pub fn session(&self, database: &str) -> Result<Oracle, postgres::Error> {
+        let mut config = self.config.clone();
+        config.dbname(database);
+        let client = Oracle::open(&config)?;
+        Ok(Oracle { config, client })
+    }
+}
+
+/// One session in one database.
+pub struct Oracle {
+    config: postgres::Config,
+    client: Client,
+}
+
+impl Oracle {
+    fn open(config: &postgres::Config) -> Result<Client, postgres::Error> {
         let mut client = config.connect(NoTls)?;
         client.batch_execute(SESSION_SETUP)?;
         Ok(client)
     }
 
-    /// Drop the connection and make a new one to the same replay database.
-    /// Used after the server ends the session, which some corpus statements
-    /// do on purpose.
+    /// Drop the connection and make a new one to the same database. Used
+    /// after the server ends the session, which some corpus statements do on
+    /// purpose.
     pub fn reconnect(&mut self) -> Result<(), postgres::Error> {
-        self.client = Self::session(&self.config)?;
+        self.client = Self::open(&self.config)?;
         Ok(())
     }
 

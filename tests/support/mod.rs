@@ -9,5 +9,8 @@
 pub mod baseline;
 pub mod corpus;
 pub mod oracle;
+pub mod plan;
 pub mod replay;
+pub mod scheduler;
+pub mod snapshots;
 pub mod subject;

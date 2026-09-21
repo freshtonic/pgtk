@@ -47,18 +47,40 @@ psql's own terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) the
 way psql does before sending. That leaves eight statements `pg-sql` rejects,
 all of which PostgreSQL rejects at parse too.
 
-## Order and state
+## Order, state and parallelism
 
-Files run in `parallel_schedule` order, because later files use tables that
-`test_setup.sql` and others create. Each statement is run through the simple
-protocol after it is compared, so the server's state moves as it would under
-`pg_regress`. Three things follow:
+Files depend on state left by earlier files, so the schedule matters, and
+the run is parallel anyway. The harness does it in two passes.
+
+**Snapshots.** The first pass executes every file in `parallel_schedule`
+order in one database, with a fresh session per file as pg_regress uses, and
+after each schedule group copies the database into a snapshot named after the
+vendored PostgreSQL commit, a format number and the group index. No
+comparison happens; it is pure execution, and the snapshots persist in the
+server between runs. A run whose snapshots all exist skips the pass;
+`PG_ANALYZE_ORACLE_REBUILD=1` forces it.
+
+**Replay.** The second pass gives each file its own database, copied from the
+snapshot before its group, executes the file's earlier siblings from the same
+group into that copy, then replays the file in a fresh session, asking the
+Oracle and the Subject about every statement. That is exactly the state the
+serial schedule gives the file, so files can run in any order on a worker
+pool, and one file can run alone in seconds with `PG_ANALYZE_ORACLE_FILES`.
+
+**Cluster-wide objects** are the one thing a snapshot cannot hold: roles,
+tablespaces, databases and subscriptions are shared by the whole server, and
+the corpus reuses role names across groups. Files that create, alter or drop
+such objects run one at a time in schedule order, in a cluster lane, and no
+file of a later group starts until the lane has finished every earlier group.
+Inside one group pg_regress's own rule applies: files use disjoint names.
+
+Three details follow:
 
 - **Catalog reloads.** A statement that may change the catalog marks it
-  dirty. The Catalog is reloaded lazily, before the next statement that is
-  compared, on the same connection, so uncommitted DDL is seen exactly as the
-  Oracle sees it. The list of statement kinds that keep the catalog is in
-  `replay.rs`; anything not listed counts as DDL.
+  dirty. The Catalog is reloaded lazily, before the next statement the
+  Subject says it wants, on the same connection, so uncommitted DDL is seen
+  exactly as the Oracle sees it. The list of statement kinds that keep the
+  catalog is in `replay.rs`; anything not listed counts as DDL.
 - **Search path.** `current_schemas(false)` is read before every comparison,
   so `SET search_path` and `SET ROLE` need no tracking.
 - **Failed transactions.** PostgreSQL rejects everything after an error inside
@@ -81,10 +103,18 @@ so message text and literal handling match the expected output files.
 
 ```sh
 docker run -d --name pg-analyze-oracle-17 -e POSTGRES_USER=oracle \
-  -e POSTGRES_PASSWORD=oracle -e POSTGRES_DB=regression -p 54317:5432 postgres:17
+  -e POSTGRES_PASSWORD=oracle -e POSTGRES_DB=regression -p 54317:5432 \
+  postgres:17 -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
+  -c max_connections=200
 PG_ANALYZE_ORACLE_URL=postgres://oracle:oracle@localhost:54317/regression \
   cargo test --test oracle -- --nocapture
 ```
+
+Durability is off because the server is disposable and database copies are
+I/O bound. `PG_ANALYZE_ORACLE_JOBS` sets the worker count, default the CPU
+count. `PG_ANALYZE_ORACLE_FILES=int4,join` replays only those files and
+checks only their counts; with `PG_ANALYZE_UPDATE_BASELINE=1` it re-pins
+only those entries.
 
 The server must be disposable. The corpus creates and drops roles, schemas
 and databases, and some statements terminate the session. Without the

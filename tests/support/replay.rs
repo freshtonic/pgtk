@@ -1,21 +1,24 @@
-//! Replaying one corpus file against the Oracle and the Subject.
+//! Running and comparing corpus files.
 //!
-//! For every statement, in file order:
+//! [`execute_file`] runs a file to move a database's state forward, the way
+//! pg_regress runs it, in a fresh session. [`replay_file`] does the same in a
+//! fresh session but also asks the Oracle and the Subject about every
+//! statement first and compares their answers:
 //!
 //! 1. Skip it when it is not a statement, when `pg-sql` cannot parse it, or
 //!    when the Oracle's session is in a failed transaction.
-//! 2. Reload the Catalog if a statement since the last load may have changed
-//!    it, and read the search path.
+//! 2. If the Subject wants it, reload the Catalog if a statement since the
+//!    last load may have changed it, and read the search path.
 //! 3. Ask the Oracle (Parse and Describe) and the Subject the same question.
-//! 4. Compare, then run the statement so the server's state moves forward.
+//! 4. Compare, then run the statement.
 
 use std::fmt::Write as _;
 
 use pg_catalog::Catalog;
 use pg_sql::ast::Statement;
 
-use super::corpus::{CorpusFile, ItemKind};
-use super::oracle::{Oracle, OracleOutcome};
+use super::oracle::{Oracle, OracleOutcome, Server};
+use super::plan::PlannedFile;
 use super::subject::{Subject, SubjectOutcome};
 
 /// Why a statement was not compared.
@@ -83,46 +86,17 @@ pub struct FileResult {
     pub catalog_loads: usize,
 }
 
-/// Session state carried from one file to the next.
-pub struct Session {
-    pub oracle: Oracle,
-    catalog: Option<Catalog>,
-    catalog_dirty: bool,
-    pub catalog_loads: usize,
-}
-
-impl Session {
-    pub fn new(oracle: Oracle) -> Self {
-        Self {
-            oracle,
-            catalog: None,
-            catalog_dirty: true,
-            catalog_loads: 0,
-        }
-    }
-
-    /// Reload the Catalog if a statement since the last load may have
-    /// changed it. Done before the Oracle is asked anything, because a Parse
-    /// failure inside an open transaction aborts that transaction, and the
-    /// loader's queries would fail after it.
-    fn ensure_catalog(&mut self) -> Result<(), pg_catalog::LoadError> {
-        if self.catalog_dirty || self.catalog.is_none() {
-            let loaded = self.oracle.catalog()?;
-            self.catalog = Some(loaded.catalog);
-            self.catalog_dirty = false;
-            self.catalog_loads += 1;
-        }
-        Ok(())
-    }
-}
-
 /// What the replay needs to know about a statement's syntax.
 #[derive(Clone, Copy, Debug)]
 pub struct Shape {
     /// Running it leaves the catalog as it was.
-    keeps_catalog: bool,
+    pub keeps_catalog: bool,
     /// The harness may run it.
-    runnable: bool,
+    pub runnable: bool,
+    /// It creates, alters or drops something cluster-wide.
+    pub cluster_ddl: bool,
+    /// It is, or embeds, a query that Analysis would resolve.
+    pub has_query: bool,
 }
 
 /// Render one frozen item as psql would send it to the server: psql's own
@@ -168,6 +142,8 @@ pub fn parse(sql: &str) -> Option<Shape> {
     Some(Shape {
         keeps_catalog: keeps_catalog(statement),
         runnable: runnable(statement),
+        cluster_ddl: cluster_ddl(statement),
+        has_query: has_query(statement),
     })
 }
 
@@ -227,6 +203,60 @@ fn runnable(statement: &Statement<'_>) -> bool {
     !matches!(statement, Statement::Copy(_))
 }
 
+/// Statements that touch objects shared by every database in the cluster.
+/// Role membership grants are cluster-wide too, so `GRANT` and `REVOKE`
+/// count, which is conservative for object grants.
+fn cluster_ddl(statement: &Statement<'_>) -> bool {
+    matches!(
+        statement,
+        Statement::CreateRole(_)
+            | Statement::CreateUser(_)
+            | Statement::CreateGroup(_)
+            | Statement::CreateTablespace(_)
+            | Statement::CreateDatabase(_)
+            | Statement::CreateSubscription(_)
+            | Statement::DropRole(_)
+            | Statement::DropUser(_)
+            | Statement::DropGroup(_)
+            | Statement::DropTablespace(_)
+            | Statement::DropDatabase(_)
+            | Statement::DropSubscription(_)
+            | Statement::DropOwned(_)
+            | Statement::AlterRole(_)
+            | Statement::AlterUser(_)
+            | Statement::AlterGroup(_)
+            | Statement::AlterTablespace(_)
+            | Statement::AlterDatabase(_)
+            | Statement::AlterSubscription(_)
+            | Statement::AlterDefaultPrivileges(_)
+            | Statement::Reassign(_)
+            | Statement::Grant(_)
+            | Statement::Revoke(_)
+    )
+}
+
+/// Statements Analysis resolves: DML, and Utility Statements with a query
+/// inside them.
+fn has_query(statement: &Statement<'_>) -> bool {
+    matches!(
+        statement,
+        Statement::Query(_)
+            | Statement::With(_)
+            | Statement::Insert(_)
+            | Statement::Update(_)
+            | Statement::Delete(_)
+            | Statement::Merge(_)
+            | Statement::Explain(_)
+            | Statement::Declare(_)
+            | Statement::Prepare(_)
+            | Statement::Copy(_)
+            | Statement::CreateView(_)
+            | Statement::CreateMaterializedView(_)
+            | Statement::CreateTable(_)
+            | Statement::CreateRule(_)
+    )
+}
+
 fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
     match (oracle, subject) {
         (_, SubjectOutcome::Unsupported(_)) => Verdict::Unsupported,
@@ -272,19 +302,100 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
     }
 }
 
-/// Replay one file.
-pub fn replay(session: &mut Session, file: &CorpusFile, subject: &mut dyn Subject) -> FileResult {
+/// One session's replay state.
+struct Session {
+    oracle: Oracle,
+    catalog: Option<Catalog>,
+    catalog_dirty: bool,
+    catalog_loads: usize,
+}
+
+impl Session {
+    fn open(server: &Server, database: &str) -> Self {
+        let oracle = server
+            .session(database)
+            .unwrap_or_else(|error| panic!("cannot open a session in {database}: {error}"));
+        Self {
+            oracle,
+            catalog: None,
+            catalog_dirty: true,
+            catalog_loads: 0,
+        }
+    }
+
+    /// Reload the Catalog if a statement since the last load may have
+    /// changed it. Done before the Oracle is asked anything, because a Parse
+    /// failure inside an open transaction aborts that transaction, and the
+    /// loader's queries would fail after it.
+    fn ensure_catalog(&mut self) -> Result<(), pg_catalog::LoadError> {
+        if self.catalog_dirty || self.catalog.is_none() {
+            let loaded = self.oracle.catalog()?;
+            self.catalog = Some(loaded.catalog);
+            self.catalog_dirty = false;
+            self.catalog_loads += 1;
+        }
+        Ok(())
+    }
+
+    fn run(&mut self, shape: Shape, sql: &str) {
+        if shape.runnable
+            && let Err(error) = self.oracle.execute(sql)
+        {
+            self.recover(&error);
+        }
+        if !shape.keeps_catalog {
+            self.catalog_dirty = true;
+        }
+    }
+
+    /// The connection is gone, which some corpus statements cause on
+    /// purpose. Reconnect; the session state is lost, so the catalog must be
+    /// reloaded.
+    fn recover(&mut self, error: &postgres::Error) {
+        eprintln!("oracle connection lost ({error}); reconnecting");
+        self.oracle
+            .reconnect()
+            .unwrap_or_else(|error| panic!("cannot reconnect to the oracle: {error}"));
+        self.catalog_dirty = true;
+    }
+}
+
+/// Run every runnable statement of `file` in `database`, in a fresh session,
+/// without comparing anything.
+pub fn execute_file(server: &Server, database: &str, file: &PlannedFile) {
+    let mut session = Session::open(server, database);
+    for item in &file.items {
+        if let (Some(sql), Some(shape)) = (&item.sql, item.shape) {
+            session.run(shape, sql);
+        }
+    }
+}
+
+/// Replay `file` in `database`, in a fresh session, comparing the Oracle and
+/// the Subject on every statement.
+pub fn replay_file(
+    server: &Server,
+    database: &str,
+    file: &PlannedFile,
+    subject: &mut dyn Subject,
+) -> FileResult {
+    let mut session = Session::open(server, database);
     let mut counts = Counts::default();
     let mut report = String::new();
-    let loads_before = session.catalog_loads;
 
     for (index, item) in file.items.iter().enumerate() {
-        let verdict = match (item.kind, render(file.text_of(item))) {
-            (ItemKind::Statement, Some(sql)) => {
-                replay_one(session, subject, &sql, &mut report, &file.name, index)
-            }
-            (ItemKind::Statement, None) => Verdict::Skipped(SkipReason::ParseFailed),
-            _ => Verdict::Skipped(SkipReason::NotAStatement),
+        let verdict = match (&item.sql, item.shape) {
+            (Some(sql), Some(shape)) => replay_one(
+                &mut session,
+                subject,
+                sql,
+                shape,
+                &mut report,
+                &file.name,
+                index,
+            ),
+            (Some(_), None) => Verdict::Skipped(SkipReason::ParseFailed),
+            (None, _) => Verdict::Skipped(SkipReason::NotAStatement),
         };
         counts.record(&verdict);
     }
@@ -292,7 +403,7 @@ pub fn replay(session: &mut Session, file: &CorpusFile, subject: &mut dyn Subjec
     FileResult {
         counts,
         report,
-        catalog_loads: session.catalog_loads - loads_before,
+        catalog_loads: session.catalog_loads,
     }
 }
 
@@ -300,30 +411,41 @@ fn replay_one(
     session: &mut Session,
     subject: &mut dyn Subject,
     sql: &str,
+    shape: Shape,
     report: &mut String,
     file: &str,
     index: usize,
 ) -> Verdict {
-    let Some(shape) = parse(sql) else {
-        return Verdict::Skipped(SkipReason::ParseFailed);
-    };
-
     let aborted = match session.oracle.in_failed_transaction() {
         Ok(aborted) => aborted,
         Err(error) => {
-            recover(session, &error);
+            session.recover(&error);
             false
         }
     };
     if aborted {
         // Still run it: it may be the ROLLBACK that ends the failed transaction.
-        run(session, shape, sql);
+        session.run(shape, sql);
         return Verdict::Skipped(SkipReason::AbortedTransaction);
+    }
+
+    if !subject.wants(shape) {
+        // The Oracle is still asked, so the report can show what it said
+        // once the Subject grows into this statement.
+        let verdict = match session.oracle.describe(sql) {
+            Ok(_) => Verdict::Unsupported,
+            Err(error) => {
+                session.recover(&error);
+                Verdict::Skipped(SkipReason::AbortedTransaction)
+            }
+        };
+        session.run(shape, sql);
+        return verdict;
     }
 
     if let Err(error) = session.ensure_catalog() {
         eprintln!("{file} item {index}: cannot load the catalog: {error}");
-        run(session, shape, sql);
+        session.run(shape, sql);
         return Verdict::Skipped(SkipReason::CatalogUnavailable);
     }
     let search_path = session
@@ -333,7 +455,7 @@ fn replay_one(
     let oracle_outcome = match session.oracle.describe(sql) {
         Ok(outcome) => outcome,
         Err(error) => {
-            recover(session, &error);
+            session.recover(&error);
             return Verdict::Skipped(SkipReason::AbortedTransaction);
         }
     };
@@ -348,28 +470,6 @@ fn replay_one(
         );
     }
 
-    run(session, shape, sql);
+    session.run(shape, sql);
     verdict
-}
-
-fn run(session: &mut Session, shape: Shape, sql: &str) {
-    if shape.runnable
-        && let Err(error) = session.oracle.execute(sql)
-    {
-        recover(session, &error);
-    }
-    if !shape.keeps_catalog {
-        session.catalog_dirty = true;
-    }
-}
-
-/// The connection is gone, which some corpus statements cause on purpose.
-/// Reconnect; the session state is lost, so the catalog must be reloaded.
-fn recover(session: &mut Session, error: &postgres::Error) {
-    eprintln!("oracle connection lost ({error}); reconnecting");
-    session
-        .oracle
-        .reconnect()
-        .unwrap_or_else(|error| panic!("cannot reconnect to the oracle: {error}"));
-    session.catalog_dirty = true;
 }

@@ -82,6 +82,7 @@ impl CorpusFile {
 /// The frozen split of every file, keyed by file name.
 pub struct FrozenSplit {
     files: BTreeMap<String, (usize, Vec<Item>)>,
+    gitlink: String,
 }
 
 impl FrozenSplit {
@@ -148,7 +149,15 @@ impl FrozenSplit {
                 (name, (bytes, items))
             })
             .collect();
-        Self { files }
+        Self {
+            files,
+            gitlink: gitlink.to_owned(),
+        }
+    }
+
+    /// The PostgreSQL commit the ranges were frozen from.
+    pub fn gitlink(&self) -> &str {
+        &self.gitlink
     }
 
     /// Every file name in the split.
