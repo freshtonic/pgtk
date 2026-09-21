@@ -15,7 +15,7 @@ One parsed PostgreSQL statement as `pg-sql` produces it. Analysis reads a Statem
 _Avoid_: Query (that is PostgreSQL's name for the analysed form), AST, parse tree
 
 **Utility Statement**:
-A Statement that PostgreSQL's `parse_analyze` does not transform, such as DDL. Analysis leaves it unanalysed except for any query embedded in it.
+A Statement that PostgreSQL's `parse_analyze` does not transform, such as DDL. Analysis leaves it unanalysed, a query embedded in it included, as PostgreSQL leaves it at Parse time: the query inside CREATE VIEW, CREATE RULE, PREPARE, COPY or CREATE TABLE AS EXECUTE is analysed only when the Statement runs, so Analysis reports no Diagnostic for it and an empty Result Descriptor. EXPLAIN, DECLARE and CREATE TABLE AS with a query are not Utility Statements in this sense: `parse_analyze` transforms their query.
 
 **Rewrite**:
 The part of PostgreSQL's rewriter that runs before a Describe answers, which Analysis reproduces: a data-modifying Statement on a view is checked as the rewriter checks it and its target becomes the base relation, a rule refuses RETURNING or ON CONFLICT as the rewriter does, and generated and identity columns refuse the values the rewriter refuses. Analysis does not reproduce a rule's actions.

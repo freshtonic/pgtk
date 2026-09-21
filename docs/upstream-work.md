@@ -5,7 +5,7 @@ Each item belongs to the named crate, not here.
 
 ## pg-sql
 
-Done (pg-sql main 358f3e3): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
+Done (pg-sql main 1974ba1): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
 their own nodes; infix `OPERATOR(schema.op)`; the identifier folding helper;
 `SELECT DISTINCT` requires a target list; `ROLLUP` and `CUBE` are grouping
 clauses; `SELECT ALL` parses; a set operation chain is a left-recursive
@@ -21,13 +21,12 @@ table reference holds a subquery or a join only (`ParenTableRef::Query` and
 `ParenTableRef::Join`, with `JoinedTable` and `JoinChain`), so `FROM (t)` and
 `FROM (t) x` are rejected as gram.y rejects them; `CALL` takes gram.y's
 `func_application` (`CallStmt.call` is a `FunctionApplicationExpr`), so
-qualified names, named arguments and `VARIADIC` parse.
+qualified names, named arguments and `VARIADIC` parse; `ORDER BY x USING op`
+takes any `qual_all_Op` as one `SortOrder` with ASC/DESC, in a query, an
+aggregate, WITHIN GROUP and a window.
 
 Open:
 
-- `ORDER BY x USING +` does not parse, while gram.y's `sortby` takes any
-  `qual_all_Op`, `MathOp` included; PostgreSQL rejects it at analysis.
-  Reported 2026-09-21.
 - Promoting shared-pool types that carry Annotations (`SelectItem`,
   `QualifiedRef`, `PositionalParam`, `QueryBody`, `InsertStmt`, `UpdateStmt`)
   to typed pools is deferred until the Oracle harness gives a measurement,
@@ -35,13 +34,15 @@ Open:
 
 ## pg-catalog
 
-Done (pg-catalog main 1160b7d): sequences; `Relation.primary_key` with
+Done (pg-catalog main de06f4f): sequences; `Relation.primary_key` with
 deferrability; `Column.identity` as `Option<Identity>` (ALWAYS or BY DEFAULT);
 `Relation.parents` from `pg_inherits`, for `typeInheritsFrom`;
 `Function.default_types`, the type of each default expression, for the
 polymorphic resolution of defaulted arguments; `Relation.of_type` for
 `typeIsOfTypedTable`; `Relation.view_definition`, `Relation.rules` and
-`Relation.triggers` for the Rewrite of a data-modifying Statement on a view.
+`Relation.triggers` for the Rewrite of a data-modifying Statement on a view;
+`Catalog::parameter`, the configuration parameter names from `pg_settings`,
+for the Result Descriptor of SHOW.
 
 Open:
 

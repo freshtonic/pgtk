@@ -13,7 +13,12 @@ use pg_sql::ast::dml::select::{
 use pg_sql::ast::dml::select::{
     FlatGroupByItem, FlatLimitOffsetClause, FlatLimitingClause, FlatOrderByClause,
 };
+use pg_sql::ast::dml::select::{
+    FlatJsonTableColumn, FlatJsonTableColumnKind, FlatJsonTableColumnList, FlatJsonTableFormat,
+    FlatJsonTableInner, FlatJsonTableRef,
+};
 use pg_sql::ast::dml::values::{FlatSelectClause, FlatSetQuantifier};
+use pg_sql::ast::session::set_reset::{FlatShowStmt, FlatShowTarget};
 use pg_sql::ast::shared::expr::{
     FlatArrayElement, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
     FlatSubstringTail, FlatTrimDir, FlatTrimTail, FlatTrimValuesRest,
@@ -25,8 +30,8 @@ use pg_sql::ast::shared::expr::{
     FlatParenthesizedIndirection, FlatQualifiedRefFirstIndirection, FlatStringLitSeq0,
     FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign,
 };
+use pg_sql::ast::shared::expr::{FlatCastType, FlatIsNormalizedTail, FlatJsonEncoding};
 use pg_sql::ast::shared::names::FlatQualifiedOperatorName;
-use pg_sql::ast::utility::copy::FlatCopyBody;
 use pg_sql::tokens::FlatColId;
 use pg_sql::tokens::literal::FlatAliasName;
 use recursa::{Handle, List, List1, Span, Text};
@@ -66,7 +71,8 @@ use pg_sql::ast::dml::merge::{
 };
 use pg_sql::ast::dml::select::{
     FlatCubeItem, FlatFetchFirstBody, FlatFetchFirstClause, FlatFetchMode, FlatForUpdateWait,
-    FlatGroupByModifier, FlatOnlyRelationName, FlatRollupItem, FlatUsingClause, FlatUsingOp,
+    FlatGroupByModifier, FlatOnlyRelationName, FlatRollupItem, FlatSortOrder, FlatUsingClause,
+    FlatUsingOp,
 };
 use pg_sql::ast::dml::select::{
     FlatForLockingClause, FlatForUpdateClause, FlatLimitLockingClause, FlatLockingMode,
@@ -957,16 +963,36 @@ enum JsonOp {
     Value,
 }
 
+/// The context item of a SQL/JSON query function.
+enum JsonContext {
+    /// An expression with its optional FORMAT clause.
+    Expr(Handle<FlatExpr>, Option<Handle<FlatJsonFormat>>),
+    /// A JSON_TABLE column's context: the row of the document, already
+    /// json or jsonb.
+    Typed,
+}
+
+/// The RETURNING part of a SQL/JSON query function.
+enum JsonReturningSpec {
+    None,
+    Clause(Handle<FlatJsonReturning>),
+    /// A JSON_TABLE column's type and its optional FORMAT clause.
+    Column(Handle<FlatCastType>, Option<Handle<FlatJsonTableFormat>>),
+}
+
 /// The parts of a SQL/JSON query function call.
 struct JsonFuncParts {
-    context: Handle<FlatExpr>,
-    context_format: Option<Handle<FlatJsonFormat>>,
-    path: Handle<FlatExpr>,
+    context: JsonContext,
+    /// The path expression; `None` for a JSON_TABLE column's constant path.
+    path: Option<Handle<FlatExpr>>,
     passing: Option<Handle<FlatJsonPassing>>,
-    returning: Option<Handle<FlatJsonReturning>>,
+    returning: JsonReturningSpec,
     wrapper: Option<Handle<FlatJsonWrapper>>,
     quotes: Option<Handle<FlatJsonQuotes>>,
     behaviors: Vec<Handle<FlatJsonOnBehavior>>,
+    /// The JSON_TABLE column the call stands for, which changes the
+    /// behavior diagnostics.
+    column: Option<String>,
 }
 
 /// The GROUP BY clause of one level: its grouping expressions and, with
@@ -1173,16 +1199,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             // Describe answers these from session state.
             FlatStatement::Execute(_) => Err(unsupported("EXECUTE", None)),
             FlatStatement::Fetch(_) => Err(unsupported("FETCH", None)),
-            FlatStatement::Show(_) => Err(unsupported("SHOW", None)),
-            // Utility Statements with a query inside them, which Analysis
-            // resolves even though parse analysis does not.
-            FlatStatement::CreateView(_) => Err(unsupported("CREATE VIEW", None)),
-            FlatStatement::CreateRule(_) => Err(unsupported("CREATE RULE", None)),
-            FlatStatement::Prepare(_) => Err(unsupported("PREPARE", None)),
-            FlatStatement::Copy(c) => match self.get(self.get(*c).body) {
-                FlatCopyBody::Query(_) => Err(unsupported("COPY (query)", None)),
-                _ => self.utility(),
-            },
+            FlatStatement::Show(s) => self.show_statement(*s),
+            // Utility Statements with a query inside them, which parse
+            // analysis leaves for execution: CREATE VIEW, CREATE RULE,
+            // PREPARE and COPY (query) among them.
             _ => self.utility(),
         }
     }
@@ -1946,6 +1966,72 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         self.lock_refusal = None;
         Ok(target_list)
+    }
+
+    /// `GetPGVariableResultDesc`: SHOW ALL is three text columns, SHOW
+    /// name one text column named with the parameter's canonical
+    /// spelling.
+    fn show_statement(&mut self, s: Handle<FlatShowStmt>) -> Result<()> {
+        let text = self.types().builtin(Builtin::Text);
+        let column = |name: String| TargetEntry {
+            name,
+            ty: text,
+            typmod: -1,
+            origin: None,
+            junk: false,
+            location: 0,
+            fields: None,
+        };
+        let name = match self.get(self.get(s).target) {
+            FlatShowTarget::All => {
+                let columns: Vec<TargetEntry> = ["name", "setting", "description"]
+                    .into_iter()
+                    .map(|n| column(n.to_owned()))
+                    .collect();
+                return self.set_result(&columns);
+            }
+            FlatShowTarget::TransactionIsolationLevel => "transaction_isolation".to_owned(),
+            FlatShowTarget::SessionAuthorization => "session_authorization".to_owned(),
+            FlatShowTarget::TimeZone => "timezone".to_owned(),
+            FlatShowTarget::Param(q) => {
+                let q = self.get(*q);
+                let (first, _) = self.col_id(q.first)?;
+                let mut parts = vec![first];
+                for part in self.list(q.rest) {
+                    let part = self.get(*part);
+                    parts.push(self.col_label(part.name)?);
+                }
+                parts.join(".")
+            }
+        };
+        // A placeholder (`custom.x`) exists only when the session set it.
+        if name.contains('.') {
+            return Err(unsupported("custom configuration parameter", None));
+        }
+        // GUC_NO_SHOW_ALL parameters are absent from pg_settings, so
+        // from the Catalog, but SHOW answers them.
+        const HIDDEN: [&str; 6] = [
+            "default_with_oids",
+            "is_superuser",
+            "role",
+            "seed",
+            "session_authorization",
+            "ssl_renegotiation_limit",
+        ];
+        let lower = name.to_ascii_lowercase();
+        let canonical = match self.catalog().parameter(&name) {
+            Some(parameter) => parameter.name.clone(),
+            None if HIDDEN.contains(&lower.as_str()) => lower,
+            None => {
+                return Err(Diagnostic::new(
+                    "42704",
+                    format!("unrecognized configuration parameter \"{name}\""),
+                )
+                .into());
+            }
+        };
+        let columns = vec![column(canonical)];
+        self.set_result(&columns)
     }
 
     /// `transformCallStmt`: the procedure and its arguments; the result
@@ -2950,7 +3036,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// `transformCreateTableAsStmt` for a table.
     fn create_table_as(&mut self, source: Handle<FlatCtasSource>) -> Result<()> {
         match self.get(source) {
-            FlatCtasSource::Execute(_) => Err(unsupported("CREATE TABLE AS EXECUTE", None)),
+            // The prepared statement is looked up when the Statement runs.
+            FlatCtasSource::Execute(_) => self.set_result(&[]),
             FlatCtasSource::Query(sub) => {
                 let sub = self.get(*sub);
                 if let Some(with) = sub.with {
@@ -3019,9 +3106,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     entry.typmod = -1;
                 }
                 let location = self.span(item.expr).start;
-                if let Some(using) = item.using {
+                if let Some(FlatSortOrder::Using(using)) = item.order.map(|o| self.get(o)) {
                     let ty = entry.ty;
-                    self.using_operator(using, ty, location)?;
+                    self.using_operator(*using, ty, location)?;
                     continue;
                 }
                 if self.types().btree_ordering(entry.ty).is_none() {
@@ -5923,14 +6010,22 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let _ = is_column;
                 for (i, entry) in target_list.iter().enumerate() {
                     if !is_column && !entry.junk && entry.name == name {
-                        if found.is_some() {
+                        if let Some(first) = found {
                             // Two output columns with the name: ambiguous
-                            // unless the expressions are equal, which
-                            // needs structural equality this slice lacks.
-                            return Err(unsupported(
-                                "ambiguous ORDER BY name",
-                                Some(location..location),
-                            ));
+                            // unless their expressions are equal.
+                            let same = match (target_exprs[first], target_exprs[i]) {
+                                (Some(a), Some(b)) => self.expr_equal(a, b),
+                                _ => false,
+                            };
+                            if !same {
+                                return Err(Diagnostic::new(
+                                    "42702",
+                                    format!("{construct} \"{name}\" is ambiguous"),
+                                )
+                                .at(location)
+                                .into());
+                            }
+                            continue;
                         }
                         found = Some(i);
                     }
@@ -7575,6 +7670,267 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// `transformRangeTableFunc` for XMLTABLE: the row and document
     /// expressions, the columns with their types, paths and defaults, and
     /// the namespaces; then `addRangeTableEntryForTableFunc`.
+    /// `transformJsonTable`: the document expression, the path, the
+    /// PASSING arguments and each column as the SQL/JSON query function it
+    /// stands for; the columns of a level come before those of its NESTED
+    /// paths.
+    fn json_table_ref(
+        &mut self,
+        scope: &mut Scope,
+        j: Handle<FlatJsonTableRef>,
+        location: usize,
+    ) -> Result<(NamespaceItem, Vec<NamespaceItem>)> {
+        let j = self.get(j);
+        let inner = self.get(self.get(j.table).inner);
+        // The top-level ON ERROR takes EMPTY [ARRAY] or ERROR only.
+        if let Some(b) = inner.on_error
+            && !matches!(
+                self.get(self.get(b).behavior),
+                FlatJsonBehavior::Error | FlatJsonBehavior::Empty | FlatJsonBehavior::EmptyArray
+            )
+        {
+            return Err(Diagnostic::new("42601", "invalid ON ERROR behavior")
+                .detail(
+                    "Only EMPTY [ ARRAY ] or ERROR is allowed in the top-level ON ERROR clause.",
+                )
+                .at(self.span(b).start)
+                .into());
+        }
+        // CheckDuplicateColumnOrPathNames, with the root path name first.
+        let mut names: Vec<String> = Vec::new();
+        match inner.path_name {
+            Some(n) => names.push(self.alias_name(self.get(n).name)?.0),
+            None => names.push("json_table_path_0".to_owned()),
+        }
+        self.json_table_names(inner.column_list, &mut names)?;
+        let mut lscope = scope.clone();
+        lscope.lateral_active = true;
+        let saved_kind = self.expr_kind;
+        self.expr_kind = ExprKind::FromFunction;
+        let result = self.json_table_body(&lscope, inner);
+        self.expr_kind = saved_kind;
+        let columns = result?;
+        let (alias_name, column_aliases) = self.table_alias(j.alias)?;
+        let eref_name = alias_name
+            .clone()
+            .unwrap_or_else(|| "json_table".to_owned());
+        if column_aliases.len() > columns.len() {
+            return Err(Diagnostic::new(
+                "42P10",
+                format!(
+                    "JSON_TABLE function has {} columns available but {} columns specified",
+                    columns.len(),
+                    column_aliases.len()
+                ),
+            )
+            .into());
+        }
+        let mut aliases = column_aliases.into_iter();
+        let mut colnames = Vec::with_capacity(columns.len());
+        let mut coltypes = Vec::with_capacity(columns.len());
+        for (name, ty, typmod) in columns {
+            colnames.push(aliases.next().unwrap_or(name));
+            coltypes.push((ty, typmod));
+        }
+        scope.rtable.push(crate::relation::RangeTableEntry {
+            kind: RteKind::Function {
+                columns: coltypes,
+                row_type: None,
+            },
+            alias: alias_name,
+            eref_name,
+            colnames,
+            location,
+            composite_only: false,
+        });
+        let item = NamespaceItem::plain(scope.rtable.len());
+        Ok((item.clone(), vec![item]))
+    }
+
+    /// Every column name and written path name of a JSON_TABLE, each once.
+    fn json_table_names(
+        &self,
+        list: Handle<FlatJsonTableColumnList>,
+        names: &mut Vec<String>,
+    ) -> Result<()> {
+        for col in self.list(self.get(list).list).to_vec() {
+            match self.get(col) {
+                FlatJsonTableColumn::Nested(n) => {
+                    let n = self.get(*n);
+                    if let Some(pn) = n.as_name {
+                        let (name, at) = self.alias_name(self.get(pn).name)?;
+                        if names.contains(&name) {
+                            return Err(Diagnostic::new(
+                                "42712",
+                                format!("duplicate JSON_TABLE column or path name: {name}"),
+                            )
+                            .at(at)
+                            .into());
+                        }
+                        names.push(name);
+                    }
+                    self.json_table_names(n.columns, names)?;
+                }
+                FlatJsonTableColumn::Valued(v) => {
+                    let (name, _) = self.alias_name(self.get(*v).name)?;
+                    if names.contains(&name) {
+                        return Err(Diagnostic::new(
+                            "42712",
+                            format!("duplicate JSON_TABLE column or path name: {name}"),
+                        )
+                        .at(self.span(col).start)
+                        .into());
+                    }
+                    names.push(name);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The document, root path and PASSING arguments of a JSON_TABLE, then
+    /// its columns.
+    fn json_table_body(
+        &mut self,
+        lscope: &Scope,
+        inner: &FlatJsonTableInner,
+    ) -> Result<Vec<(String, TypeRef, Typmod)>> {
+        // The path is a string constant: gram.y refuses anything else.
+        let path = self.unparen(inner.path);
+        if !matches!(self.get(path), FlatExpr::StringLit(_)) {
+            return Err(Diagnostic::new(
+                "0A000",
+                "only string constants are supported in JSON_TABLE path specification",
+            )
+            .at(self.span(inner.path).start)
+            .into());
+        }
+        let jsonb = self.types().builtin(Builtin::Jsonb);
+        let context_format = self.json_table_format(inner.context_format)?;
+        self.json_value_expr_formatted(
+            lscope,
+            "JSON_TABLE",
+            inner.context,
+            context_format,
+            JsonFormatKind::Jsonb,
+            Some(jsonb),
+            false,
+        )?;
+        let path_t = self.expr(lscope, inner.path)?;
+        let jsonpath = self.types().builtin(Builtin::Jsonpath);
+        if let Some((_, steps)) = self.coercer().coerce_to_target_type(
+            &path_t,
+            jsonpath,
+            -1,
+            CoercionContext::Explicit,
+        )? {
+            self.record_coercions(inner.path, steps);
+        }
+        if let Some(p) = inner.passing {
+            for arg in self.list1(self.get(p).args).to_vec() {
+                let arg = self.get(arg);
+                self.json_value_expr(
+                    lscope,
+                    "JSON_TABLE",
+                    arg.value,
+                    None,
+                    JsonFormatKind::Jsonb,
+                    None,
+                    true,
+                )?;
+            }
+        }
+        let mut columns = Vec::new();
+        self.json_table_columns(lscope, inner.column_list, inner.passing, &mut columns)?;
+        Ok(columns)
+    }
+
+    /// `transformJsonTableColumns` for one level: its own columns, then
+    /// the columns of each NESTED path.
+    fn json_table_columns(
+        &mut self,
+        lscope: &Scope,
+        list: Handle<FlatJsonTableColumnList>,
+        passing: Option<Handle<FlatJsonPassing>>,
+        columns: &mut Vec<(String, TypeRef, Typmod)>,
+    ) -> Result<()> {
+        let cols = self.list(self.get(list).list).to_vec();
+        let mut ordinality_found = false;
+        for col in &cols {
+            let FlatJsonTableColumn::Valued(v) = self.get(*col) else {
+                continue;
+            };
+            let v = self.get(*v);
+            let (name, _) = self.alias_name(v.name)?;
+            let at = self.span(*col).start;
+            match self.get(v.kind) {
+                FlatJsonTableColumnKind::Ordinality(_) => {
+                    if ordinality_found {
+                        return Err(Diagnostic::new(
+                            "42601",
+                            "only one FOR ORDINALITY column is allowed",
+                        )
+                        .at(at)
+                        .into());
+                    }
+                    ordinality_found = true;
+                    columns.push((name, self.types().builtin(Builtin::Int4), -1));
+                }
+                FlatJsonTableColumnKind::Typed(tc) => {
+                    let tc = self.get(*tc);
+                    let op = if tc.exists {
+                        JsonOp::Exists
+                    } else if tc.format.is_some() || tc.quotes.is_some() || tc.wrapper.is_some() {
+                        JsonOp::Query
+                    } else {
+                        // A regular column of a composite type is formatted.
+                        let tn = self.type_name(tc.ty)?;
+                        let (ty, _) = self.typenames.resolve(&tn)?;
+                        if self.json_composite_type(ty) {
+                            JsonOp::Query
+                        } else {
+                            JsonOp::Value
+                        }
+                    };
+                    let parts = JsonFuncParts {
+                        context: JsonContext::Typed,
+                        path: None,
+                        passing,
+                        returning: JsonReturningSpec::Column(tc.ty, tc.format),
+                        wrapper: tc.wrapper,
+                        quotes: tc.quotes,
+                        behaviors: self.json_behaviors(tc.on_behavior),
+                        column: Some(name.clone()),
+                    };
+                    let t = self.json_func(lscope, op, &parts, at)?;
+                    columns.push((name, t.ty, t.typmod));
+                }
+            }
+        }
+        for col in &cols {
+            if let FlatJsonTableColumn::Nested(n) = self.get(*col) {
+                let n = self.get(*n);
+                self.json_table_columns(lscope, n.columns, passing, columns)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// `isCompositeType` of parse_jsontable.c: json, jsonb, record, an
+    /// array, a composite type, or a domain over one of those.
+    fn json_composite_type(&self, ty: TypeRef) -> bool {
+        let types = self.types();
+        let base = types.base_type(ty);
+        types.is(base, Builtin::Json)
+            || types.is(base, Builtin::Jsonb)
+            || types.is(base, Builtin::Record)
+            || types.element_type(base).is_some()
+            || matches!(
+                self.catalog()[base].kind,
+                pg_catalog::TypeKind::Composite(_)
+            )
+    }
+
     fn xml_table_ref(
         &mut self,
         scope: &mut Scope,
@@ -8057,16 +8413,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                         // XMLTABLE is LATERAL whether or not it says so.
                         FlatLateralBody::XmlTable(x) => self.xml_table_ref(scope, *x, location),
-                        FlatLateralBody::JsonTable(_) => {
-                            Err(unsupported("JSON_TABLE", Some(location..location)))
-                        }
+                        // JSON_TABLE is LATERAL whether or not it says so.
+                        FlatLateralBody::JsonTable(j) => self.json_table_ref(scope, *j, location),
                     };
                 }
                 FlatSimpleTableRef::XmlTable(x) => {
                     return self.xml_table_ref(scope, *x, location);
                 }
-                FlatSimpleTableRef::JsonTable(_) => {
-                    return Err(unsupported("JSON_TABLE", Some(location..location)));
+                FlatSimpleTableRef::JsonTable(j) => {
+                    return self.json_table_ref(scope, *j, location);
                 }
                 FlatSimpleTableRef::RowsFrom(r) => {
                     let r = self.get(*r);
@@ -8647,8 +9002,26 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let Some(f) = format else {
             return Ok((JsonFormatKind::Default, None, None));
         };
-        let location = self.span(f).start;
-        let encoding = match self.get(f).encoding {
+        self.json_format_of(self.get(f).encoding, self.span(f).start)
+    }
+
+    /// The FORMAT clause of a JSON_TABLE context item or column.
+    fn json_table_format(
+        &self,
+        format: Option<Handle<FlatJsonTableFormat>>,
+    ) -> Result<(JsonFormatKind, Option<usize>, Option<String>)> {
+        let Some(f) = format else {
+            return Ok((JsonFormatKind::Default, None, None));
+        };
+        self.json_format_of(self.get(f).encoding, self.span(f).start)
+    }
+
+    fn json_format_of(
+        &self,
+        encoding: Option<Handle<FlatJsonEncoding>>,
+        location: usize,
+    ) -> Result<(JsonFormatKind, Option<usize>, Option<String>)> {
+        let encoding = match encoding {
             None => None,
             Some(e) => {
                 let (name, _) = self.alias_name(self.get(e).name)?;
@@ -8678,6 +9051,30 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         target: Option<TypeRef>,
         isarg: bool,
     ) -> Result<Typed> {
+        let format = self.json_format(format)?;
+        self.json_value_expr_formatted(
+            scope,
+            construct,
+            expr,
+            format,
+            default_format,
+            target,
+            isarg,
+        )
+    }
+
+    /// `transformJsonValueExpr` with the FORMAT clause already read.
+    #[allow(clippy::too_many_arguments)]
+    fn json_value_expr_formatted(
+        &mut self,
+        scope: &Scope,
+        construct: &str,
+        expr: Handle<FlatExpr>,
+        format: (JsonFormatKind, Option<usize>, Option<String>),
+        default_format: JsonFormatKind,
+        target: Option<TypeRef>,
+        isarg: bool,
+    ) -> Result<Typed> {
         let mut t = self.expr(scope, expr)?;
         if self.types().is_unknown(t.ty) {
             let text = self.types().builtin(Builtin::Text);
@@ -8687,7 +9084,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         let exprtype = t.ty;
         let location = t.location;
-        let (given, format_location, encoding) = self.json_format(format)?;
+        let (given, format_location, encoding) = format;
         let types = self.types();
         let category = types.category(exprtype);
         let is_json = types.is(exprtype, Builtin::Json) || types.is(exprtype, Builtin::Jsonb);
@@ -8806,7 +9203,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             });
         };
         let o = self.get(o);
-        let tn = self.type_name(o.ty)?;
+        let format = self.json_format(o.format)?;
+        self.json_output_of(o.ty, format, allow_format)
+    }
+
+    /// `transformJsonOutput` for a type and a FORMAT clause already read.
+    fn json_output_of(
+        &mut self,
+        type_handle: Handle<FlatCastType>,
+        format: (JsonFormatKind, Option<usize>, Option<String>),
+        allow_format: bool,
+    ) -> Result<JsonReturning> {
+        let tn = self.type_name(type_handle)?;
         let (ty, typmod) = self.typenames.resolve(&tn)?;
         if self.types().pseudo(ty).is_some() {
             return Err(Diagnostic::new(
@@ -8815,7 +9223,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             )
             .into());
         }
-        let (given, format_location, encoding) = self.json_format(o.format)?;
+        let (given, format_location, encoding) = format;
         let types = self.types();
         let is_jsonb = types.is(ty, Builtin::Jsonb);
         let format = if given == JsonFormatKind::Default {
@@ -9456,7 +9864,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             JsonOp::Value => ("JSON_VALUE", JsonFormatKind::Default),
         };
         if op != JsonOp::Query
-            && let Some(r) = parts.returning
+            && let JsonReturningSpec::Clause(r) = parts.returning
             && let Some(f) = self.get(r).format
         {
             return Err(Diagnostic::new(
@@ -9530,23 +9938,38 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             if allowed {
                 return Ok(());
             }
-            let detail = match op {
-                JsonOp::Query => format!(
-                    "Only ERROR, NULL, EMPTY ARRAY, EMPTY OBJECT, or DEFAULT expression is allowed in {which} for {func_name}()."
+            // A JSON_TABLE column names itself instead of the function.
+            let (what, message) = match &parts.column {
+                Some(column) => (
+                    match op {
+                        JsonOp::Query => "formatted columns".to_owned(),
+                        JsonOp::Exists => "EXISTS columns".to_owned(),
+                        JsonOp::Value => "scalar columns".to_owned(),
+                    },
+                    format!("invalid {which} behavior for column \"{column}\""),
                 ),
-                JsonOp::Exists => format!(
-                    "Only ERROR, TRUE, FALSE, or UNKNOWN is allowed in {which} for {func_name}()."
-                ),
-                JsonOp::Value => format!(
-                    "Only ERROR, NULL, or DEFAULT expression is allowed in {which} for {func_name}()."
+                None => (
+                    format!("{func_name}()"),
+                    format!("invalid {which} behavior"),
                 ),
             };
-            Err(
-                Diagnostic::new("42601", format!("invalid {which} behavior"))
-                    .detail(detail)
-                    .at(w.span(b).start)
-                    .into(),
-            )
+            let detail = match op {
+                JsonOp::Query => format!(
+                    "Only ERROR, NULL, EMPTY ARRAY, EMPTY OBJECT, or DEFAULT expression is allowed in {which} for {what}."
+                ),
+                JsonOp::Exists => {
+                    format!("Only ERROR, TRUE, FALSE, or UNKNOWN is allowed in {which} for {what}.")
+                }
+                JsonOp::Value => {
+                    format!(
+                        "Only ERROR, NULL, or DEFAULT expression is allowed in {which} for {what}."
+                    )
+                }
+            };
+            Err(Diagnostic::new("42601", message)
+                .detail(detail)
+                .at(w.span(b).start)
+                .into())
         };
         match op {
             JsonOp::Query | JsonOp::Value => {
@@ -9556,34 +9979,38 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             JsonOp::Exists => check(self, on_error, "ON ERROR")?,
         }
         let jsonb = self.types().builtin(Builtin::Jsonb);
-        self.json_value_expr(
-            scope,
-            func_name,
-            parts.context,
-            parts.context_format,
-            default_format,
-            Some(jsonb),
-            false,
-        )?;
-        let path = self.expr(scope, parts.path)?;
-        let jsonpath = self.types().builtin(Builtin::Jsonpath);
-        match self.coercer().coerce_to_target_type(
-            &path,
-            jsonpath,
-            -1,
-            CoercionContext::Explicit,
-        )? {
-            Some((_, steps)) => self.record_coercions(parts.path, steps),
-            None => {
-                return Err(Diagnostic::new(
-                    "42804",
-                    format!(
-                        "JSON path expression must be of type jsonpath, not of type {}",
-                        self.types().format(path.ty)
-                    ),
-                )
-                .at(path.location)
-                .into());
+        if let JsonContext::Expr(context, context_format) = parts.context {
+            self.json_value_expr(
+                scope,
+                func_name,
+                context,
+                context_format,
+                default_format,
+                Some(jsonb),
+                false,
+            )?;
+        }
+        if let Some(path_expr) = parts.path {
+            let path = self.expr(scope, path_expr)?;
+            let jsonpath = self.types().builtin(Builtin::Jsonpath);
+            match self.coercer().coerce_to_target_type(
+                &path,
+                jsonpath,
+                -1,
+                CoercionContext::Explicit,
+            )? {
+                Some((_, steps)) => self.record_coercions(path_expr, steps),
+                None => {
+                    return Err(Diagnostic::new(
+                        "42804",
+                        format!(
+                            "JSON path expression must be of type jsonpath, not of type {}",
+                            self.types().format(path.ty)
+                        ),
+                    )
+                    .at(path.location)
+                    .into());
+                }
             }
         }
         if let Some(p) = parts.passing {
@@ -9600,7 +10027,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 )?;
             }
         }
-        let mut returning = self.json_output(parts.returning, false)?;
+        let mut returning = match parts.returning {
+            JsonReturningSpec::None => self.json_output(None, false)?,
+            JsonReturningSpec::Clause(r) => self.json_output(Some(r), false)?,
+            JsonReturningSpec::Column(ty, format) => {
+                let format = self.json_table_format(format)?;
+                self.json_output_of(ty, format, false)?
+            }
+        };
         if returning.ty.is_none() {
             returning.ty = Some(self.types().builtin(match op {
                 JsonOp::Exists => Builtin::Bool,
@@ -11007,6 +11441,47 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
+    /// `typenameTypeMod`: a modifier written as an expression must be an
+    /// integer or string constant or a plain identifier.
+    fn typmod_of_expr(&self, e: Handle<FlatExpr>) -> Result<TypmodArg> {
+        let at = self.span(e).start;
+        let arg = match self.get(e) {
+            FlatExpr::IntegerLit(t) => {
+                crate::consts::integer_value(self.text(*t)).map(TypmodArg::Integer)
+            }
+            FlatExpr::Neg(inner) => match self.get(*inner) {
+                FlatExpr::IntegerLit(t) => {
+                    crate::consts::integer_value(self.text(*t)).map(|v| TypmodArg::Integer(-v))
+                }
+                _ => None,
+            },
+            FlatExpr::StringLit(s) => {
+                let text = match self.get(*s) {
+                    FlatStringLitSeq0::Single(t) => self.text(*t),
+                    FlatStringLitSeq0::Sequence(t) => self.text(*t),
+                };
+                Some(TypmodArg::Ident(string_literal_body(text)))
+            }
+            FlatExpr::ColumnRef(c) => {
+                let c = self.get(*c);
+                if self.list(c.subscripts).is_empty() {
+                    Some(TypmodArg::Ident(self.col_id(c.name)?.0))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        arg.ok_or_else(|| {
+            Diagnostic::new(
+                "42601",
+                "type modifiers must be simple constants or identifiers",
+            )
+            .at(at)
+            .into()
+        })
+    }
+
     fn typmod_args(
         &self,
         p: Handle<pg_sql::ast::shared::expr::FlatTypePrecision>,
@@ -11903,14 +12378,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let x: &FlatJsonExists = self.get(*x);
                 let i = self.get(x.inner);
                 let parts = JsonFuncParts {
-                    context: i.context,
-                    context_format: i.context_format,
-                    path: i.path,
+                    context: JsonContext::Expr(i.context, i.context_format),
+                    path: Some(i.path),
                     passing: i.passing,
-                    returning: None,
+                    returning: JsonReturningSpec::None,
                     wrapper: None,
                     quotes: None,
                     behaviors: i.on_error.into_iter().collect(),
+                    column: None,
                 };
                 self.json_func(scope, JsonOp::Exists, &parts, location)
             }
@@ -11918,14 +12393,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let x: &FlatJsonQuery = self.get(*x);
                 let i = self.get(x.inner);
                 let parts = JsonFuncParts {
-                    context: i.context,
-                    context_format: i.context_format,
-                    path: i.path,
+                    context: JsonContext::Expr(i.context, i.context_format),
+                    path: Some(i.path),
                     passing: i.passing,
-                    returning: i.returning,
+                    returning: i
+                        .returning
+                        .map_or(JsonReturningSpec::None, JsonReturningSpec::Clause),
                     wrapper: i.wrapper,
                     quotes: i.quotes,
                     behaviors: self.json_behaviors(i.on_behavior),
+                    column: None,
                 };
                 self.json_func(scope, JsonOp::Query, &parts, location)
             }
@@ -11933,14 +12410,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let x: &FlatJsonValue = self.get(*x);
                 let i = self.get(x.inner);
                 let parts = JsonFuncParts {
-                    context: i.context,
-                    context_format: i.context_format,
-                    path: i.path,
+                    context: JsonContext::Expr(i.context, i.context_format),
+                    path: Some(i.path),
                     passing: i.passing,
-                    returning: i.returning,
+                    returning: i
+                        .returning
+                        .map_or(JsonReturningSpec::None, JsonReturningSpec::Clause),
                     wrapper: None,
                     quotes: None,
                     behaviors: self.json_behaviors(i.on_behavior),
+                    column: None,
                 };
                 self.json_func(scope, JsonOp::Value, &parts, location)
             }
@@ -12453,6 +12932,47 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     name: "normalize".to_owned(),
                 };
                 self.resolve_call(handle, name, &handles, &args, location, None)
+            }
+            FlatExpr::IsNormalized(e, tail) => {
+                // gram.y: pg_catalog.is_normalized(arg [, 'FORM']) as a
+                // FuncCall located at IS, under NOT for IS NOT NORMALIZED.
+                let arg_handle = *e;
+                let arg = self.expr(scope, arg_handle)?;
+                let location = self.next_token_start(self.span(arg_handle).end);
+                let mut args = vec![arg];
+                let mut handles = vec![arg_handle];
+                let form = match self.get(*tail) {
+                    FlatIsNormalizedTail::Plain | FlatIsNormalizedTail::Not => None,
+                    FlatIsNormalizedTail::Form(f) => Some(self.get(*f).form),
+                    FlatIsNormalizedTail::NotForm(f) => Some(self.get(*f).form),
+                };
+                if let Some(form) = form {
+                    let form = match self.get(form) {
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfc => "NFC",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfd => "NFD",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfkc => "NFKC",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfkd => "NFKD",
+                    };
+                    args.push(make_const(
+                        self.types(),
+                        LiteralKind::String,
+                        form,
+                        location,
+                    ));
+                    handles.push(handle);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "is_normalized".to_owned(),
+                };
+                let t = self.resolve_call(handle, name, &handles, &args, location, None)?;
+                Ok(Typed {
+                    ty: self.types().builtin(Builtin::Bool),
+                    typmod: -1,
+                    form: Form::Other,
+                    location: t.location,
+                    returns_set: t.returns_set,
+                })
             }
             FlatExpr::Coalesce(c) => {
                 let args = self.list1(self.get(*c).args).to_vec();
@@ -13141,11 +13661,44 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Typed> {
         let suffix = match self.get(tail) {
             FlatFunctionCallTail::Call(s) => self.get(*s),
-            FlatFunctionCallTail::TypedLiteral(_) => {
-                return Err(unsupported(
-                    "typed literal with modifiers",
-                    Some(location..location),
-                ));
+            FlatFunctionCallTail::TypedLiteral(tl) => {
+                // gram.y: `func_name '(' args ')' Sconst` is a typed literal
+                // whose type name takes the arguments as modifiers.
+                let tl = self.get(*tl);
+                let mut typmods = Vec::new();
+                for arg in self.list1(self.get(tl.args).0).to_vec() {
+                    let e = match self.get(arg) {
+                        FlatFuncArg::Named(_) => {
+                            return Err(Diagnostic::new(
+                                "42601",
+                                "type modifier cannot have parameter name",
+                            )
+                            .at(self.span(arg).start)
+                            .into());
+                        }
+                        FlatFuncArg::Plain(e) => *e,
+                    };
+                    typmods.push(self.typmod_of_expr(e)?);
+                }
+                // An unquoted SQL type keyword, `char(20) 'x'`, is the
+                // keyword form's pg_catalog type.
+                let quoted = self.source[self.span(handle)].trim_start().starts_with('"');
+                let (schema, name, typmods) = match if name.schema.is_none() && !quoted {
+                    self.system_type_name(&name.name, false, typmods.clone(), location)?
+                } else {
+                    None
+                } {
+                    Some((system, typmods)) => (Some("pg_catalog".to_owned()), system, typmods),
+                    None => (name.schema, name.name, typmods),
+                };
+                let tn = TypeName {
+                    schema,
+                    name,
+                    typmods,
+                    array_dims: 0,
+                    location,
+                };
+                return self.string_const_cast(handle, tn, tl.value, location);
             }
         };
         self.call(
@@ -13333,7 +13886,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let clause = self.get(self.get(wg).order_by);
             for item in self.list1(clause.items) {
                 let item = self.get(*item);
-                within_exprs.push((item.expr, item.using));
+                let using = match item.order.map(|o| self.get(o)) {
+                    Some(FlatSortOrder::Using(u)) => Some(*u),
+                    _ => None,
+                };
+                within_exprs.push((item.expr, using));
             }
             for &(e, using) in &within_exprs {
                 arg_handles.push(e);
@@ -13652,8 +14209,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         entry.typmod = -1;
                     }
                     let ty = entry.ty;
-                    if let Some(using) = item.using {
-                        self.using_operator(using, ty, self.span(item.expr).start)?;
+                    if let Some(FlatSortOrder::Using(using)) = item.order.map(|o| self.get(o)) {
+                        self.using_operator(*using, ty, self.span(item.expr).start)?;
                         if first_order_type.is_none() {
                             first_order_type = Some(ty);
                         }
@@ -13878,25 +14435,25 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         ty: TypeRef,
         location: usize,
     ) -> Result<()> {
-        let op = match self.get(self.get(using).op) {
-            FlatUsingOp::Lt => "<".to_owned(),
-            FlatUsingOp::Gt => ">".to_owned(),
-            FlatUsingOp::TildeLtTilde => "~<~".to_owned(),
-            FlatUsingOp::TildeGtTilde => "~>~".to_owned(),
-            FlatUsingOp::TildeLeqTilde => "~<=~".to_owned(),
-            FlatUsingOp::TildeGeqTilde => "~>=~".to_owned(),
-            FlatUsingOp::Custom(t) => self.text(*t).trim().to_owned(),
+        // The operator as written, `!=` read as `<>` by the scanner.
+        let name = match self.get(self.get(using).op) {
+            FlatUsingOp::Plain(n) => {
+                let span = self.span(*n);
+                let written = self.source[span].trim();
+                ObjectName {
+                    schema: None,
+                    name: if written == "!=" { "<>" } else { written }.to_owned(),
+                }
+            }
+            FlatUsingOp::Decorated(d) => self.decorated_operator(*d)?.0,
         };
+        let op = name.name.clone();
         let operand = Typed {
             ty,
             typmod: -1,
             form: Form::Other,
             location,
             returns_set: false,
-        };
-        let name = ObjectName {
-            schema: None,
-            name: op.clone(),
         };
         let resolved = self
             .resolver
@@ -14072,8 +14629,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     self.record_coercions(item.expr, steps);
                     t.ty = text;
                 }
-                if let Some(using) = item.using {
-                    self.using_operator(using, t.ty, self.span(item.expr).start)?;
+                if let Some(FlatSortOrder::Using(using)) = item.order.map(|o| self.get(o)) {
+                    self.using_operator(*using, t.ty, self.span(item.expr).start)?;
                 } else if self.types().btree_ordering(t.ty).is_none() {
                     return Err(Diagnostic::new(
                         "42883",
