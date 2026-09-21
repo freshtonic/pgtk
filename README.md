@@ -31,24 +31,33 @@ this crate and compares the answers statement by statement.
   EXPLAIN, DECLARE and CREATE TABLE AS.
 - Assigns collations as `parse_collate.c` does and reports collation
   mismatches at the points where PostgreSQL reports them.
+- Answers EXECUTE, FETCH and SHOW of a custom parameter from the Session the
+  caller supplies, and reports what a Statement would add to that Session or
+  remove from it.
 
 What it leaves unanalysed is what PostgreSQL leaves unanalysed at Parse time:
-the query inside CREATE VIEW, CREATE RULE, PREPARE and COPY. EXECUTE and
-FETCH need session state and are not supported.
+the query inside CREATE VIEW, CREATE RULE, PREPARE and COPY.
 
 ## Use
 
 ```rust
-use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
+use pg_analyze::{AnalyzeError, Analyzer, Session, Settings, TargetVersion};
 
 let catalog = pg_catalog::fixture::pg17(); // or load one from a server
 let settings = Settings::new(&catalog, TargetVersion::V17, ["public"]);
 let analyzer = Analyzer::new(&catalog, settings);
+let mut session = Session::new(); // empty: no prepared statement, no cursor
 
-match analyzer.analyze_sql("SELECT relname, length(relname) FROM pg_class", &[]) {
+let sql = "SELECT relname, length(relname) FROM pg_class";
+match analyzer.analyze_sql(sql, &[], &session) {
     Ok(analysis) => {
         for column in &analysis.result.columns {
             println!("{} {}", column.name, catalog[column.ty].name);
+        }
+        // What the Statement would change in the session, for the caller
+        // to fold in before it analyses the next one.
+        if let Some(effect) = &analysis.session_effect {
+            session.apply(effect);
         }
     }
     Err(AnalyzeError::Diagnostic(d)) => println!("{} {}", d.sqlstate, d.message),
@@ -59,10 +68,19 @@ match analyzer.analyze_sql("SELECT relname, length(relname) FROM pg_class", &[])
 `analyze` takes a Statement already parsed by `pg-sql`; `analyze_sql` parses
 the text first. The result is an `Analysis`: Annotation Tables keyed by the
 Statement's own node handles (expression types, coercions, resolved columns,
-operators and functions, star expansions, range tables and target lists)
-and the Result Descriptor. A rejection is a `Diagnostic` when PostgreSQL
-would reject the Statement, or an `Unsupported` when this crate cannot
-analyse it yet; an Unsupported is never a wrong answer.
+operators and functions, star expansions, range tables and target lists),
+the Result Descriptor and the Session Effect. A rejection is a `Diagnostic`
+when PostgreSQL would reject the Statement, or an `Unsupported` when this
+crate cannot analyse it yet; an Unsupported is never a wrong answer.
+
+The `Session` is the state a Describe reads: the prepared statements, the
+open cursors and the custom configuration placeholders a SET made. EXECUTE
+answers with the prepared statement's Result Descriptor, analysing the
+prepared query again as PostgreSQL's plan cache does; FETCH answers with the
+cursor's descriptor, and SHOW of a placeholder with its name. A name the Session does
+not hold is the Diagnostic PostgreSQL raises for it. Analysis never changes
+the Session: PREPARE, DECLARE, SET, DEALLOCATE, CLOSE and the end of a
+transaction report a Session Effect, and the caller applies it.
 
 The crate depends on the sibling checkouts `../pg-sql`, `../pg-catalog` and
 `../recursa`.
@@ -85,11 +103,12 @@ server.
 ## Documents
 
 - `CONTEXT.md`: the language of the crate. Analysis, Statement, Catalog,
-  Search Path, Settings, Target Version, Annotation Table, Result Descriptor,
-  Diagnostic, Unsupported, Rewrite, Oracle.
+  Search Path, Settings, Session, Session Effect, Target Version, Annotation
+  Table, Result Descriptor, Diagnostic, Unsupported, Rewrite, Oracle.
 - `docs/adr/`: the decisions. Annotations over the flat AST rather than a
   resolved tree; literal text is never validated by the crate; one entry
-  point per PostgreSQL version.
+  point per PostgreSQL version; the Session is an input and Analysis reports
+  Session Effects.
 - `docs/upstream-work.md`: what the sibling crates provide and what is still
   open there.
 

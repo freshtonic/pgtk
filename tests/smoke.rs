@@ -1,6 +1,6 @@
 //! Smoke checks against the bundled PostgreSQL 17 Catalog: no server needed.
 
-use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
+use pg_analyze::{AnalyzeError, Analyzer, Session, Settings, TargetVersion};
 use pg_catalog::Catalog;
 
 fn catalog() -> Catalog {
@@ -10,7 +10,7 @@ fn catalog() -> Catalog {
 fn describe(catalog: &Catalog, sql: &str) -> String {
     let settings = Settings::new(catalog, TargetVersion::V17, ["public"]);
     let analyzer = Analyzer::new(catalog, settings);
-    match analyzer.analyze_sql(sql, &[]) {
+    match analyzer.analyze_sql(sql, &[], &Session::new()) {
         Ok(analysis) => analysis
             .result
             .columns

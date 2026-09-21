@@ -11,15 +11,22 @@
 //!    last load may have changed it, and read the search path.
 //! 3. Ask the Oracle (Parse and Describe) and the Subject the same question.
 //! 4. Compare, then run the statement.
+//! 5. Fold the Session Effect of a statement the server accepted into the
+//!    Session the next statement is analysed against.
 
 use std::fmt::Write as _;
 
+use pg_analyze::{Cursor, PreparedStatement, ResultDescriptor, SessionEffect, TypeRef};
 use pg_catalog::Catalog;
 use pg_sql::ast::Statement;
 
 use super::oracle::{Oracle, OracleOutcome, Server};
 use super::plan::PlannedFile;
 use super::subject::{Subject, SubjectOutcome};
+
+/// The Session the harness keeps for the file it replays, so that EXECUTE,
+/// FETCH and SHOW of a placeholder can be compared.
+type AnalysisSession = pg_analyze::Session;
 
 /// Why a statement was not compared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +110,13 @@ pub struct Shape {
     pub cluster_ddl: bool,
     /// It is, or embeds, a query that Analysis would resolve.
     pub has_query: bool,
+    /// It opens a transaction block.
+    pub begins_transaction: bool,
+    /// It ends a transaction by rolling it back.
+    pub rolls_back: bool,
+    /// It loads a shared library, which deletes the placeholders in the
+    /// extension's namespace.
+    pub loads_library: bool,
 }
 
 /// Render one frozen item as psql would send it to the server: psql's own
@@ -150,6 +164,12 @@ pub fn parse(sql: &str) -> Option<Shape> {
         runnable: runnable(statement),
         cluster_ddl: cluster_ddl(statement),
         has_query: has_query(statement),
+        begins_transaction: matches!(
+            statement,
+            Statement::Begin(_) | Statement::StartTransaction(_)
+        ),
+        rolls_back: matches!(statement, Statement::Rollback(_) | Statement::Abort(_)),
+        loads_library: matches!(statement, Statement::Load(_)),
     })
 }
 
@@ -259,6 +279,11 @@ fn has_query(statement: &Statement<'_>) -> bool {
             | Statement::CreateTable(_)
             | Statement::CreateRule(_)
             | Statement::Call(_)
+            // These read the Session, and the Session holds Catalog handles,
+            // so they need the same Catalog the Session was built against.
+            | Statement::Execute(_)
+            | Statement::Fetch(_)
+            | Statement::Move(_)
     )
 }
 
@@ -286,6 +311,21 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
             } else {
                 Verdict::Disagree
             }
+        }
+        // A prepared statement or a cursor the Session does not hold.
+        // Analysis reports the Diagnostic PostgreSQL raises when the
+        // Statement runs, because that is what the Statement means for a
+        // consumer, while the Describe itself answers with no columns:
+        // `UtilityTupleDescriptor` says that raising the error is "not our
+        // business". The Session the harness keeps can also miss one that
+        // the Describe does answer, because it holds only what the
+        // statements it replays made: a cursor a function opened is
+        // invisible to it, and so is one whose columns come from a table
+        // that was dropped, since a Catalog Handle names a live relation.
+        (OracleOutcome::Accepted { .. }, SubjectOutcome::Diagnostic { sqlstate, .. })
+            if matches!(sqlstate.as_str(), "26000" | "34000") =>
+        {
+            Verdict::KnownDivergence
         }
         // Rejections raised outside parse analysis while the Subject
         // analysed: data errors from input functions (class 22, 54 and 55,
@@ -346,6 +386,16 @@ struct Session {
     catalog_loads: usize,
     /// The catalog fingerprint at the last load.
     fingerprint: Option<String>,
+    /// What the server's session holds: its prepared statements, its open
+    /// cursors and its placeholders. The harness keeps it by folding in the
+    /// Session Effect of every statement that ran.
+    session: AnalysisSession,
+    /// A transaction block is open.
+    in_transaction: bool,
+    /// The held cursors a DECLARE opened inside the transaction block that
+    /// is open now. A ROLLBACK closes them as well as the cursors that are
+    /// not held, since it rolls back the transaction that made them.
+    held_here: Vec<String>,
 }
 
 impl Session {
@@ -359,6 +409,9 @@ impl Session {
             catalog_dirty: true,
             catalog_loads: 0,
             fingerprint: None,
+            session: AnalysisSession::new(),
+            in_transaction: false,
+            held_here: Vec::new(),
         }
     }
 
@@ -369,6 +422,9 @@ impl Session {
     fn ensure_catalog(&mut self) -> Result<(), pg_catalog::LoadError> {
         if self.catalog_dirty || self.catalog.is_none() {
             let loaded = self.oracle.catalog()?;
+            if let Some(old) = &self.catalog {
+                self.session = remap_session(&self.session, old, &loaded.catalog);
+            }
             self.catalog = Some(loaded.catalog);
             self.catalog_dirty = false;
             self.catalog_loads += 1;
@@ -377,11 +433,16 @@ impl Session {
         Ok(())
     }
 
-    fn run(&mut self, shape: Shape, sql: &str) {
-        if shape.runnable
-            && let Err(error) = self.oracle.execute(sql)
-        {
-            self.recover(&error);
+    /// Run the statement, and say whether the server accepted it. A
+    /// statement the harness does not run, or one the server rejected,
+    /// changes nothing in the session.
+    fn run(&mut self, shape: Shape, sql: &str) -> bool {
+        let mut ran = false;
+        if shape.runnable {
+            match self.oracle.execute(sql) {
+                Ok(accepted) => ran = accepted,
+                Err(error) => self.recover(&error),
+            }
         }
         if !shape.keeps_catalog {
             self.catalog_dirty = true;
@@ -397,6 +458,55 @@ impl Session {
                 Err(error) => self.recover(&error),
             }
         }
+        ran
+    }
+
+    /// Fold in what the statement did to the session, once it has run.
+    /// `rolled_back` says the statement ended the transaction by rolling it
+    /// back, which the Session Effect itself does not distinguish.
+    fn apply(&mut self, effect: &SessionEffect, rolled_back: bool) {
+        match effect {
+            SessionEffect::Declare(cursor) => {
+                if self.in_transaction && cursor.hold {
+                    self.held_here.push(cursor.name.clone());
+                }
+                self.session.apply(effect);
+            }
+            SessionEffect::Close(name) => {
+                self.held_here.retain(|held| held != name);
+                self.session.apply(effect);
+            }
+            SessionEffect::CloseAll => {
+                self.held_here.clear();
+                self.session.apply(effect);
+            }
+            SessionEffect::TransactionEnd => self.end_transaction(rolled_back),
+            _ => self.session.apply(effect),
+        }
+    }
+
+    /// LOAD of an extension deletes every placeholder in the extension's
+    /// namespace, so the harness forgets the placeholders it holds.
+    fn forget_placeholders(&mut self) {
+        let mut session = AnalysisSession::new();
+        for prepared in self.session.prepared_statements() {
+            session.add_prepared(prepared.clone());
+        }
+        for cursor in self.session.cursors() {
+            session.add_cursor(cursor.clone());
+        }
+        self.session = session;
+    }
+
+    /// End the transaction the way the server ended it.
+    fn end_transaction(&mut self, rolled_back: bool) {
+        for name in std::mem::take(&mut self.held_here) {
+            if rolled_back {
+                self.session.apply(&SessionEffect::Close(name));
+            }
+        }
+        self.session.end_transaction();
+        self.in_transaction = false;
     }
 
     /// Something went wrong talking to the Oracle. When the connection is
@@ -408,6 +518,10 @@ impl Session {
             self.oracle
                 .reconnect()
                 .unwrap_or_else(|error| panic!("cannot reconnect to the oracle: {error}"));
+            // A new session holds no prepared statement and no cursor.
+            self.session = AnalysisSession::new();
+            self.in_transaction = false;
+            self.held_here.clear();
         }
         self.catalog_dirty = true;
     }
@@ -490,6 +604,12 @@ fn replay_one(
     if aborted {
         // Still run it: it may be the ROLLBACK that ends the failed transaction.
         session.run(shape, sql);
+        // A transaction that ends while it is failed rolls everything back.
+        match session.oracle.in_failed_transaction() {
+            Ok(false) => session.end_transaction(true),
+            Ok(true) => {}
+            Err(error) => session.recover(&error),
+        }
         return Verdict::Skipped(SkipReason::AbortedTransaction);
     }
 
@@ -532,7 +652,8 @@ fn replay_one(
         }
     };
     let catalog = session.catalog.as_ref().expect("catalog loaded above");
-    let subject_outcome = subject.analyze(catalog, &search_path, sql);
+    let answer = subject.analyze(catalog, &search_path, sql, &session.session);
+    let subject_outcome = answer.outcome;
     let verdict = compare(&oracle_outcome, &subject_outcome);
     if let SubjectOutcome::Unsupported(reason) = &subject_outcome {
         *unsupported.entry(reason.clone()).or_default() += 1;
@@ -545,6 +666,104 @@ fn replay_one(
         );
     }
 
-    session.run(shape, sql);
+    // The statement changes the session only when the server accepted it.
+    if session.run(shape, sql) {
+        if shape.begins_transaction {
+            session.in_transaction = true;
+        }
+        if shape.loads_library {
+            session.forget_placeholders();
+        }
+        if let Some(effect) = &answer.effect {
+            session.apply(effect, shape.rolls_back);
+        }
+    }
     verdict
+}
+
+/// Move a Session from one Catalog to another.
+///
+/// A Catalog handle is an index into the Catalog that issued it, so the
+/// Session the harness keeps must be rewritten whenever it reloads the
+/// Catalog. An entry that names a type or a relation the new Catalog does
+/// not have is dropped: whatever dropped that entity made the prepared
+/// statement or the cursor useless anyway.
+fn remap_session(session: &AnalysisSession, old: &Catalog, new: &Catalog) -> AnalysisSession {
+    let mut out = AnalysisSession::new();
+    for prepared in session.prepared_statements() {
+        let types = prepared
+            .param_types
+            .iter()
+            .map(|&ty| remap_type(ty, old, new))
+            .collect::<Option<Vec<_>>>();
+        if let (Some(param_types), Some(result)) =
+            (types, remap_descriptor(&prepared.result, old, new, true))
+        {
+            out.add_prepared(PreparedStatement {
+                name: prepared.name.clone(),
+                param_types,
+                result,
+                source: prepared.source.clone(),
+            });
+        }
+    }
+    for cursor in session.cursors() {
+        if let Some(result) = remap_descriptor(&cursor.result, old, new, false) {
+            out.add_cursor(Cursor {
+                name: cursor.name.clone(),
+                result,
+                scroll: cursor.scroll,
+                hold: cursor.hold,
+            });
+        }
+    }
+    for placeholder in session.placeholders() {
+        out.add_placeholder(placeholder.clone());
+    }
+    out
+}
+
+/// One Result Descriptor in the terms of another Catalog, or nothing when
+/// that Catalog is missing one of the entities it names.
+///
+/// `forget_dropped_origin` keeps a column whose source table was dropped,
+/// without the source. A prepared statement is kept that way, because a
+/// Describe of an EXECUTE analyses its query again and the descriptor the
+/// PREPARE computed is only compared, column name and type, with the new
+/// one. A cursor is dropped instead: its descriptor is the answer, and a
+/// Catalog Handle cannot name a table that is gone.
+fn remap_descriptor(
+    descriptor: &ResultDescriptor,
+    old: &Catalog,
+    new: &Catalog,
+    forget_dropped_origin: bool,
+) -> Option<ResultDescriptor> {
+    let mut columns = Vec::with_capacity(descriptor.columns.len());
+    for column in &descriptor.columns {
+        let origin = match column.origin {
+            None => None,
+            Some((relation, attnum)) => match new.relation_by_oid(old[relation].oid) {
+                Some(relation) => Some((relation, attnum)),
+                None if forget_dropped_origin => None,
+                None => return None,
+            },
+        };
+        columns.push(pg_analyze::ResultColumn {
+            name: column.name.clone(),
+            ty: remap_type(column.ty, old, new)?,
+            typmod: column.typmod,
+            origin,
+        });
+    }
+    let params = descriptor
+        .params
+        .iter()
+        .map(|&ty| remap_type(ty, old, new))
+        .collect::<Option<Vec<_>>>()?;
+    Some(ResultDescriptor { columns, params })
+}
+
+/// One type handle in the terms of another Catalog.
+fn remap_type(ty: TypeRef, old: &Catalog, new: &Catalog) -> Option<TypeRef> {
+    new.type_by_oid(old[ty].oid)
 }

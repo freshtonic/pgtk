@@ -197,12 +197,14 @@ impl Oracle {
     }
 
     /// Run one statement through the simple protocol, as psql would, to move
-    /// the server's state forward. A server-side error is not a harness
-    /// failure; only a broken connection is.
-    pub fn execute(&mut self, sql: &str) -> Result<(), postgres::Error> {
+    /// the server's state forward. `false` says the server rejected it,
+    /// which is not a harness failure; only a broken connection is. The
+    /// harness reads the answer to know whether the statement changed the
+    /// session, since a statement that fails changes nothing.
+    pub fn execute(&mut self, sql: &str) -> Result<bool, postgres::Error> {
         match self.client.simple_query(sql) {
-            Ok(_) => Ok(()),
-            Err(error) if error.as_db_error().is_some() => Ok(()),
+            Ok(_) => Ok(true),
+            Err(error) if error.as_db_error().is_some() => Ok(false),
             Err(error) => Err(error),
         }
     }

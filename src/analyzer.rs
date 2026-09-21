@@ -52,6 +52,7 @@ use crate::func::{Decoration, FuncResolver, ObjectName, Projection, ResolvedFunc
 use crate::relation::{
     CteColumn, CteEntry, JoinType, NamespaceItem, Relations, RteKind, Scope, Var,
 };
+use crate::session::{Cursor, Placeholder, PreparedStatement, Session, SessionEffect};
 use crate::settings::Settings;
 use crate::settings::TargetVersion;
 use crate::typename::{TypeName, TypeNames, TypmodArg};
@@ -60,7 +61,8 @@ use crate::types::{TypeRef, Types};
 use crate::value::{Coercion, CoercionContext, Form, Typed};
 use pg_catalog::RelationKind;
 use pg_catalog::{ArgMode, FunctionKind, PseudoType, RuleEvent, TypeCategory, TypeKind};
-use pg_sql::ast::cursor::declare::{FlatCursorOption, FlatDeclareStmt};
+use pg_sql::ast::cursor::declare::{FlatCursorHold, FlatCursorOption, FlatDeclareStmt};
+use pg_sql::ast::cursor::fetch::{FlatCloseStmt, FlatCloseTarget, FlatFetchStmt, FlatMoveStmt};
 use pg_sql::ast::ddl::index::FlatIndexTarget;
 use pg_sql::ast::ddl::materialized_view::FlatCreateMaterializedViewStmt;
 use pg_sql::ast::ddl::procedure::FlatCallStmt;
@@ -101,6 +103,9 @@ use pg_sql::ast::dml::update::{
     FlatReturningClause, FlatSetAssignment, FlatUpdateStmt, FlatUpdateTableAlias,
 };
 use pg_sql::ast::dml::values::{FlatQueryBody, FlatSubquery, FlatTableStmt};
+use pg_sql::ast::session::set_reset::{
+    FlatGenericSetRest, FlatVariableSetRest, FlatVariableSetStmt,
+};
 use pg_sql::ast::shared::expr::{
     FlatBetweenModifier, FlatIndirectionEl, FlatXmlElement, FlatXmlExists, FlatXmlExistsDocument,
     FlatXmlForest, FlatXmlNamedArg, FlatXmlParse, FlatXmlPi, FlatXmlRoot, FlatXmlRootVersion,
@@ -128,6 +133,10 @@ use pg_sql::ast::shared::with_clause::{
 };
 use pg_sql::ast::shared::with_clause::{FlatCycleClause, FlatSearchDirection};
 use pg_sql::ast::tcl::prepared::FlatPreparableStmt;
+use pg_sql::ast::tcl::prepared::{
+    FlatDeallocateStmt, FlatDeallocateTarget, FlatExecuteStmt, FlatPrepareStmt, FlatPrepareStmtBody,
+};
+use pg_sql::ast::tcl::transaction::{FlatRollbackAfterWork, FlatRollbackBody, FlatRollbackStmt};
 use pg_sql::ast::utility::explain::{
     FlatExplainInput, FlatExplainOptValue, FlatExplainStmt, FlatExplainableStmt,
 };
@@ -180,14 +189,17 @@ impl<'c> Analyzer<'c> {
     /// Analyse one parsed Statement. `source` is the text it was parsed
     /// from, for cursor positions. `declared_params` gives a Declared
     /// Parameter Type per positional parameter, in `$n` order; a missing or
-    /// `None` entry is inferred.
+    /// `None` entry is inferred. `session` is the Session snapshot that
+    /// EXECUTE, FETCH and SHOW of a placeholder read; use
+    /// [`Session::new`] when there is none.
     pub fn analyze(
         &self,
         source: &str,
         statement: &Statement<'_>,
         declared_params: &[Option<TypeRef>],
+        session: &Session,
     ) -> Result<FlatAnalysis> {
-        let mut walker = self.walker(source, statement);
+        let mut walker = self.walker(source, statement, session);
         *walker.resolver.coercer.params.borrow_mut() = declared_params.to_vec();
         match walker.statement() {
             Ok(()) => Ok(walker.analysis),
@@ -204,7 +216,7 @@ impl<'c> Analyzer<'c> {
     fn view_info(&self, sql: &str) -> Result<ViewInfo> {
         let statement = parse_definition(sql)
             .ok_or_else(|| unsupported("view definition does not parse", None))?;
-        let mut walker = self.walker(sql, &statement);
+        let mut walker = self.walker(sql, &statement, &crate::session::EMPTY_SESSION);
         walker.statement()?;
         walker.view_shape()
     }
@@ -214,6 +226,7 @@ impl<'c> Analyzer<'c> {
         &'a self,
         source: &'a str,
         statement: &'a Statement<'input>,
+        session: &'a Session,
     ) -> Walker<'a, 'input, 'a> {
         let coercer = Coercer::new(self.catalog);
         let resolver = FuncResolver {
@@ -233,6 +246,7 @@ impl<'c> Analyzer<'c> {
                 search_path: &self.settings.search_path,
             },
             settings: &self.settings,
+            session,
             analysis: FlatAnalysis::default(),
             expr_kind: ExprKind::SelectTarget,
             in_agg_args: 0,
@@ -287,7 +301,36 @@ impl<'c> Analyzer<'c> {
         &self,
         sql: &str,
         declared_params: &[Option<TypeRef>],
+        session: &Session,
     ) -> Result<FlatAnalysis> {
+        self.parsed(sql, |statement| {
+            self.analyze(sql, statement, declared_params, session)
+        })
+    }
+
+    /// The Result Descriptor of the query of a PREPARE, from the text of
+    /// the PREPARE statement.
+    ///
+    /// PostgreSQL's plan cache keeps the query's raw parse tree, not its
+    /// analysed form, and analyses it again whenever the cache
+    /// revalidates. A Describe of an EXECUTE revalidates, so it answers
+    /// from the query as the Catalog is now.
+    pub(crate) fn prepared_query(&self, source: &str) -> Result<ResultDescriptor> {
+        self.parsed(source, |statement| {
+            let mut walker = self.walker(source, statement, &crate::session::EMPTY_SESSION);
+            match walker.prepared_query() {
+                Ok(()) => Ok(walker.analysis.result),
+                Err(AnalyzeError::Diagnostic(mut d)) => {
+                    d.resolve(source);
+                    Err(AnalyzeError::Diagnostic(d))
+                }
+                Err(other) => Err(other),
+            }
+        })
+    }
+
+    /// Lex and parse one statement's text, and hand the parse to `f`.
+    fn parsed<T>(&self, sql: &str, f: impl FnOnce(&Statement<'_>) -> Result<T>) -> Result<T> {
         let lexed = pg_sql::lex(sql);
         if lexed.errors().next().is_some() {
             return Err(unsupported("statement does not lex", None));
@@ -320,7 +363,7 @@ impl<'c> Analyzer<'c> {
         if !input.is_eof() {
             return Err(unsupported("statement does not parse", None));
         }
-        self.analyze(sql, &statement, declared_params)
+        f(&statement)
     }
 }
 
@@ -332,6 +375,8 @@ struct Walker<'a, 'input, 'c> {
     relations: Relations<'c>,
     typenames: TypeNames<'c>,
     settings: &'a Settings,
+    /// The Session snapshot: what EXECUTE, FETCH and SHOW read.
+    session: &'a Session,
     analysis: FlatAnalysis,
     /// `p_expr_kind`: which clause is being transformed.
     expr_kind: ExprKind,
@@ -1269,10 +1314,42 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 FlatCreateTableBody::ColumnsAsQuery(c) => self.create_table_as(self.get(*c).source),
                 _ => self.utility(),
             },
-            // Describe answers these from session state.
-            FlatStatement::Execute(_) => Err(unsupported("EXECUTE", None)),
-            FlatStatement::Fetch(_) => Err(unsupported("FETCH", None)),
+            // Describe answers these from the Session.
+            FlatStatement::Execute(e) => self.execute_statement(*e),
+            FlatStatement::Fetch(f) => self.fetch_statement(*f),
+            FlatStatement::Move(m) => self.move_statement(*m),
             FlatStatement::Show(s) => self.show_statement(*s),
+            // Utility Statements that change the Session. Each answers with
+            // an empty Result Descriptor and reports its Session Effect.
+            FlatStatement::Prepare(p) => {
+                self.utility()?;
+                self.prepare_effect(*p);
+                Ok(())
+            }
+            FlatStatement::Deallocate(d) => {
+                self.utility()?;
+                self.deallocate_effect(*d)
+            }
+            FlatStatement::Close(c) => {
+                self.utility()?;
+                self.close_effect(*c)
+            }
+            FlatStatement::Set(v) => {
+                self.utility()?;
+                self.set_effect(*v)
+            }
+            FlatStatement::Commit(_) | FlatStatement::End(_) | FlatStatement::Abort(_) => {
+                self.utility()?;
+                self.analysis.session_effect = Some(SessionEffect::TransactionEnd);
+                Ok(())
+            }
+            FlatStatement::Rollback(r) => {
+                self.utility()?;
+                if self.rollback_ends_transaction(*r) {
+                    self.analysis.session_effect = Some(SessionEffect::TransactionEnd);
+                }
+                Ok(())
+            }
             // Utility Statements with a query inside them, which parse
             // analysis leaves for execution: CREATE VIEW, CREATE RULE,
             // PREPARE and COPY (query) among them.
@@ -2101,6 +2178,254 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         Ok(target_list)
     }
 
+    /// The name a SHOW or a SET writes, folded and joined with dots.
+    fn parameter_name(&self, q: Handle<FlatQualifiedName>) -> Result<String> {
+        let q = self.get(q);
+        let (first, _) = self.col_id(q.first)?;
+        let mut parts = vec![first];
+        for part in self.list(q.rest) {
+            let part = self.get(*part);
+            parts.push(self.col_label(part.name)?);
+        }
+        Ok(parts.join("."))
+    }
+
+    /// An identifier token, folded.
+    fn ident(&self, handle: Handle<pg_sql::tokens::literal::FlatIdent>) -> Result<String> {
+        let pg_sql::tokens::literal::FlatIdent::Text(t) = self.get(handle);
+        let span = self.text_span(*t);
+        self.fold(self.text(*t), span.start)
+    }
+
+    /// `UtilityTupleDescriptor` for an EXECUTE: the Result Descriptor of
+    /// the prepared statement the Session holds. The argument expressions
+    /// are not analysed and their count is not checked, because PostgreSQL
+    /// does both only when the Statement runs.
+    fn execute_statement(&mut self, e: Handle<FlatExecuteStmt>) -> Result<()> {
+        let stmt = self.get(e);
+        let (name, _) = self.alias_name(stmt.name)?;
+        let session = self.session;
+        let Some(prepared) = session.prepared(&name) else {
+            return Err(Diagnostic::new(
+                "26000",
+                format!("prepared statement \"{name}\" does not exist"),
+            )
+            .into());
+        };
+        let columns = self.revalidate(prepared)?;
+        self.analysis.result = ResultDescriptor {
+            columns,
+            params: self.finish_params()?,
+        };
+        Ok(())
+    }
+
+    /// `RevalidateCachedQuery`: the prepared query is analysed again
+    /// against the Catalog as it is now, so an EXECUTE answers with the
+    /// Diagnostic the query raises now, and with the tables the columns
+    /// come from now. The plan cache refuses a prepared statement whose
+    /// result columns changed, because a client is not ready for that.
+    ///
+    /// A prepared statement the caller built without the text of its
+    /// PREPARE answers from the Result Descriptor it holds.
+    fn revalidate(&self, prepared: &PreparedStatement) -> Result<Vec<ResultColumn>> {
+        if prepared.source.is_empty() {
+            return Ok(prepared.result.columns.clone());
+        }
+        let analyzer = Analyzer::new(self.catalog(), self.settings.clone());
+        let result = match analyzer.prepared_query(&prepared.source) {
+            Ok(result) => result,
+            // The Diagnostic is about the text of the PREPARE, so it keeps
+            // the position it has there and loses the spans.
+            Err(AnalyzeError::Diagnostic(mut d)) => {
+                d.location = None;
+                d.span = None;
+                d.labels.clear();
+                return Err(AnalyzeError::Diagnostic(d));
+            }
+            Err(other) => return Err(other),
+        };
+        let same = result.columns.len() == prepared.result.columns.len()
+            && result
+                .columns
+                .iter()
+                .zip(&prepared.result.columns)
+                .all(|(a, b)| a.name == b.name && a.ty == b.ty && a.typmod == b.typmod);
+        if !same {
+            return Err(Diagnostic::new("0A000", "cached plan must not change result type").into());
+        }
+        Ok(result.columns)
+    }
+
+    /// `UtilityTupleDescriptor` for a FETCH: the Result Descriptor of the
+    /// cursor the Session holds. The direction is not checked, because
+    /// PostgreSQL checks it only when the Statement runs.
+    fn fetch_statement(&mut self, f: Handle<FlatFetchStmt>) -> Result<()> {
+        let cursor = self.get(f).cursor;
+        let columns = self.cursor_columns(cursor)?;
+        self.analysis.result = ResultDescriptor {
+            columns,
+            params: self.finish_params()?,
+        };
+        Ok(())
+    }
+
+    /// A MOVE reads the same cursor as a FETCH and answers with no columns.
+    fn move_statement(&mut self, m: Handle<FlatMoveStmt>) -> Result<()> {
+        let cursor = self.get(m).cursor;
+        self.cursor_columns(cursor)?;
+        self.utility()
+    }
+
+    /// The result columns of the cursor a FETCH or a MOVE names.
+    fn cursor_columns(&mut self, cursor: Handle<FlatColId>) -> Result<Vec<ResultColumn>> {
+        let (name, _) = self.col_id(cursor)?;
+        let session = self.session;
+        match session.cursor(&name) {
+            Some(cursor) => Ok(cursor.result.columns.clone()),
+            None => {
+                Err(Diagnostic::new("34000", format!("cursor \"{name}\" does not exist")).into())
+            }
+        }
+    }
+
+    /// The query of a PREPARE, analysed with the parameter types the
+    /// PREPARE declares. `transformStmt` does this when the Statement
+    /// runs, and the plan cache does it again whenever it revalidates.
+    fn prepared_query(&mut self) -> Result<()> {
+        let FlatStatement::Prepare(p) = self.get(self.ast.root()) else {
+            return Err(unsupported("not a PREPARE statement", None));
+        };
+        let FlatPrepareStmtBody::Standard(body) = self.get(self.get(*p).body) else {
+            return Err(unsupported("PREPARE TRANSACTION has no query", None));
+        };
+        let body = self.get(*body);
+        let mut declared: Vec<Option<TypeRef>> = Vec::new();
+        if let Some(types) = body.types {
+            for cast_type in self.list1(self.get(self.get(types).types).types) {
+                let type_name = self.type_name(*cast_type)?;
+                let (ty, _) = self.typenames.resolve(&type_name)?;
+                declared.push(Some(ty));
+            }
+        }
+        *self.coercer().params.borrow_mut() = declared;
+        match self.get(body.body) {
+            FlatPreparableStmt::Query(b) => {
+                let target_list = self.query_body(*b, None, None, Vec::new())?;
+                self.set_result(&target_list)
+            }
+            FlatPreparableStmt::With(w) => self.with_statement(*w),
+            FlatPreparableStmt::Insert(i) => {
+                let returning = self.insert(*i)?;
+                self.set_result(&returning)
+            }
+            FlatPreparableStmt::Update(u) => {
+                let returning = self.update(*u)?;
+                self.set_result(&returning)
+            }
+            FlatPreparableStmt::Delete(d) => {
+                let returning = self.delete(*d)?;
+                self.set_result(&returning)
+            }
+            FlatPreparableStmt::Merge(m) => {
+                let returning = self.merge(*m)?;
+                self.set_result(&returning)
+            }
+        }
+    }
+
+    /// The Session Effect of a PREPARE: the prepared statement it adds.
+    ///
+    /// PREPARE is a Utility Statement, so its own Analysis leaves the query
+    /// unanalysed. The Effect needs the query's Result Descriptor, so the
+    /// query is analysed here on the side, with the declared parameter
+    /// types. A side analysis that fails reports no Effect at all, because
+    /// PostgreSQL would fail when the Statement runs and the prepared
+    /// statement would not exist.
+    fn prepare_effect(&mut self, handle: Handle<FlatPrepareStmt>) {
+        let FlatPrepareStmtBody::Standard(body) = self.get(self.get(handle).body) else {
+            return;
+        };
+        let Ok((name, _)) = self.alias_name(self.get(*body).name) else {
+            return;
+        };
+        // The Session keeps the text of the PREPARE, because a Describe of
+        // an EXECUTE analyses the query again.
+        let span = self.span(self.ast.root());
+        let source = match self.source.get(span) {
+            Some(text) if !text.is_empty() => text,
+            _ => self.source,
+        };
+        let analyzer = Analyzer::new(self.catalog(), self.settings.clone());
+        let Ok(result) = analyzer.prepared_query(source) else {
+            return;
+        };
+        self.analysis.session_effect = Some(SessionEffect::Prepare(PreparedStatement {
+            name,
+            param_types: result.params.clone(),
+            result,
+            source: source.to_owned(),
+        }));
+    }
+
+    /// The Session Effect of a DEALLOCATE.
+    fn deallocate_effect(&mut self, handle: Handle<FlatDeallocateStmt>) -> Result<()> {
+        let effect = match self.get(self.get(handle).target) {
+            FlatDeallocateTarget::All => SessionEffect::DeallocateAll,
+            FlatDeallocateTarget::Name(n) => SessionEffect::Deallocate(self.ident(*n)?),
+        };
+        self.analysis.session_effect = Some(effect);
+        Ok(())
+    }
+
+    /// The Session Effect of a CLOSE.
+    fn close_effect(&mut self, handle: Handle<FlatCloseStmt>) -> Result<()> {
+        let effect = match self.get(self.get(handle).target) {
+            FlatCloseTarget::All => SessionEffect::CloseAll,
+            FlatCloseTarget::Cursor(c) => SessionEffect::Close(self.ident(*c)?),
+        };
+        self.analysis.session_effect = Some(effect);
+        Ok(())
+    }
+
+    /// The Session Effect of a SET: a placeholder, when the parameter name
+    /// has a dot. SET LOCAL counts too, because SHOW answers from the
+    /// placeholder it makes until the transaction ends.
+    fn set_effect(&mut self, handle: Handle<FlatVariableSetStmt>) -> Result<()> {
+        let rest = match self.get(handle) {
+            FlatVariableSetStmt::Unscoped(x) => self.get(*x).rest,
+            FlatVariableSetStmt::Local(x) => self.get(*x).rest,
+            FlatVariableSetStmt::Session(x) => self.get(*x).rest,
+        };
+        let FlatVariableSetRest::Generic(g) = self.get(rest) else {
+            return Ok(());
+        };
+        let g: &FlatGenericSetRest = self.get(*g);
+        let name = self.parameter_name(g.param)?;
+        if !name.contains('.') {
+            return Ok(());
+        }
+        let values = self.list1(g.values);
+        let from = self.span(values[0]).start;
+        let to = self.span(values[values.len() - 1]).end;
+        let value = self.source.get(from..to).unwrap_or_default().to_owned();
+        self.analysis.session_effect = Some(SessionEffect::Set(Placeholder { name, value }));
+        Ok(())
+    }
+
+    /// Does this ROLLBACK end the transaction? ROLLBACK TO SAVEPOINT does
+    /// not, so it closes no cursor.
+    fn rollback_ends_transaction(&self, handle: Handle<FlatRollbackStmt>) -> bool {
+        match self.get(handle).body.map(|b| self.get(b)) {
+            None | Some(FlatRollbackBody::Prepared(_)) | Some(FlatRollbackBody::Chain(_)) => true,
+            Some(FlatRollbackBody::To(_)) => false,
+            Some(FlatRollbackBody::WithWork(w)) => !matches!(
+                self.get(*w).after.map(|a| self.get(a)),
+                Some(FlatRollbackAfterWork::To(_))
+            ),
+        }
+    }
+
     /// `GetPGVariableResultDesc`: SHOW ALL is three text columns, SHOW
     /// name one text column named with the parameter's canonical
     /// spelling.
@@ -2128,20 +2453,20 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatShowTarget::TransactionIsolationLevel => "transaction_isolation".to_owned(),
             FlatShowTarget::SessionAuthorization => "session_authorization".to_owned(),
             FlatShowTarget::TimeZone => "timezone".to_owned(),
-            FlatShowTarget::Param(q) => {
-                let q = self.get(*q);
-                let (first, _) = self.col_id(q.first)?;
-                let mut parts = vec![first];
-                for part in self.list(q.rest) {
-                    let part = self.get(*part);
-                    parts.push(self.col_label(part.name)?);
-                }
-                parts.join(".")
-            }
+            FlatShowTarget::Param(q) => self.parameter_name(*q)?,
         };
-        // A placeholder (`custom.x`) exists only when the session set it.
+        // A placeholder (`custom.x`) exists only when the Session set it.
         if name.contains('.') {
-            return Err(unsupported("custom configuration parameter", None));
+            let session = self.session;
+            let Some(placeholder) = session.placeholder(&name) else {
+                return Err(Diagnostic::new(
+                    "42704",
+                    format!("unrecognized configuration parameter \"{name}\""),
+                )
+                .into());
+            };
+            let columns = vec![column(placeholder.name.clone())];
+            return self.set_result(&columns);
         }
         // GUC_NO_SHOW_ALL parameters are absent from pg_settings, so
         // from the Catalog, but SHOW answers them.
@@ -3192,8 +3517,20 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         if let Some(with) = sub.with {
             self.with_clause(with)?;
         }
-        self.query_body(sub.body, None, None, Vec::new())?;
-        self.set_result(&[])
+        let target_list = self.query_body(sub.body, None, None, Vec::new())?;
+        let (name, _) = self.alias_name(stmt.name)?;
+        let result = ResultDescriptor {
+            columns: result_columns(&target_list),
+            params: self.finish_params()?,
+        };
+        self.set_result(&[])?;
+        self.analysis.session_effect = Some(SessionEffect::Declare(Cursor {
+            name,
+            result,
+            scroll: has(FlatCursorOption::Scroll),
+            hold: matches!(stmt.hold.map(|h| self.get(h)), Some(FlatCursorHold::With)),
+        }));
+        Ok(())
     }
 
     /// `transformCreateTableAsStmt` for a table.
@@ -3393,16 +3730,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// parameter types.
     fn set_result(&mut self, target_list: &[TargetEntry]) -> Result<()> {
         self.analysis.result = ResultDescriptor {
-            columns: target_list
-                .iter()
-                .filter(|t| !t.junk)
-                .map(|t| ResultColumn {
-                    name: t.name.clone(),
-                    ty: t.ty,
-                    typmod: t.typmod,
-                    origin: t.origin,
-                })
-                .collect(),
+            columns: result_columns(target_list),
             params: self.finish_params()?,
         };
         Ok(())
@@ -5654,7 +5982,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExplainableStmt::With(w) => {
                 self.with_statement(*w)?;
             }
-            FlatExplainableStmt::Execute(_) => return Err(unsupported("EXECUTE", None)),
+            // EXPLAIN EXECUTE looks the name up only when it runs.
+            FlatExplainableStmt::Execute(_) => {}
             FlatExplainableStmt::Declare(d) => {
                 self.declare(*d)?;
             }
@@ -5672,6 +6001,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExplainableStmt::Refresh(_) => return Err(unsupported("REFRESH", None)),
         }
+        // EXPLAIN runs nothing, so a DECLARE inside it opens no cursor.
+        self.analysis.session_effect = None;
         self.analysis.result = ResultDescriptor {
             columns: vec![ResultColumn {
                 name: "QUERY PLAN".to_owned(),
@@ -16492,4 +16823,19 @@ fn find_using_column(colnames: &[String], name: &str, side: &str) -> Result<usiz
         )
         .into()
     })
+}
+
+/// The result columns a target list describes: the entries that are not
+/// resjunk, in the terms a Describe message uses.
+fn result_columns(target_list: &[TargetEntry]) -> Vec<ResultColumn> {
+    target_list
+        .iter()
+        .filter(|t| !t.junk)
+        .map(|t| ResultColumn {
+            name: t.name.clone(),
+            ty: t.ty,
+            typmod: t.typmod,
+            origin: t.origin,
+        })
+        .collect()
 }

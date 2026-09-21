@@ -7,6 +7,7 @@ use std::hash::Hash;
 use pg_catalog::{Function, Handle, Operator, Relation};
 
 use crate::relation::{RangeTableEntry, Var};
+use crate::session::SessionEffect;
 use crate::types::{TypeRef, Typmod};
 use crate::value::Coercion;
 
@@ -231,6 +232,9 @@ where
     /// The Statement is a Utility Statement: nothing in it was analysed
     /// and the Result Descriptor is empty.
     pub utility: bool,
+    /// What the Statement would add to the Session or remove from it when
+    /// it runs. Analysis reports it and never applies it.
+    pub session_effect: Option<SessionEffect>,
 }
 
 impl<E, S, I, F> Default for Analysis<E, S, I, F>
@@ -253,6 +257,7 @@ where
             target_lists: AnnotationTable::default(),
             result: ResultDescriptor::default(),
             utility: false,
+            session_effect: None,
         }
     }
 }
