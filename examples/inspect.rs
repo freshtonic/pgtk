@@ -209,6 +209,28 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         Some(row_type) => println!("  row type  {}", type_name(catalog, row_type)),
         None => println!("  row type  none"),
     }
+    if let Some(text) = &relation.view_definition {
+        println!(
+            "  view      {}",
+            text.split_whitespace().collect::<Vec<_>>().join(" ")
+        );
+    }
+    for rule in &relation.rules {
+        println!(
+            "  rule      {} on {:?}{}{} ({:?})",
+            rule.name,
+            rule.event,
+            if rule.instead { " instead" } else { " also" },
+            if rule.unconditional { "" } else { " where ..." },
+            rule.fires
+        );
+    }
+    for trigger in &relation.triggers {
+        println!(
+            "  trigger   {} {:?} ({:?})",
+            trigger.name, trigger.timing, trigger.fires
+        );
+    }
     if let Some(of_type) = relation.of_type {
         println!("  of type   {}", type_name(catalog, of_type));
     }

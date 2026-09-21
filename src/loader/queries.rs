@@ -87,6 +87,10 @@ pub enum QueryId {
     PrimaryKeys,
     /// One row per direct parent of every relation, in `inhseqno` order.
     Inherits,
+    /// Every rewrite rule of a relation, except the `_RETURN` rules.
+    Rules,
+    /// Every trigger of a relation, except the internal triggers.
+    Triggers,
 }
 
 impl QueryId {
@@ -110,6 +114,8 @@ impl QueryId {
         QueryId::DefaultOperatorClasses,
         QueryId::PrimaryKeys,
         QueryId::Inherits,
+        QueryId::Rules,
+        QueryId::Triggers,
     ];
 }
 
@@ -136,6 +142,8 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::DefaultOperatorClasses => DEFAULT_OPERATOR_CLASSES,
         QueryId::PrimaryKeys => PRIMARY_KEYS,
         QueryId::Inherits => INHERITS,
+        QueryId::Rules => RULES,
+        QueryId::Triggers => TRIGGERS,
     }
 }
 
@@ -337,6 +345,8 @@ ORDER BY e.enumtypid, e.enumsortorder
 //   3  relkind       kind letter: r v m f p S
 //   4  reltype       OID of the row type of the relation
 //   5  reloftype     OID of the composite type of a typed table, else 0
+//   6  viewdef       SQL text of the query of a view or of a materialized
+//                    view, NULL for each other kind
 //@sql Relations
 const RELATIONS: &str = r#"
 SELECT
@@ -345,7 +355,10 @@ SELECT
     c.relnamespace::text,
     c.relkind::text,
     c.reltype::text,
-    c.reloftype::text
+    c.reloftype::text,
+    (CASE WHEN c.relkind IN ('v', 'm')
+        THEN pg_catalog.pg_get_viewdef(c.oid, true)
+    END)::text AS viewdef
 FROM pg_catalog.pg_class c
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
 WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
@@ -654,4 +667,74 @@ WHERE c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
   AND (n.nspname NOT LIKE 'pg\_temp%'
        OR n.oid = pg_catalog.pg_my_temp_schema())
 ORDER BY i.inhrelid, i.inhseqno
+"#;
+
+// One row per rewrite rule of a relation, in name order.
+//
+// The `_RETURN` rule of a view is not here. It is the only `ON SELECT` rule
+// that the server permits, and the Relations query gives its text as
+// `viewdef`. `ev_qual` is never NULL: a rule with no condition holds the
+// empty node tree `<>`.
+//
+// The schema filter applies to the schema of the relation.
+//
+// Columns:
+//   0  oid            rule OID
+//   1  ev_class       OID of the relation
+//   2  rulename       rule name
+//   3  ev_type        event digit: 1 select, 2 update, 3 insert, 4 delete
+//   4  is_instead     `t` for a DO INSTEAD rule
+//   5  unconditional  `t` when the rule has no condition
+//   6  ev_enabled     firing letter: O D R A
+//@sql Rules
+const RULES: &str = r#"
+SELECT
+    r.oid::text,
+    r.ev_class::text,
+    r.rulename::text,
+    r.ev_type::text,
+    (CASE WHEN r.is_instead THEN 't' ELSE 'f' END)::text AS is_instead,
+    (CASE WHEN r.ev_qual::text = '<>' THEN 't' ELSE 'f' END)::text AS unconditional,
+    r.ev_enabled::text
+FROM pg_catalog.pg_rewrite r
+JOIN pg_catalog.pg_class c ON c.oid = r.ev_class
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE NOT (r.rulename = '_RETURN' AND r.ev_type = '1')
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY r.ev_class, r.rulename
+"#;
+
+// One row per trigger of a relation, in name order.
+//
+// An internal trigger, which the server makes for a constraint, is not here.
+//
+// The schema filter applies to the schema of the relation.
+//
+// Columns:
+//   0  oid        trigger OID
+//   1  tgrelid    OID of the relation
+//   2  tgname     trigger name
+//   3  tgtype     bit mask: 1 row, 2 before, 4 insert, 8 delete, 16 update,
+//                 32 truncate, 64 instead
+//   4  tgenabled  firing letter: O D R A
+//@sql Triggers
+const TRIGGERS: &str = r#"
+SELECT
+    t.oid::text,
+    t.tgrelid::text,
+    t.tgname::text,
+    t.tgtype::text,
+    t.tgenabled::text
+FROM pg_catalog.pg_trigger t
+JOIN pg_catalog.pg_class c ON c.oid = t.tgrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE NOT t.tgisinternal
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY t.tgrelid, t.tgname
 "#;

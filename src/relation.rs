@@ -4,7 +4,9 @@ use crate::extension::Extension;
 use crate::handle::Handle;
 use crate::name::Name;
 use crate::oid::Oid;
+use crate::rule::Rule;
 use crate::schema::Schema;
+use crate::trigger::Trigger;
 use crate::types::Type;
 use crate::typmod::Typmod;
 
@@ -56,6 +58,25 @@ pub struct Relation {
     /// No other constraint is in the model.
     #[cfg_attr(feature = "serde", serde(default))]
     pub primary_key: Option<PrimaryKey>,
+    /// The query of a view or of a materialized view, as SQL text.
+    ///
+    /// This is `pg_get_viewdef(oid, true)`. It is `None` for each other kind
+    /// of relation. The catalog does not parse the text. A consumer parses
+    /// it to decide if the view is automatically updatable.
+    ///
+    /// The server writes the text for the `search_path` of the session that
+    /// the loader used: it qualifies a name only when that path does not
+    /// find it. `catalog.metadata().search_path` records that path.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub view_definition: Option<String>,
+    /// The rewrite rules of the relation, in name order, without the
+    /// `_RETURN` rule of a view.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rules: Vec<Rule>,
+    /// The triggers of the relation, in name order, without the internal
+    /// triggers of constraints.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub triggers: Vec<Trigger>,
     /// The extension that owns this relation, when one does.
     pub extension: Option<Handle<Extension>>,
 }

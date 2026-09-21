@@ -2,10 +2,10 @@
 
 use pg_catalog::{
     ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
-    CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, Function,
+    CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, FiresWhen, Function,
     FunctionKind, Handle, Identity, Metadata, Name, Oid, Operator, OperatorKind, PrimaryKey,
-    QualifiedName, Relation, RelationKind, Schema, SearchPath, Type, TypeCategory, TypeKind,
-    Typmod, Volatility,
+    QualifiedName, Relation, RelationKind, Rule, RuleEvent, Schema, SearchPath, Trigger,
+    TriggerTiming, Type, TypeCategory, TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -205,6 +205,9 @@ fn small_catalog() -> (Catalog, Handles) {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        view_definition: None,
+        rules: Vec::new(),
+        triggers: Vec::new(),
         extension: Some(widgets),
     });
     assert_eq!(pushed_relation, widget);
@@ -482,6 +485,9 @@ fn temporary_catalog() -> (Catalog, TemporaryHandles) {
             of_type: None,
             parents: Vec::new(),
             primary_key: None,
+            view_definition: None,
+            rules: Vec::new(),
+            triggers: Vec::new(),
             extension: None,
         })
     };
@@ -747,6 +753,9 @@ fn a_sequence_is_a_relation_with_three_columns_and_no_row_type() {
         of_type: None,
         parents: Vec::new(),
         primary_key: None,
+        view_definition: None,
+        rules: Vec::new(),
+        triggers: Vec::new(),
         extension: None,
     });
     let catalog = builder.finish().expect("the catalog builds");
@@ -974,6 +983,66 @@ fn a_typed_table_names_the_type_that_it_is_of() {
     // The type of the table and its row type are two types.
     assert_eq!(catalog[h.widget].of_type, Some(widget_type));
     assert_eq!(catalog[h.widget].row_type, Some(h.widget_row));
+}
+
+#[test]
+fn a_view_keeps_its_text_its_rules_and_its_triggers() {
+    let (catalog, h) = small_catalog();
+    assert_eq!(catalog[h.widget].view_definition, None);
+    assert_eq!(catalog[h.widget].rules, Vec::new());
+    assert_eq!(catalog[h.widget].triggers, Vec::new());
+
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    let widget = builder.relation_mut(h.widget);
+    widget.kind = RelationKind::View;
+    widget.view_definition = Some(" SELECT 1 AS id, 'a'::text AS label;".to_owned());
+    widget.rules = vec![Rule {
+        name: Name::new("widget_ins"),
+        event: RuleEvent::Insert,
+        instead: true,
+        unconditional: true,
+        fires: FiresWhen::Origin,
+    }];
+    // INSTEAD OF UPDATE FOR EACH ROW: 64 + 16 + 1.
+    widget.triggers = vec![Trigger::from_tgtype(
+        Name::new("widget_upd"),
+        81,
+        FiresWhen::Origin,
+    )];
+    let catalog = builder.finish().expect("the catalog builds");
+
+    let widget = &catalog[h.widget];
+    assert!(
+        widget
+            .view_definition
+            .as_deref()
+            .unwrap()
+            .contains("SELECT")
+    );
+    assert!(widget.rules[0].replaces(RuleEvent::Insert));
+    assert!(!widget.rules[0].replaces(RuleEvent::Delete));
+    let trigger = &widget.triggers[0];
+    assert_eq!(trigger.timing, TriggerTiming::InsteadOf);
+    assert!(trigger.update && !trigger.insert && !trigger.delete && !trigger.truncate);
+    assert!(trigger.is_instead_of_row());
+}
+
+#[test]
+fn a_disabled_or_conditional_rule_does_not_replace_a_statement() {
+    let rule = |unconditional, instead, fires| Rule {
+        name: Name::new("r"),
+        event: RuleEvent::Delete,
+        instead,
+        unconditional,
+        fires,
+    };
+    assert!(rule(true, true, FiresWhen::Origin).replaces(RuleEvent::Delete));
+    assert!(rule(true, true, FiresWhen::Always).replaces(RuleEvent::Delete));
+    assert!(!rule(false, true, FiresWhen::Origin).replaces(RuleEvent::Delete));
+    assert!(!rule(true, false, FiresWhen::Origin).replaces(RuleEvent::Delete));
+    assert!(!rule(true, true, FiresWhen::Disabled).replaces(RuleEvent::Delete));
+    assert!(!rule(true, true, FiresWhen::Replica).replaces(RuleEvent::Delete));
 }
 
 #[test]

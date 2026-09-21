@@ -118,6 +118,23 @@ one Relation without one. The model holds no parameter of a sequence, such as
 the start or the increment. Indexes and TOAST tables are not Relations in
 this model.
 
+**View Definition**:
+The query of a view or of a materialized view, as the SQL text that
+`pg_get_viewdef` gives. The Catalog holds the text and does not parse it. A
+consumer parses it, for example to decide if the view is automatically
+updatable.
+
+**Rule**:
+A `pg_rewrite` row of a Relation, other than the `_RETURN` Rule of a view: its
+name, its statement kind, if it is `INSTEAD`, if it has a condition, and when
+it fires. A statement on a view that is not updatable is permitted when an
+unconditional `INSTEAD` Rule for its kind fires.
+
+**Trigger**:
+A `pg_trigger` row of a Relation that is not internal: its name, its timing,
+its statement kinds, if it is for each row, and when it fires. A view with an
+`INSTEAD OF` row Trigger for a statement kind is updatable for that kind.
+
 **Typed Table**:
 A Relation made with `CREATE TABLE ... OF` a composite Type. It holds that
 Type, which is not its own row Type. PostgreSQL accepts the row Type of a
@@ -209,8 +226,11 @@ These are deliberate exclusions, not omissions:
 - Collations. A Type keeps a collatable flag so collation checking can be
   added later without reshaping the model.
 - Indexes, constraints (other than Primary Keys and counts on Domains),
-  triggers, rules, policies, roles, and privileges. Unique, foreign key,
-  check, and exclusion constraints on a Relation are out of scope.
+  policies, roles, and privileges. Unique, foreign key, check, and exclusion
+  constraints on a Relation are out of scope.
+- The action and the condition of a Rule. The function, the column list, and
+  the `WHEN` condition of a Trigger. The internal Triggers of constraints. A
+  parsed form of a View Definition.
 - Default and constraint expression text. The Type of the default expression
   of a Function argument is in scope; the expression is not.
 - The temporary Schemas of other sessions, and the Entities in them. The

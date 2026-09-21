@@ -120,7 +120,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 6;
+    pub const FORMAT_VERSION: u32 = 7;
 
     /// Make a catalog and build its indexes.
     ///

@@ -48,8 +48,8 @@ fn lock_server() -> std::sync::MutexGuard<'static, ()> {
 mod sync_tests {
     use super::{lock_server, skip, url};
     use pg_catalog::{
-        ArgMode, Builtin, CastMethod, Catalog, FunctionKind, Identity, Loaded, Name, PrimaryKey,
-        QualifiedName, RelationKind, SearchPath, TypeKind,
+        ArgMode, Builtin, CastMethod, Catalog, FiresWhen, FunctionKind, Identity, Loaded, Name,
+        PrimaryKey, QualifiedName, RelationKind, RuleEvent, SearchPath, TriggerTiming, TypeKind,
     };
     use postgres::{Client, NoTls};
     use std::panic::AssertUnwindSafe;
@@ -382,6 +382,25 @@ mod sync_tests {
              );
              CREATE SEQUENCE {schema}.reading_id_seq;
              CREATE TABLE {schema}.points OF {schema}.point2d;
+             CREATE VIEW {schema}.reading_ids AS SELECT id FROM {schema}.reading;
+             CREATE MATERIALIZED VIEW {schema}.reading_count AS
+                 SELECT count(*) AS n FROM {schema}.reading;
+             CREATE VIEW {schema}.doubled AS SELECT id * 2 AS twice FROM {schema}.reading;
+             CREATE RULE doubled_ins AS ON INSERT TO {schema}.doubled DO INSTEAD NOTHING;
+             CREATE RULE doubled_del AS ON DELETE TO {schema}.doubled
+                 WHERE old.twice > 10 DO INSTEAD NOTHING;
+             CREATE FUNCTION {schema}.noop() RETURNS trigger
+                 AS $$ BEGIN RETURN NEW; END $$ LANGUAGE plpgsql;
+             CREATE TRIGGER doubled_upd INSTEAD OF UPDATE ON {schema}.doubled
+                 FOR EACH ROW EXECUTE FUNCTION {schema}.noop();
+             CREATE TRIGGER reading_audit AFTER INSERT OR DELETE ON {schema}.reading
+                 FOR EACH STATEMENT EXECUTE FUNCTION {schema}.noop();
+             ALTER TABLE {schema}.reading ADD PRIMARY KEY (id);
+             CREATE TABLE {schema}.reading_note (
+                 reading_id int4 REFERENCES {schema}.reading (id)
+             );
+             CREATE RULE note_off AS ON UPDATE TO {schema}.reading_note DO INSTEAD NOTHING;
+             ALTER TABLE {schema}.reading_note DISABLE RULE note_off;
              CREATE TABLE {schema}.p1 (a int4);
              CREATE TABLE {schema}.p2 (b text);
              CREATE TABLE {schema}.c1 (c int4) INHERITS ({schema}.p2, {schema}.p1);
@@ -513,6 +532,86 @@ mod sync_tests {
             catalog[relation("measured_2026")].parents,
             vec![relation("measured")]
         );
+
+        // A view and a materialized view have the text of their query. A
+        // table has none.
+        let text_of = |name: &str| catalog[relation(name)].view_definition.clone();
+        let ids = text_of("reading_ids").expect("a view has its text");
+        assert!(ids.contains("SELECT") && ids.contains("reading"), "{ids}");
+        assert!(
+            text_of("reading_count")
+                .expect("the text is there")
+                .contains("count")
+        );
+        assert_eq!(text_of("reading"), None);
+
+        // The rules are in name order, without `_RETURN`.
+        let doubled = &catalog[relation("doubled")];
+        let rules: Vec<_> = doubled
+            .rules
+            .iter()
+            .map(|rule| {
+                (
+                    rule.name.as_str(),
+                    rule.event,
+                    rule.instead,
+                    rule.unconditional,
+                    rule.fires,
+                )
+            })
+            .collect();
+        assert_eq!(
+            rules,
+            vec![
+                (
+                    "doubled_del",
+                    RuleEvent::Delete,
+                    true,
+                    false,
+                    FiresWhen::Origin
+                ),
+                (
+                    "doubled_ins",
+                    RuleEvent::Insert,
+                    true,
+                    true,
+                    FiresWhen::Origin
+                ),
+            ]
+        );
+        let replaces = |event| doubled.rules.iter().any(|rule| rule.replaces(event));
+        assert!(replaces(RuleEvent::Insert));
+        assert!(!replaces(RuleEvent::Delete), "the rule has a condition");
+        assert_eq!(catalog[relation("reading_ids")].rules, Vec::new());
+
+        // A disabled rule is there, and it does not replace a statement. The
+        // server permits `DISABLE RULE` only on a table.
+        let note_rules = &catalog[relation("reading_note")].rules;
+        assert_eq!(note_rules.len(), 1);
+        assert_eq!(note_rules[0].fires, FiresWhen::Disabled);
+        assert!(note_rules[0].instead && note_rules[0].unconditional);
+        assert!(
+            !note_rules[0].replaces(RuleEvent::Update),
+            "the rule is disabled"
+        );
+
+        // An INSTEAD OF trigger on the view, and a statement trigger on the
+        // table. The foreign key makes internal triggers on `reading`, and
+        // those are not here.
+        assert_eq!(doubled.triggers.len(), 1);
+        let trigger = &doubled.triggers[0];
+        assert_eq!(trigger.name, Name::new("doubled_upd"));
+        assert_eq!(trigger.timing, TriggerTiming::InsteadOf);
+        assert!(trigger.update && trigger.row_level && trigger.is_instead_of_row());
+        assert!(!trigger.insert && !trigger.delete && !trigger.truncate);
+
+        let reading_triggers = &catalog[relation("reading")].triggers;
+        assert_eq!(reading_triggers.len(), 1, "no internal trigger is here");
+        let audit = &reading_triggers[0];
+        assert_eq!(audit.name, Name::new("reading_audit"));
+        assert_eq!(audit.timing, TriggerTiming::After);
+        assert!(audit.insert && audit.delete && !audit.update && !audit.row_level);
+        assert_eq!(audit.fires, FiresWhen::Origin);
 
         // A typed table names the type that it is `OF`. Its row type is
         // another type, with the same fields.
