@@ -177,6 +177,9 @@ pub struct Relation {
     pub primary_key: Option<PrimaryKey>,   // #[serde(default)]
     /// pg_get_viewdef(oid, true) for relkind v and m, else None. Not parsed.
     /// The text depends on the search_path of the loader's session.
+    /// pg_constraint rows with this conrelid, in name order. Includes the
+    /// primary key. `Relation::constraint(name)` finds one.
+    pub constraints: Vec<Constraint>,      // #[serde(default)]
     pub view_definition: Option<String>,   // #[serde(default)]
     /// pg_rewrite without the _RETURN rule, in name order.
     pub rules: Vec<Rule>,                  // #[serde(default)]
@@ -208,10 +211,29 @@ pub struct Parameter { pub name: String, pub kind: ParameterKind }   // pg_setti
 pub enum ParameterKind { Bool, Integer, Real, String, Enum }
 impl ParameterKind { pub fn from_vartype(vartype: &str) -> Option<Self>; }
 
+pub struct Constraint {
+    pub name: Name, pub kind: ConstraintKind, pub deferrable: bool,
+    pub columns: Vec<i16>,   // conkey; 0 for an expression of an exclusion constraint; may be empty
+}
+/// contype p u c f x t. No NotNull: PostgreSQL 18 added that row for a relation.
+pub enum ConstraintKind { PrimaryKey, Unique, Check, ForeignKey, Exclusion, ConstraintTrigger }
+impl ConstraintKind { pub fn has_index(self) -> bool; }   // PrimaryKey | Unique | Exclusion
+impl Relation { pub fn constraint(&self, name: &str) -> Option<&Constraint>; }
+
+/// pg_opclass JOIN pg_am. Unique on (schema, name, method).
+pub struct OperatorClass {
+    pub oid: Oid, pub name: Name, pub schema: Handle<Schema>,
+    pub method: Name,               // amname: btree hash gist gin spgist brin ...
+    pub input_type: Handle<Type>,   // opcintype
+    pub is_default: bool,           // opcdefault
+    pub extension: Option<Handle<Extension>>,
+}
+
 pub struct Rule {
     pub name: Name, pub event: RuleEvent, pub instead: bool,
     pub unconditional: bool,   // ev_qual::text = '<>' (ev_qual is never NULL)
     pub fires: FiresWhen,      // ev_enabled
+    pub definition: String,    // pg_get_ruledef(oid, true); not parsed; #[serde(default)]
 }
 impl Rule {
     /// event matches, instead, unconditional, and fires.in_origin().
@@ -413,6 +435,7 @@ impl Catalog {
                                          // 7: Relation gained view_definition, rules, triggers
                                          // 8: Catalog gained parameters
                                          // 9: collations; Type.collation, Column.collation, Metadata.encoding
+                                         // 10: Relation.constraints, operator classes, Rule.definition
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -462,6 +485,12 @@ impl Catalog {
     pub fn cast(&self, from: Handle<Type>, to: Handle<Type>) -> Option<Handle<Cast>>;
     /// Casts whose source is `from`, OID order.
     pub fn casts_from(&self, from: Handle<Type>) -> &[Handle<Cast>];
+
+    // Operator classes. An arena like the others: operator_classes(),
+    // operator_class_by_oid, Index<Handle<OperatorClass>>,
+    // qualified_name_of_operator_class. The key is (schema, name, method).
+    pub fn operator_class_named(&self, name: &QualifiedName, method: &str) -> Option<Handle<OperatorClass>>;
+    pub fn operator_class_visible(&self, path: &SearchPath, name: &str, method: &str) -> Option<Handle<OperatorClass>>;
 
     // Collations. An arena like the others: collations(), collation_by_oid,
     // Index<Handle<Collation>>, qualified_name_of_collation.
@@ -541,6 +570,7 @@ impl CatalogBuilder {
     pub fn push_cast(&mut self, c: Cast) -> Handle<Cast>;
     pub fn push_parameter(&mut self, p: Parameter);   // no handle
     pub fn push_collation(&mut self, c: Collation) -> Handle<Collation>;
+    pub fn push_operator_class(&mut self, c: OperatorClass) -> Handle<OperatorClass>;
     /// The handle the next push_type will return (for forward references in cycles).
     pub fn next_type_handle(&self) -> Handle<Type>;
     pub fn next_relation_handle(&self) -> Handle<Relation>;
@@ -588,7 +618,7 @@ pub enum Diagnostic {
     /// Skipped for a stated reason (e.g. shell operator with no function).
     Skipped { entity: EntityKind, oid: Oid, name: Name, reason: SkipReason },
 }
-pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger, Parameter, Collation }
+pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger, Parameter, Collation, Constraint }
 #[non_exhaustive]
 pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char), IncompleteOperatorClass }
 impl Display for Diagnostic;
@@ -626,7 +656,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
     Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits, Rules, Triggers,
-    Parameters, Collations }
+    Parameters, Collations, Constraints, OperatorClasses }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -731,7 +761,8 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `WHERE c.relkind IN ('r','v','m','f','p','S')` (this drops the partitions of
   an index) `ORDER BY inhrelid, inhseqno`.
 - **Rules**: `oid, ev_class, rulename, ev_type, is_instead,
-  (ev_qual::text = '<>') AS unconditional, ev_enabled` from `pg_rewrite r JOIN
+  (ev_qual::text = '<>') AS unconditional, ev_enabled,
+  pg_get_ruledef(oid, true) AS definition` from `pg_rewrite r JOIN
   pg_class c ON c.oid = r.ev_class` with the filter on `relnamespace`,
   `WHERE NOT (rulename = '_RETURN' AND ev_type = '1')` and the relation
   relkinds, `ORDER BY ev_class, rulename`.
@@ -744,6 +775,16 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   collisdeterministic, collencoding` from `pg_collation` with the filter on
   `collnamespace`, `ORDER BY oid`. The Types query also gives `typcollation`
   and the Attributes query also gives `attcollation`.
+- **Constraints**: `oid, conrelid, conname, contype, condeferrable, n, attnum`
+  from `pg_constraint k JOIN pg_class c ON c.oid = k.conrelid` with the filter
+  on `relnamespace`, `LEFT JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS
+  a(attnum, n) ON true`, `WHERE conrelid <> 0` and the relation relkinds,
+  `ORDER BY conrelid, conname, n`. One row per column; one row with NULLs for a
+  constraint with no column.
+- **OperatorClasses**: `oid, opcname, opcnamespace, amname, opcintype,
+  opcdefault` from `pg_opclass c JOIN pg_am am ON am.oid = c.opcmethod` with
+  the filter on `opcnamespace`, each access method, `ORDER BY oid`.
+  ExtensionMembers also knows `pg_opclass` as `opclass`.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -831,6 +872,12 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
 11. Extension attribution: `type` for types, `class` for relations, `proc`
     for functions, `operator` for operators, `cast` for casts, `namespace`
     for schemas.
+10g. Constraints: group the rows by constraint OID, in `n` order. A `contype`
+    other than `p u c f x t` gives `UnparsableValue` (entity `Constraint`) and
+    the constraint goes. The columns stay as the server gave them. A relation
+    takes its constraints in step 7, sorted by the bytes of the name.
+10h. Operator classes: keep when the schema and `opcintype` are kept, else
+    `MissingReference` (entity `OperatorClass`). Handles are in OID order.
 11a. Parameters: `vartype` maps to `ParameterKind { Bool, Integer, Real,
     String, Enum }`. Another `vartype` gives `UnparsableValue` (entity
     `Parameter`, OID 0, the value names the parameter) and the parameter goes.

@@ -128,7 +128,9 @@ updatable.
 A `pg_rewrite` row of a Relation, other than the `_RETURN` Rule of a view: its
 name, its statement kind, if it is `INSTEAD`, if it has a condition, and when
 it fires. A statement on a view that is not updatable is permitted when an
-unconditional `INSTEAD` Rule for its kind fires.
+unconditional `INSTEAD` Rule for its kind fires. A Rule also holds its whole
+definition as SQL text, which the Catalog does not parse: a consumer reads the
+`RETURNING` list of the action from it.
 
 **Trigger**:
 A `pg_trigger` row of a Relation that is not internal: its name, its timing,
@@ -152,6 +154,12 @@ nullability. An identity Column also has its kind, `ALWAYS` or `BY DEFAULT`,
 because only an `ALWAYS` Column rejects a value other than `DEFAULT`. Dropped
 attributes are not Columns.
 _Avoid_: Attribute, field (a Field belongs to a composite Type)
+
+**Constraint**:
+A `pg_constraint` row of a Relation: its name, its kind (primary key, unique,
+check, foreign key, exclusion, constraint trigger), if it is deferrable, and
+its Columns. A statement names one in `ON CONFLICT ON CONSTRAINT`. The Primary
+Key of a Relation is also one of its Constraints.
 
 **Primary Key**:
 The Columns that a Relation's `PRIMARY KEY` constraint names, in key order,
@@ -178,6 +186,12 @@ right operand Type, a result Type, and an implementing Function. Distinct from
 an operator class or operator family, which describe index behaviour. The
 model holds no operator class. It holds only the Sort Operators that a default
 operator class gives a Type.
+
+**Operator Class**:
+A `pg_opclass` row: a name in a Schema, for one access method and one input
+Type, with a flag for the default class. A statement names one in
+`ON CONFLICT (column opclass)` and in an index definition. One name can be a
+class of more than one access method, so a lookup takes the access method too.
 
 **Sort Operators**:
 The Operators that PostgreSQL uses to sort and to group values of one Type:
@@ -239,19 +253,19 @@ lookups take one as an argument.
 
 These are deliberate exclusions, not omissions:
 
-- Operator classes and operator families as Entities, all access methods other
-  than btree and hash, non-default operator classes, and cross-type members of
-  an operator family (such as `int4 < int8`). Only the Sort Operators of each
-  Type are in scope.
+- Operator families, and the members of an Operator Class other than the Sort
+  Operators of a default btree or hash class. A cross-type member of an
+  operator family (such as `int4 < int8`) is out of scope.
 - The locale of a Collation: `collcollate`, `collctype`, the ICU locale and
   rules, and the version. The collation settings of the database other than
   its encoding (`datcollate`, `datlocprovider`). Parse analysis compares the
   identity of two Collations and never sorts text.
 - The Collation of a Field of a composite Type and of a range subtype.
-- Indexes, constraints (other than Primary Keys and counts on Domains),
-  policies, roles, and privileges. Unique, foreign key, check, and exclusion
-  constraints on a Relation are out of scope.
-- The action and the condition of a Rule. The function, the column list, and
+- Indexes, policies, roles, and privileges. The expression of a `CHECK`
+  Constraint, the target of a foreign key, and the index of a Constraint. The
+  Constraints of a Domain, other than their count.
+- A parsed form of the action and the condition of a Rule; the Catalog holds
+  only the text of the Rule. The function, the column list, and
   the `WHEN` condition of a Trigger. The internal Triggers of constraints. A
   parsed form of a View Definition.
 - Default and constraint expression text. The Type of the default expression

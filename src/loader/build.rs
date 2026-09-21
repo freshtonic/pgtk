@@ -22,6 +22,7 @@ use crate::builder::CatalogBuilder;
 use crate::cast::{Cast, CastContext, CastMethod};
 use crate::catalog::{Catalog, Metadata, ServerVersion};
 use crate::collation::{Collation, CollationProvider, Encoding};
+use crate::constraint::{Constraint, ConstraintKind};
 use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
 use crate::error::LoadError;
 use crate::extension::Extension;
@@ -36,6 +37,7 @@ use crate::loader::{Loaded, Rows};
 use crate::name::Name;
 use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
+use crate::operator_class::OperatorClass;
 use crate::parameter::{Parameter, ParameterKind};
 use crate::relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
 use crate::rule::{FiresWhen, Rule, RuleEvent};
@@ -103,6 +105,8 @@ enum MemberClass {
     Namespace,
     /// A row of `pg_collation`.
     Collation,
+    /// A row of `pg_opclass`.
+    OperatorClass,
     /// A catalog that this model does not hold.
     Other,
 }
@@ -118,6 +122,7 @@ impl MemberClass {
             "cast" => MemberClass::Cast,
             "namespace" => MemberClass::Namespace,
             "collation" => MemberClass::Collation,
+            "opclass" => MemberClass::OperatorClass,
             _ => MemberClass::Other,
         }
     }
@@ -606,6 +611,8 @@ struct RuleRow {
     unconditional: bool,
     /// The `ev_enabled` letter.
     enabled: char,
+    /// The SQL text of the rule.
+    definition: String,
 }
 
 /// Read [`QueryId::Rules`].
@@ -619,6 +626,7 @@ fn rule_rows(rows: &Rows) -> Result<Vec<RuleRow>, LoadError> {
             instead: row.bool(4)?,
             unconditional: row.bool(5)?,
             enabled: row.char(6)?,
+            definition: row.text(7)?.to_owned(),
         })
     })
 }
@@ -706,6 +714,124 @@ fn database_row(rows: &HashMap<QueryId, Rows>) -> Result<(Name, Encoding), LoadE
     Ok((row.name(0)?, encoding))
 }
 
+/// One row of [`QueryId::Constraints`]: one column of one constraint.
+#[derive(Debug, Clone)]
+struct ConstraintRow {
+    /// The OID of the constraint.
+    oid: Oid,
+    /// The OID of the relation.
+    relid: Oid,
+    /// The name of the constraint.
+    name: Name,
+    /// The `contype` letter.
+    contype: char,
+    /// True when the constraint is deferrable.
+    deferrable: bool,
+    /// The position of the column in `conkey`, when there is a column.
+    n: Option<i32>,
+    /// The attribute number of the column, when there is a column.
+    attnum: Option<i16>,
+}
+
+/// Read [`QueryId::Constraints`].
+fn constraint_rows(rows: &Rows) -> Result<Vec<ConstraintRow>, LoadError> {
+    read(rows, QueryId::Constraints, |row| {
+        Ok(ConstraintRow {
+            oid: row.oid(0)?,
+            relid: row.oid(1)?,
+            name: row.name(2)?,
+            contype: row.char(3)?,
+            deferrable: row.bool(4)?,
+            n: row.opt_text(5)?.map(|_| row.i32(5)).transpose()?,
+            attnum: row.opt_text(6)?.map(|_| row.i16(6)).transpose()?,
+        })
+    })
+}
+
+/// The kind of a constraint, from its letter.
+fn constraint_kind(letter: char) -> Option<ConstraintKind> {
+    match letter {
+        'p' => Some(ConstraintKind::PrimaryKey),
+        'u' => Some(ConstraintKind::Unique),
+        'c' => Some(ConstraintKind::Check),
+        'f' => Some(ConstraintKind::ForeignKey),
+        'x' => Some(ConstraintKind::Exclusion),
+        't' => Some(ConstraintKind::ConstraintTrigger),
+        _ => None,
+    }
+}
+
+/// The constraints of each relation, in name order.
+///
+/// A constraint with a kind that the loader does not know goes, with a note.
+/// The columns of a constraint stay as the server gave them, because a
+/// consumer finds a constraint by its name.
+fn constraints_by_relation(
+    rows: &[ConstraintRow],
+    diagnostics: &mut Vec<Diagnostic>,
+) -> HashMap<Oid, Vec<Constraint>> {
+    let mut rows: Vec<&ConstraintRow> = rows.iter().collect();
+    rows.sort_by_key(|row| (row.oid, row.n));
+
+    let mut constraints: HashMap<Oid, Vec<Constraint>> = HashMap::new();
+    for group in rows.chunk_by(|a, b| a.oid == b.oid) {
+        let first = group[0];
+        let Some(kind) = constraint_kind(first.contype) else {
+            diagnostics.push(unparsable(
+                EntityKind::Constraint,
+                first.oid,
+                "contype",
+                first.contype,
+            ));
+            continue;
+        };
+        constraints
+            .entry(first.relid)
+            .or_default()
+            .push(Constraint {
+                name: first.name.clone(),
+                kind,
+                deferrable: first.deferrable,
+                columns: group.iter().filter_map(|row| row.attnum).collect(),
+            });
+    }
+    for group in constraints.values_mut() {
+        group.sort_by(|a, b| a.name.as_str().as_bytes().cmp(b.name.as_str().as_bytes()));
+    }
+    constraints
+}
+
+/// One row of [`QueryId::OperatorClasses`].
+#[derive(Debug, Clone)]
+struct ClassRow {
+    /// The OID of the operator class.
+    oid: Oid,
+    /// The name of the operator class.
+    name: Name,
+    /// The OID of the schema that holds the class.
+    namespace: Oid,
+    /// The name of the access method.
+    method: Name,
+    /// The OID of the input type.
+    intype: Oid,
+    /// True when the class is the default for its input type.
+    is_default: bool,
+}
+
+/// Read [`QueryId::OperatorClasses`].
+fn class_rows(rows: &Rows) -> Result<Vec<ClassRow>, LoadError> {
+    read(rows, QueryId::OperatorClasses, |row| {
+        Ok(ClassRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            method: row.name(3)?,
+            intype: row.oid(4)?,
+            is_default: row.bool(5)?,
+        })
+    })
+}
+
 /// Read [`QueryId::Parameters`] into a name and a `vartype` for each row.
 fn parameter_rows(rows: &Rows) -> Result<Vec<(String, String)>, LoadError> {
     read(rows, QueryId::Parameters, |row| {
@@ -759,6 +885,7 @@ fn rules_by_relation(
             instead: row.instead,
             unconditional: row.unconditional,
             fires,
+            definition: row.definition.clone(),
         });
     }
     for group in rules.values_mut() {
@@ -859,6 +986,10 @@ struct Input {
     triggers: Vec<TriggerRow>,
     /// The name and the `vartype` of every parameter.
     parameters: Vec<(String, String)>,
+    /// Every column of every constraint.
+    constraints: Vec<ConstraintRow>,
+    /// Every operator class.
+    classes: Vec<ClassRow>,
 }
 
 impl Input {
@@ -888,6 +1019,8 @@ impl Input {
             rules: rule_rows(rows_of(rows, QueryId::Rules)?)?,
             triggers: trigger_rows(rows_of(rows, QueryId::Triggers)?)?,
             parameters: parameter_rows(rows_of(rows, QueryId::Parameters)?)?,
+            constraints: constraint_rows(rows_of(rows, QueryId::Constraints)?)?,
+            classes: class_rows(rows_of(rows, QueryId::OperatorClasses)?)?,
         };
         // A handle is the position in the arena, and an arena is in OID
         // order. Every query already sorts by OID; the sort here makes the
@@ -896,6 +1029,7 @@ impl Input {
         input.schemas.sort_by_key(|row| row.oid);
         input.extensions.sort_by_key(|row| row.oid);
         input.collations.sort_by_key(|row| row.oid);
+        input.classes.sort_by_key(|row| row.oid);
         input.types.sort_by_key(|row| row.oid);
         input.relations.sort_by_key(|row| row.oid);
         input.functions.sort_by_key(|row| row.oid);
@@ -1417,6 +1551,7 @@ pub(crate) fn assemble(
 
     let mut rules = rules_by_relation(&input.rules, &mut diagnostics);
     let mut triggers = triggers_by_relation(&input.triggers, &mut diagnostics);
+    let mut constraints = constraints_by_relation(&input.constraints, &mut diagnostics);
     let mut relations: Vec<Relation> = Vec::new();
     for (index, row) in input.relations.iter().enumerate() {
         if !kept_relation_set.keep[index] {
@@ -1480,6 +1615,7 @@ pub(crate) fn assemble(
             of_type,
             parents,
             primary_key: primary_key.cloned(),
+            constraints: constraints.remove(&row.oid).unwrap_or_default(),
             view_definition: row.viewdef.clone(),
             rules: rules.remove(&row.oid).unwrap_or_default(),
             triggers: triggers.remove(&row.oid).unwrap_or_default(),
@@ -1561,6 +1697,40 @@ pub(crate) fn assemble(
     for cast in casts {
         builder.push_cast(cast);
     }
+    // Step 10g. Operator classes. A class stays when its schema and its
+    // input type are in the catalog. The rows are in OID order.
+    for row in &input.classes {
+        let Some(schema) = schema_handles.get(&row.namespace) else {
+            diagnostics.push(missing(
+                EntityKind::OperatorClass,
+                row.oid,
+                &row.name,
+                EntityKind::Schema,
+                row.namespace,
+            ));
+            continue;
+        };
+        let Some(input_type) = type_handles.get(&row.intype) else {
+            diagnostics.push(missing(
+                EntityKind::OperatorClass,
+                row.oid,
+                &row.name,
+                EntityKind::Type,
+                row.intype,
+            ));
+            continue;
+        };
+        builder.push_operator_class(OperatorClass {
+            oid: row.oid,
+            name: row.name.clone(),
+            schema: *schema,
+            method: row.method.clone(),
+            input_type: *input_type,
+            is_default: row.is_default,
+            extension: owner(MemberClass::OperatorClass, row.oid),
+        });
+    }
+
     // A parameter with a kind of value that the loader does not know goes,
     // with a note. A parameter has no OID, so the note holds 0 and the value
     // holds the name.
@@ -2227,6 +2397,7 @@ mod tests {
     use crate::cast::{CastContext, CastMethod};
     use crate::catalog::ServerVersion;
     use crate::collation::CollationProvider;
+    use crate::constraint::{Constraint, ConstraintKind};
     use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
     use crate::function::{ArgMode, FunctionKind, Volatility};
     use crate::loader::queries::QueryId;
@@ -3102,10 +3273,37 @@ mod tests {
         rows.insert(
             QueryId::Rules,
             vec![
-                row(&["70001", "16384", "r_upd", "2", "f", "f", "D"]),
-                row(&["70000", "16384", "r_ins", "3", "t", "t", "O"]),
+                row(&[
+                    "70001",
+                    "16384",
+                    "r_upd",
+                    "2",
+                    "f",
+                    "f",
+                    "D",
+                    "CREATE RULE r_upd AS ...",
+                ]),
+                row(&[
+                    "70000",
+                    "16384",
+                    "r_ins",
+                    "3",
+                    "t",
+                    "t",
+                    "O",
+                    "CREATE RULE r_ins AS ...",
+                ]),
                 // A rule of a relation that is not in the catalog goes away.
-                row(&["70002", "99999", "r_lost", "4", "t", "t", "O"]),
+                row(&[
+                    "70002",
+                    "99999",
+                    "r_lost",
+                    "4",
+                    "t",
+                    "t",
+                    "O",
+                    "CREATE RULE r_lost AS ...",
+                ]),
             ],
         );
         rows.insert(
@@ -3132,6 +3330,7 @@ mod tests {
                     instead: true,
                     unconditional: true,
                     fires: FiresWhen::Origin,
+                    definition: "CREATE RULE r_ins AS ...".to_owned(),
                 },
                 Rule {
                     name: Name::new("r_upd"),
@@ -3139,6 +3338,7 @@ mod tests {
                     instead: false,
                     unconditional: false,
                     fires: FiresWhen::Disabled,
+                    definition: "CREATE RULE r_upd AS ...".to_owned(),
                 },
             ]
         );
@@ -3163,8 +3363,26 @@ mod tests {
         rows.insert(
             QueryId::Rules,
             vec![
-                row(&["70000", "16384", "r_odd_event", "9", "t", "t", "O"]),
-                row(&["70001", "16384", "r_odd_firing", "3", "t", "t", "q"]),
+                row(&[
+                    "70000",
+                    "16384",
+                    "r_odd_event",
+                    "9",
+                    "t",
+                    "t",
+                    "O",
+                    "CREATE RULE r_odd_event AS ...",
+                ]),
+                row(&[
+                    "70001",
+                    "16384",
+                    "r_odd_firing",
+                    "3",
+                    "t",
+                    "t",
+                    "q",
+                    "CREATE RULE r_odd_firing AS ...",
+                ]),
             ],
         );
         rows.insert(
@@ -3317,5 +3535,111 @@ mod tests {
             referenced: EntityKind::Collation,
             referenced_oid: Oid(77777),
         }));
+    }
+
+    #[test]
+    fn a_relation_takes_its_constraints_in_name_order() {
+        let mut rows = sample_rows();
+        // The rows are out of order, to show that the loader sorts them.
+        rows.insert(
+            QueryId::Constraints,
+            vec![
+                row(&["80001", "16384", "t1_pkey", "p", "f", "2", "1"]),
+                row(&["80001", "16384", "t1_pkey", "p", "f", "1", "2"]),
+                row(&["80000", "16384", "t1_check", "c", "f", NULL, NULL]),
+                row(&["80002", "16384", "t1_excl", "x", "t", "1", "0"]),
+                row(&["80003", "16384", "t1_odd", "q", "f", "1", "1"]),
+                // A constraint of a relation that is not in the catalog goes.
+                row(&["80004", "99999", "lost", "u", "f", "1", "1"]),
+            ],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let relation = &catalog[catalog.relation_by_oid(Oid(16384)).unwrap()];
+        assert_eq!(
+            relation.constraints,
+            vec![
+                Constraint {
+                    name: Name::new("t1_check"),
+                    kind: ConstraintKind::Check,
+                    deferrable: false,
+                    columns: Vec::new(),
+                },
+                Constraint {
+                    name: Name::new("t1_excl"),
+                    kind: ConstraintKind::Exclusion,
+                    deferrable: true,
+                    columns: vec![0],
+                },
+                Constraint {
+                    name: Name::new("t1_pkey"),
+                    kind: ConstraintKind::PrimaryKey,
+                    deferrable: false,
+                    columns: vec![2, 1],
+                },
+            ]
+        );
+        assert_eq!(
+            relation.constraint("t1_pkey").map(|c| c.kind),
+            Some(ConstraintKind::PrimaryKey)
+        );
+        assert!(relation.constraint("nope").is_none());
+        assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+            entity: EntityKind::Constraint,
+            oid: Oid(80003),
+            column: "contype",
+            value: "q".to_owned(),
+        }));
+    }
+
+    #[test]
+    fn the_catalog_takes_the_operator_classes() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::OperatorClasses,
+            vec![
+                row(&["90000", "bool_ops", "2200", "btree", "16", "t"]),
+                row(&["90001", "bool_ops", "2200", "hash", "16", "t"]),
+                row(&["90002", "ghost_ops", "2200", "btree", "99999", "f"]),
+                row(&["90003", "lost_ops", "99999", "btree", "16", "f"]),
+            ],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        assert_eq!(catalog.operator_classes().len(), 2);
+
+        // One name is a `btree` class and a `hash` class.
+        let name = QualifiedName::new("public", "bool_ops");
+        let btree = catalog.operator_class_named(&name, "btree").unwrap();
+        let hash = catalog.operator_class_named(&name, "hash").unwrap();
+        assert_ne!(btree, hash);
+        assert_eq!(catalog[btree].oid, Oid(90000));
+        assert_eq!(
+            catalog[btree].input_type,
+            catalog.type_by_oid(Oid(16)).unwrap()
+        );
+        assert!(catalog[btree].is_default);
+        assert_eq!(catalog.operator_class_named(&name, "gist"), None);
+        assert_eq!(catalog.operator_class_by_oid(Oid(90001)), Some(hash));
+
+        let path = crate::SearchPath::new(catalog, ["public"]);
+        assert_eq!(
+            catalog.operator_class_visible(&path, "bool_ops", "hash"),
+            Some(hash)
+        );
+        assert_eq!(catalog.operator_class_visible(&path, "nope", "hash"), None);
+
+        for (oid, name, referenced, referenced_oid) in [
+            (90002, "ghost_ops", EntityKind::Type, 99999),
+            (90003, "lost_ops", EntityKind::Schema, 99999),
+        ] {
+            assert!(loaded.diagnostics.contains(&Diagnostic::MissingReference {
+                entity: EntityKind::OperatorClass,
+                oid: Oid(oid),
+                name: Name::new(name),
+                referenced,
+                referenced_oid: Oid(referenced_oid),
+            }));
+        }
     }
 }

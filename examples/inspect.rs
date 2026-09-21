@@ -220,6 +220,12 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
             text.split_whitespace().collect::<Vec<_>>().join(" ")
         );
     }
+    for constraint in &relation.constraints {
+        println!(
+            "  constraint {} {:?} {:?}",
+            constraint.name, constraint.kind, constraint.columns
+        );
+    }
     for rule in &relation.rules {
         println!(
             "  rule      {} on {:?}{}{} ({:?})",

@@ -5,7 +5,8 @@ use crate::name::Name;
 /// A rewrite rule of a relation: one `pg_rewrite` row.
 ///
 /// The model holds what PostgreSQL's rewriter needs to decide if a statement
-/// on a view is permitted. It holds no action and no condition of the rule.
+/// on a view is permitted, and the text of the rule. It does not parse the
+/// action or the condition of the rule.
 ///
 /// The `_RETURN` rule of a view is not here. It is the only kind of
 /// `ON SELECT` rule that the server permits, and
@@ -28,6 +29,18 @@ pub struct Rule {
     pub unconditional: bool,
     /// When the rule fires, from `ev_enabled`.
     pub fires: FiresWhen,
+    /// The whole `CREATE RULE` statement, as SQL text.
+    ///
+    /// This is `pg_get_ruledef(oid, true)`. The catalog does not parse it. A
+    /// consumer parses it to read the action of the rule: PostgreSQL takes
+    /// the result columns of `INSERT INTO view ... RETURNING` from the
+    /// `RETURNING` list of the action of a `DO INSTEAD` rule.
+    ///
+    /// The server writes the text for the `search_path` of the session that
+    /// the loader used, as for
+    /// [`Relation::view_definition`](crate::Relation::view_definition).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub definition: String,
 }
 
 impl Rule {
