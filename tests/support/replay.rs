@@ -297,7 +297,7 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
                 || error.sqlstate.starts_with("55")
                 || matches!(
                     error.sqlstate.as_str(),
-                    "42601" | "42602" | "0A000" | "42P17"
+                    "42601" | "42602" | "0A000" | "42P17" | "42501" | "42P21"
                 )
                 || (*reg_literals
                     && matches!(

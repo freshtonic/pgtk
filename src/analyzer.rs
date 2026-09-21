@@ -9,7 +9,14 @@ use pg_sql::ast::dml::select::{
     FlatSelectBody, FlatSelectHead, FlatSelectItem, FlatSelectStmt, FlatSelectTargets,
     FlatSimpleTableRef, FlatTableFunctionName, FlatWhereCondition,
 };
+use pg_sql::ast::dml::select::{
+    FlatLimitOffsetClause, FlatLimitingClause, FlatOrderByClause, FlatSortDir,
+};
 use pg_sql::ast::dml::values::{FlatSelectClause, FlatSimpleSelect};
+use pg_sql::ast::shared::expr::{
+    FlatArrayElement, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
+    FlatSubstringTail, FlatTrimDir, FlatTrimTail, FlatTrimValuesRest,
+};
 use pg_sql::ast::shared::expr::{
     FlatBoolTestKind, FlatCastTypeHead, FlatDateTimeCastTypeName, FlatExpr,
     FlatFixedTypeCastFuncName, FlatFuncArg, FlatFunctionCallBody, FlatFunctionCallTail,
@@ -272,15 +279,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         match self.get(root) {
             FlatStatement::Query(body) => {
                 let body = self.get(*body);
-                if body.order_by.is_some() {
-                    return Err(unsupported("ORDER BY", None));
-                }
-                if body.limit_offset.is_some() {
-                    return Err(unsupported("LIMIT/OFFSET", None));
-                }
                 if body.for_update.is_some() {
                     return Err(unsupported("FOR UPDATE", None));
                 }
+                let order_by = body.order_by;
+                let limit_offset = body.limit_offset;
                 let FlatSelectClause::Simple(simple) = self.get(body.clause) else {
                     return Err(unsupported("parenthesized query", None));
                 };
@@ -295,7 +298,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     return Err(unsupported("VALUES", None));
                 };
                 let select = *select;
-                let target_list = self.select(select)?;
+                let target_list = self.select(select, order_by, limit_offset)?;
                 self.analysis.result = ResultDescriptor {
                     columns: target_list
                         .iter()
@@ -337,7 +340,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// `transformSelectStmt` for one plain SELECT. Returns the target list.
-    fn select(&mut self, handle: Handle<FlatSelectStmt>) -> Result<Vec<TargetEntry>> {
+    fn select(
+        &mut self,
+        handle: Handle<FlatSelectStmt>,
+        order_by: Option<Handle<FlatOrderByClause>>,
+        limit_offset: Option<Handle<FlatLimitOffsetClause>>,
+    ) -> Result<Vec<TargetEntry>> {
         let stmt = self.get(handle);
         if stmt.group_by.is_some() {
             return Err(unsupported("GROUP BY", None));
@@ -387,6 +395,76 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let (_, steps) = self.coercer().coerce_to_boolean(&typed, "WHERE")?;
             self.record_coercions(*expr, steps);
         }
+        // transformSortClause, with the SQL92 rules.
+        if let Some(order_by) = order_by {
+            let clause = self.get(order_by);
+            for item in self.list1(clause.items) {
+                let item = self.get(*item);
+                if item.using.is_some() {
+                    return Err(unsupported("ORDER BY ... USING", None));
+                }
+                let index = self.find_targetlist_entry_sql92(
+                    &scope,
+                    item.expr,
+                    &mut target_list,
+                    "ORDER BY",
+                )?;
+                let entry = &mut target_list[index];
+                // addTargetToSortList: unknown becomes text, then the type
+                // must have an ordering operator.
+                if self.types().is_unknown(entry.ty) {
+                    entry.ty = self.types().builtin(Builtin::Text);
+                    entry.typmod = -1;
+                }
+                let location = self.span(item.expr).start;
+                let desc = matches!(item.dir.map(|d| self.get(d)), Some(FlatSortDir::Desc));
+                let _ = desc;
+                // get_sort_group_operators(needLT or needGT, needEQ).
+                match self.types().btree_ordering(entry.ty) {
+                    Some(_) => {}
+                    None => {
+                        return Err(Diagnostic::new(
+                            "42883",
+                            format!(
+                                "could not identify an ordering operator for type {}",
+                                self.types().format(entry.ty)
+                            ),
+                        )
+                        .hint("Use an explicit ordering operator or modify the query.")
+                        .at(location)
+                        .into());
+                    }
+                }
+            }
+        }
+        // transformLimitClause for LIMIT and OFFSET.
+        if let Some(lo) = limit_offset {
+            let (limit, offset) = match self.get(lo) {
+                FlatLimitOffsetClause::LimitOffset(x) => {
+                    let x = self.get(*x);
+                    (Some(x.limit), x.offset)
+                }
+                FlatLimitOffsetClause::OffsetLimit(x) => {
+                    let x = self.get(*x);
+                    (x.limit, Some(x.offset))
+                }
+            };
+            if let Some(limit) = limit {
+                match self.get(limit) {
+                    FlatLimitingClause::Limit(l) => {
+                        let count = self.get(*l).count;
+                        self.limit_expr(&scope, count, "LIMIT")?;
+                    }
+                    FlatLimitingClause::FetchFirst(_) => {
+                        return Err(unsupported("FETCH FIRST", None));
+                    }
+                }
+            }
+            if let Some(offset) = offset {
+                let count = self.get(offset).count;
+                self.limit_expr(&scope, count, "OFFSET")?;
+            }
+        }
         // resolveTargetListUnknowns
         let text = self.types().builtin(Builtin::Text);
         for entry in target_list.iter_mut() {
@@ -399,6 +477,160 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             .range_tables
             .insert(handle, scope.rtable.clone());
         Ok(target_list)
+    }
+
+    /// `transformLimitClause`: the count is coerced to bigint and must not
+    /// reference a column.
+    fn limit_expr(&mut self, scope: &Scope, expr: Handle<FlatExpr>, construct: &str) -> Result<()> {
+        let typed = match self.get(expr) {
+            // LIMIT ALL is a null constant.
+            FlatExpr::ColumnRef(_)
+                if self.source[self.span(expr)].eq_ignore_ascii_case("all")
+                    && construct == "LIMIT" =>
+            {
+                make_const(self.types(), LiteralKind::Null, "", self.span(expr).start)
+            }
+            _ => self.expr(scope, expr)?,
+        };
+        if typed.returns_set {
+            // check_srf_call_placement for EXPR_KIND_LIMIT / OFFSET.
+            return Err(Diagnostic::new(
+                "0A000",
+                format!("set-returning functions are not allowed in {construct}"),
+            )
+            .at(typed.location)
+            .into());
+        }
+        let int8 = self.types().builtin(Builtin::Int8);
+        if typed.ty != int8 {
+            match self.coercer().coerce_to_target_type(
+                &typed,
+                int8,
+                -1,
+                CoercionContext::Assignment,
+            )? {
+                Some((_, steps)) => self.record_coercions(expr, steps),
+                None => {
+                    return Err(Diagnostic::new(
+                        "42804",
+                        format!(
+                            "argument of {construct} must be type {}, not type {}",
+                            "bigint",
+                            self.types().format(typed.ty)
+                        ),
+                    )
+                    .at(typed.location)
+                    .into());
+                }
+            }
+        }
+        if typed.returns_set {
+            return Err(Diagnostic::new(
+                "42804",
+                format!("argument of {construct} must not return a set"),
+            )
+            .at(typed.location)
+            .into());
+        }
+        if matches!(typed.form, Form::Var)
+            || self.analysis.vars.get(expr).is_some()
+            || self.contains_var(expr)
+        {
+            return Err(Diagnostic::new(
+                "42P10",
+                format!("argument of {construct} must not contain variables"),
+            )
+            .at(typed.location)
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Whether any column reference was resolved inside the expression.
+    /// Every resolved reference is recorded in `vars` as the walk goes, so
+    /// the check is a scan of the subtree's handles by span containment.
+    fn contains_var(&self, expr: Handle<FlatExpr>) -> bool {
+        let span = self.span(expr);
+        self.analysis.vars.iter().any(|(h, _)| {
+            let s = self.span(h);
+            s.start >= span.start && s.end <= span.end
+        })
+    }
+
+    /// `findTargetlistEntrySQL92`: a bare name matches an output column
+    /// name, an integer is an ordinal, anything else is an expression that
+    /// becomes a resjunk entry unless one already equals it.
+    fn find_targetlist_entry_sql92(
+        &mut self,
+        scope: &Scope,
+        expr: Handle<FlatExpr>,
+        target_list: &mut Vec<TargetEntry>,
+        construct: &str,
+    ) -> Result<usize> {
+        let location = self.span(expr).start;
+        if let FlatExpr::ColumnRef(c) = self.get(expr) {
+            let c = self.get(*c);
+            if self.list(c.subscripts).is_empty() {
+                let (name, _) = self.col_id(c.name)?;
+                let mut found: Option<usize> = None;
+                for (i, entry) in target_list.iter().enumerate() {
+                    if !entry.junk && entry.name == name {
+                        if found.is_some() {
+                            // Two output columns with the name: ambiguous
+                            // unless the expressions are equal, which
+                            // needs structural equality this slice lacks.
+                            return Err(unsupported(
+                                "ambiguous ORDER BY name",
+                                Some(location..location),
+                            ));
+                        }
+                        found = Some(i);
+                    }
+                }
+                if let Some(i) = found {
+                    return Ok(i);
+                }
+            }
+        }
+        if let FlatExpr::IntegerLit(t) = self.get(expr) {
+            let text = self.text(*t);
+            let Some(position) = crate::consts::integer_value(text) else {
+                return Err(unsupported("ordinal", Some(location..location)));
+            };
+            let mut n = 0;
+            for (i, entry) in target_list.iter().enumerate() {
+                if !entry.junk {
+                    n += 1;
+                    if n == position {
+                        return Ok(i);
+                    }
+                }
+            }
+            return Err(Diagnostic::new(
+                "42P10",
+                format!("{construct} position {position} is not in select list"),
+            )
+            .at(location)
+            .into());
+        }
+        if let FlatExpr::NumericLit(_) = self.get(expr) {
+            return Err(
+                Diagnostic::new("42601", format!("non-integer constant in {construct}"))
+                    .at(location)
+                    .into(),
+            );
+        }
+        // findTargetlistEntrySQL99: an expression. Matching an existing
+        // entry needs structural equality; a new resjunk entry is added.
+        let typed = self.expr(scope, expr)?;
+        target_list.push(TargetEntry {
+            name: String::new(),
+            ty: typed.ty,
+            typmod: typed.typmod,
+            origin: None,
+            junk: true,
+        });
+        Ok(target_list.len() - 1)
     }
 
     // ----- FROM -----
@@ -613,11 +845,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .name
                         .unwrap_or_else(|| "?column?".to_owned()),
                 };
-                let origin = self.analysis.vars.get(e.expr).and_then(|var| {
-                    let rte = &scope.rtable[var.varno - 1];
-                    (var.levelsup == 0 && matches!(typed.form, Form::Var))
-                        .then_some((rte.relation, var.varattno))
-                });
+                let origin = if matches!(typed.form, Form::Var) {
+                    self.var_origin(scope, e.expr)
+                } else {
+                    None
+                };
                 out.push(TargetEntry {
                     name,
                     ty: typed.ty,
@@ -627,6 +859,65 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 });
                 Ok(())
             }
+        }
+    }
+
+    /// `markTargetListOrigin`: the table column a target expression is,
+    /// looking through parentheses and casts to the column's own type,
+    /// which PostgreSQL leaves as the bare `Var`.
+    fn var_origin(
+        &self,
+        scope: &Scope,
+        expr: Handle<FlatExpr>,
+    ) -> Option<(pg_catalog::Handle<pg_catalog::Relation>, i16)> {
+        if let Some(var) = self.analysis.vars.get(expr) {
+            let rte = &scope.rtable[var.varno - 1];
+            return (var.levelsup == 0).then_some((rte.relation, var.varattno));
+        }
+        let unchanged = self
+            .analysis
+            .coercions
+            .get(expr)
+            .is_none_or(|steps| steps.is_empty());
+        match self.get(expr) {
+            FlatExpr::Cast(inner, _) if unchanged => {
+                let inner = *inner;
+                let inner_unchanged = self
+                    .analysis
+                    .coercions
+                    .get(inner)
+                    .is_none_or(|s| s.is_empty());
+                inner_unchanged
+                    .then(|| self.var_origin(scope, inner))
+                    .flatten()
+            }
+            FlatExpr::CastCall(c) if unchanged => {
+                let value = self.get(self.get(*c).inner).value;
+                let inner_unchanged = self
+                    .analysis
+                    .coercions
+                    .get(value)
+                    .is_none_or(|s| s.is_empty());
+                inner_unchanged
+                    .then(|| self.var_origin(scope, value))
+                    .flatten()
+            }
+            FlatExpr::Parenthesized(p) => {
+                let p = self.get(*p);
+                if !self.list(p.indirection).is_empty() {
+                    return None;
+                }
+                match self.get(p.content) {
+                    FlatParenContent::Exprs(list) => {
+                        let exprs = self.list1(*list);
+                        (exprs.len() == 1)
+                            .then(|| self.var_origin(scope, exprs[0]))
+                            .flatten()
+                    }
+                    FlatParenContent::Subquery(_) => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -795,6 +1086,58 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 name: Some("xmlconcat".to_owned()),
                 strength: 2,
             },
+            FlatExpr::Extract(_) => Colname {
+                name: Some("extract".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::Position(_) => Colname {
+                name: Some("position".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::Overlay(_) => Colname {
+                name: Some("overlay".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::Substring(_) => Colname {
+                name: Some("substring".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::Trim(t) => {
+                let inner = self.get(self.get(*t).inner);
+                let n = match inner.dir.map(|d| self.get(d)) {
+                    Some(FlatTrimDir::Leading) => "ltrim",
+                    Some(FlatTrimDir::Trailing) => "rtrim",
+                    _ => "btrim",
+                };
+                Colname {
+                    name: Some(n.to_owned()),
+                    strength: 2,
+                }
+            }
+            FlatExpr::TimestampLit(t) => {
+                let tz = matches!(
+                    self.get(*t).tz.map(|z| self.get(z)),
+                    Some(FlatTimeZoneQualifier::With)
+                );
+                Colname {
+                    name: Some(if tz { "timestamptz" } else { "timestamp" }.to_owned()),
+                    strength: 1,
+                }
+            }
+            FlatExpr::TimeLit(t) => {
+                let tz = matches!(
+                    self.get(*t).tz.map(|z| self.get(z)),
+                    Some(FlatTimeZoneQualifier::With)
+                );
+                Colname {
+                    name: Some(if tz { "timetz" } else { "time" }.to_owned()),
+                    strength: 1,
+                }
+            }
+            FlatExpr::IntervalLit(_) => Colname {
+                name: Some("interval".to_owned()),
+                strength: 1,
+            },
             FlatExpr::Normalize(_) => Colname {
                 name: Some("normalize".to_owned()),
                 strength: 2,
@@ -901,10 +1244,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         &self,
         body: Handle<pg_sql::ast::shared::expr::FlatCaseBody>,
     ) -> Option<Handle<FlatExpr>> {
-        // The CASE body shapes are not walked in this slice; the name falls
-        // back to "case".
-        let _ = body;
-        None
+        let else_clause = match self.get(body) {
+            FlatCaseBody::Searched(s) => self.get(*s).else_clause,
+            FlatCaseBody::Simple(s) => self.get(*s).else_clause,
+        };
+        else_clause.map(|e| self.get(e).result)
     }
 
     /// The last name of a cast's type name, as `FigureColname` uses it.
@@ -1176,20 +1520,28 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         const HOUR: i32 = 1024;
         const MINUTE: i32 = 2048;
         const SECOND: i32 = 4096;
+        let precision =
+            |h: &Handle<pg_sql::ast::shared::expr::FlatSecondWithPrecision>| -> Option<i64> {
+                let p = self.get(*h).precision?;
+                match self.typmod_args(p).ok()?.first() {
+                    Some(TypmodArg::Integer(v)) => Some(*v),
+                    _ => None,
+                }
+            };
         match self.get(q) {
             FlatIntervalQualifier::Year => (YEAR, None),
             FlatIntervalQualifier::Month => (MONTH, None),
             FlatIntervalQualifier::Day => (DAY, None),
             FlatIntervalQualifier::Hour => (HOUR, None),
             FlatIntervalQualifier::Minute => (MINUTE, None),
-            FlatIntervalQualifier::Second(_) => (SECOND, None),
+            FlatIntervalQualifier::Second(p) => (SECOND, precision(p)),
             FlatIntervalQualifier::YearToMonth => (YEAR | MONTH, None),
             FlatIntervalQualifier::DayToHour => (DAY | HOUR, None),
             FlatIntervalQualifier::DayToMinute => (DAY | HOUR | MINUTE, None),
-            FlatIntervalQualifier::DayToSecond(_) => (DAY | HOUR | MINUTE | SECOND, None),
+            FlatIntervalQualifier::DayToSecond(p) => (DAY | HOUR | MINUTE | SECOND, precision(p)),
             FlatIntervalQualifier::HourToMinute => (HOUR | MINUTE, None),
-            FlatIntervalQualifier::HourToSecond(_) => (HOUR | MINUTE | SECOND, None),
-            FlatIntervalQualifier::MinuteToSecond(_) => (MINUTE | SECOND, None),
+            FlatIntervalQualifier::HourToSecond(p) => (HOUR | MINUTE | SECOND, precision(p)),
+            FlatIntervalQualifier::MinuteToSecond(p) => (MINUTE | SECOND, precision(p)),
         }
     }
 
@@ -1451,7 +1803,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Cast(inner, cast_type) => {
                 let (inner, cast_type) = (*inner, *cast_type);
-                let arg = self.expr(scope, inner)?;
+                let arg = self.cast_operand(scope, inner, cast_type)?;
                 let inner_end = self.span(inner).end;
                 let cast_location = self.next_token_start(inner_end);
                 self.type_cast(handle, inner, &arg, cast_type, cast_location)
@@ -1463,10 +1815,272 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     return Err(unsupported("COLLATE", Some(location..location)));
                 }
                 let (value, target) = (inner.value, inner.target);
-                let arg = self.expr(scope, value)?;
+                let arg = self.cast_operand(scope, value, target)?;
                 self.type_cast(handle, value, &arg, target, location)
             }
             FlatExpr::CastFunc(f) => self.typed_literal(handle, *f, location),
+            FlatExpr::TimestampLit(t) => {
+                let t = self.get(*t);
+                let tz = matches!(t.tz.map(|z| self.get(z)), Some(FlatTimeZoneQualifier::With));
+                let typmods = match t.precision {
+                    Some(p) => self.typmod_args(p)?,
+                    None => Vec::new(),
+                };
+                let tn = TypeName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: if tz { "timestamptz" } else { "timestamp" }.to_owned(),
+                    typmods,
+                    array_dims: 0,
+                    location,
+                };
+                self.string_const_cast(handle, tn, t.value, location)
+            }
+            FlatExpr::TimeLit(t) => {
+                let t = self.get(*t);
+                let tz = matches!(t.tz.map(|z| self.get(z)), Some(FlatTimeZoneQualifier::With));
+                let typmods = match t.precision {
+                    Some(p) => self.typmod_args(p)?,
+                    None => Vec::new(),
+                };
+                let tn = TypeName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: if tz { "timetz" } else { "time" }.to_owned(),
+                    typmods,
+                    array_dims: 0,
+                    location,
+                };
+                self.string_const_cast(handle, tn, t.value, location)
+            }
+            FlatExpr::IntervalLit(i) => {
+                let i = self.get(*i);
+                // gram.y: INTERVAL '(' Iconst ')' Sconst carries
+                // [FULL_RANGE, precision]; INTERVAL Sconst opt_interval carries
+                // the qualifier's [fields] or [fields, precision].
+                let mut typmods = Vec::new();
+                if let Some(p) = i.precision {
+                    typmods.push(TypmodArg::Integer(0x7fff));
+                    typmods.extend(self.typmod_args(p)?);
+                } else if let Some(q) = i.qualifier {
+                    let (fields, precision) = self.interval_qualifier(q);
+                    typmods.push(TypmodArg::Integer(i64::from(fields)));
+                    if let Some(p) = precision {
+                        typmods.push(TypmodArg::Integer(p));
+                    }
+                }
+                let tn = TypeName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "interval".to_owned(),
+                    typmods,
+                    array_dims: 0,
+                    location,
+                };
+                self.string_const_cast(handle, tn, i.value, location)
+            }
+            FlatExpr::Array(a) => match self.get(*a) {
+                FlatArrayExpr::Subquery(_) => {
+                    Err(unsupported("ARRAY(subquery)", Some(location..location)))
+                }
+                FlatArrayExpr::Bracket(b) => {
+                    let elements = self.list(self.get(*b).elements).to_vec();
+                    self.array_expr(scope, &elements, location, None)
+                }
+            },
+            FlatExpr::Case(c) => {
+                let body = self.get(*c).body;
+                self.case_expr(scope, body, location)
+            }
+            FlatExpr::InExpr(l, list) => {
+                let (l, list) = (*l, *list);
+                let content = self.get(list).0;
+                let items = match self.get(content) {
+                    FlatInContent::Subquery(_) => {
+                        return Err(unsupported("IN (subquery)", Some(location..location)));
+                    }
+                    FlatInContent::Exprs(list) => self.list1(*list).to_vec(),
+                };
+                let op_location = self.next_token_start(self.span(l).end);
+                self.in_list(scope, handle, l, &items, false, op_location)
+            }
+            FlatExpr::NotInExpr(l, suffix) => {
+                let (l, suffix) = (*l, *suffix);
+                let content = self.get(self.get(suffix).list).0;
+                let items = match self.get(content) {
+                    FlatInContent::Subquery(_) => {
+                        return Err(unsupported("NOT IN (subquery)", Some(location..location)));
+                    }
+                    FlatInContent::Exprs(list) => self.list1(*list).to_vec(),
+                };
+                let op_location = self.next_token_start(self.span(l).end);
+                self.in_list(scope, handle, l, &items, true, op_location)
+            }
+            FlatExpr::Extract(e) => {
+                let inner = self.get(self.get(*e).inner);
+                let field = match self.get(inner.field) {
+                    FlatExtractField::StringLit(s) => match self.get(*s) {
+                        FlatStringLitSeq0::Single(t) => string_literal_body(self.text(*t)),
+                        FlatStringLitSeq0::Sequence(t) => string_literal_body(self.text(*t)),
+                    },
+                    FlatExtractField::Ident(i) => {
+                        let FlatAliasName::Text(t) = self.get(*i);
+                        let raw = self.text(*t);
+                        // extract_arg: IDENT keeps its spelling; the keywords
+                        // arrive lower-cased.
+                        if raw.starts_with('"') {
+                            self.fold(raw, location)?
+                        } else {
+                            raw.to_owned()
+                        }
+                    }
+                };
+                let source = inner.source;
+                let st = self.expr(scope, source)?;
+                let field_const = make_const(self.types(), LiteralKind::String, &field, location);
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "extract".to_owned(),
+                };
+                self.resolve_call(
+                    handle,
+                    name,
+                    &[handle, source],
+                    &[field_const, st],
+                    location,
+                    None,
+                )
+            }
+            FlatExpr::Position(p) => {
+                let inner = self.get(self.get(*p).inner);
+                let (needle, haystack) = (inner.needle, inner.haystack);
+                let nt = self.expr(scope, needle)?;
+                let ht = self.expr(scope, haystack)?;
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "position".to_owned(),
+                };
+                // position_list: b_expr IN b_expr -> (haystack, needle).
+                self.resolve_call(handle, name, &[haystack, needle], &[ht, nt], location, None)
+            }
+            FlatExpr::Overlay(o) => {
+                let inner = self.get(self.get(*o).inner);
+                let mut handles = vec![inner.source, inner.new, inner.start];
+                if let Some(f) = inner.for_count {
+                    handles.push(self.get(f).count);
+                }
+                let mut args = Vec::new();
+                for &h in &handles {
+                    args.push(self.expr(scope, h)?);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "overlay".to_owned(),
+                };
+                self.resolve_call(handle, name, &handles, &args, location, None)
+            }
+            FlatExpr::Substring(s) => {
+                let inner = self.get(self.get(*s).inner);
+                let source = inner.source;
+                let mut handles = vec![source];
+                let mut extra_int4_cast: Option<usize> = None;
+                match self.get(inner.tail) {
+                    FlatSubstringTail::FromFor(ff) => {
+                        let ff = self.get(*ff);
+                        handles.push(ff.start);
+                        if let Some(f) = ff.for_count {
+                            handles.push(self.get(f).count);
+                        }
+                    }
+                    FlatSubstringTail::For(f) => {
+                        // substr_list: a_expr FOR a_expr -> (a, 1, cast(b as int4)).
+                        let count = self.get(*f).count;
+                        handles.push(count);
+                        extra_int4_cast = Some(1);
+                    }
+                    FlatSubstringTail::Similar(sim) => {
+                        let sim = self.get(*sim);
+                        handles.push(sim.pattern);
+                        handles.push(sim.escape);
+                    }
+                    FlatSubstringTail::Args(list) => {
+                        for a in self.list1(*list) {
+                            handles.push(self.get(*a).value);
+                        }
+                    }
+                }
+                let mut args = Vec::new();
+                for &h in &handles {
+                    args.push(self.expr(scope, h)?);
+                }
+                if let Some(i) = extra_int4_cast {
+                    let int4 = self.types().builtin(Builtin::Int4);
+                    let count = args.remove(i);
+                    let coerced = self.coercer().coerce_to_target_type(
+                        &count,
+                        int4,
+                        -1,
+                        CoercionContext::Explicit,
+                    )?;
+                    let Some((count_typed, steps)) = coerced else {
+                        return Err(Diagnostic::new(
+                            "42846",
+                            format!(
+                                "cannot cast type {} to {}",
+                                self.types().format(count.ty),
+                                "integer"
+                            ),
+                        )
+                        .at(count.location)
+                        .into());
+                    };
+                    self.record_coercions(handles[i], steps);
+                    let one = make_const(self.types(), LiteralKind::Integer, "1", location);
+                    args.insert(1, one);
+                    args.push(count_typed);
+                    handles.insert(1, handle);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "substring".to_owned(),
+                };
+                self.resolve_call(handle, name, &handles, &args, location, None)
+            }
+            FlatExpr::Trim(t) => {
+                let inner = self.get(self.get(*t).inner);
+                let fname = match inner.dir.map(|d| self.get(d)) {
+                    Some(FlatTrimDir::Leading) => "ltrim",
+                    Some(FlatTrimDir::Trailing) => "rtrim",
+                    _ => "btrim",
+                };
+                // trim_list: `a FROM list` -> list ++ [a]; `FROM list` -> list; `list`.
+                let mut handles: Vec<Handle<FlatExpr>> = Vec::new();
+                match self.get(inner.tail) {
+                    FlatTrimTail::FromArgs(f) => handles.extend(self.list1(self.get(*f).args)),
+                    FlatTrimTail::Values(v) => {
+                        let v = self.get(*v);
+                        match v.rest.map(|r| self.get(r)) {
+                            None => handles.push(v.first),
+                            Some(FlatTrimValuesRest::From(f)) => {
+                                handles.extend(self.list1(self.get(*f).args));
+                                handles.push(v.first);
+                            }
+                            Some(FlatTrimValuesRest::More(m)) => {
+                                handles.push(v.first);
+                                for a in self.list1(self.get(*m).0) {
+                                    handles.push(self.get(*a).value);
+                                }
+                            }
+                        }
+                    }
+                }
+                let mut args = Vec::new();
+                for &h in &handles {
+                    args.push(self.expr(scope, h)?);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: fname.to_owned(),
+                };
+                self.resolve_call(handle, name, &handles, &args, location, None)
+            }
             FlatExpr::And(l, r) | FlatExpr::Or(l, r) => {
                 let (l, r) = (*l, *r);
                 let construct = if matches!(node, FlatExpr::And(..)) {
@@ -1522,10 +2136,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             | FlatExpr::Ilike(l, r, esc)
             | FlatExpr::NotLike(l, r, esc)
             | FlatExpr::NotIlike(l, r, esc) => {
-                if esc.is_some() {
-                    return Err(unsupported("LIKE ... ESCAPE", Some(location..location)));
-                }
-                let (l, r) = (*l, *r);
+                let (l, r, esc) = (*l, *r, *esc);
                 let op = match node {
                     FlatExpr::Like(..) => "~~",
                     FlatExpr::Ilike(..) => "~~*",
@@ -1535,6 +2146,23 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let lt = self.expr(scope, l)?;
                 let rt = self.expr(scope, r)?;
                 let op_location = self.next_token_start(self.span(l).end);
+                let rt = match esc {
+                    None => rt,
+                    Some(esc) => {
+                        // gram.y: the pattern becomes like_escape(pattern, escape).
+                        let et = self.expr(scope, esc)?;
+                        let name = ObjectName {
+                            schema: Some("pg_catalog".to_owned()),
+                            name: "like_escape".to_owned(),
+                        };
+                        let escaped =
+                            self.resolve_call(r, name, &[r, esc], &[rt, et], op_location, None)?;
+                        Typed {
+                            location: escaped.location,
+                            ..escaped
+                        }
+                    }
+                };
                 self.infix_op(
                     handle,
                     ObjectName {
@@ -2330,6 +2958,36 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
+    /// The operand of a cast: `ARRAY[...]` learns its element type from the
+    /// cast's target, as `transformTypeCast` arranges.
+    fn cast_operand(
+        &mut self,
+        scope: &Scope,
+        inner: Handle<FlatExpr>,
+        cast_type: Handle<pg_sql::ast::shared::expr::FlatCastType>,
+    ) -> Result<Typed> {
+        if let FlatExpr::Array(a) = self.get(inner)
+            && let FlatArrayExpr::Bracket(b) = self.get(*a)
+        {
+            let tn = self.type_name(cast_type)?;
+            let (target, target_typmod) = self.typenames.resolve(&tn)?;
+            let (base, base_typmod) = self.types().base_type_and_typmod(target, target_typmod);
+            if let Some(element) = self.types().element_type(base) {
+                let elements = self.list(self.get(*b).elements).to_vec();
+                let location = self.span(inner).start;
+                let typed = self.array_expr(
+                    scope,
+                    &elements,
+                    location,
+                    Some((base, element, base_typmod)),
+                )?;
+                self.record_type(inner, &typed);
+                return Ok(typed);
+            }
+        }
+        self.expr(scope, inner)
+    }
+
     /// `transformTypeCast`.
     fn type_cast(
         &mut self,
@@ -2479,6 +3137,406 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             .at(location)
             .into()),
         }
+    }
+
+    /// `makeStringConstCast`: an unknown string constant cast to a type,
+    /// located at the string.
+    fn string_const_cast(
+        &mut self,
+        handle: Handle<FlatExpr>,
+        tn: TypeName,
+        value: Text<impl Sized>,
+        cast_location: usize,
+    ) -> Result<Typed> {
+        let string_span = self.text_span(value);
+        let text = string_literal_body(self.text(value));
+        let arg = make_const(self.types(), LiteralKind::String, &text, string_span.start);
+        let (target, target_typmod) = self.typenames.resolve(&tn)?;
+        match self.coercer().coerce_to_target_type(
+            &arg,
+            target,
+            target_typmod,
+            CoercionContext::Explicit,
+        )? {
+            Some((result, steps)) => {
+                self.record_coercions(handle, steps);
+                Ok(result)
+            }
+            None => Err(Diagnostic::new(
+                "42846",
+                format!(
+                    "cannot cast type {} to {}",
+                    self.types().format(arg.ty),
+                    self.types().format(target)
+                ),
+            )
+            .at(cast_location)
+            .into()),
+        }
+    }
+
+    /// `transformArrayExpr` without a target type: the elements share a
+    /// common type and the result is its array type.
+    fn array_expr(
+        &mut self,
+        scope: &Scope,
+        elements: &[Handle<FlatArrayElement>],
+        location: usize,
+        target: Option<(TypeRef, TypeRef, crate::types::Typmod)>,
+    ) -> Result<Typed> {
+        let mut multidims = false;
+        let mut typed: Vec<(Option<Handle<FlatExpr>>, Typed)> = Vec::new();
+        for &e in elements {
+            match self.get(e) {
+                FlatArrayElement::Nested(n) => {
+                    let inner = self.list(self.get(*n).elements).to_vec();
+                    let t = self.array_expr(scope, &inner, location, target)?;
+                    multidims = true;
+                    typed.push((None, t));
+                }
+                FlatArrayElement::Expr(x) => {
+                    let x = *x;
+                    let t = self.expr(scope, x)?;
+                    if !multidims
+                        && !self.types().is(t.ty, Builtin::Int2vector)
+                        && !self.types().is(t.ty, Builtin::Oidvector)
+                        && self.types().is_array(t.ty)
+                    {
+                        multidims = true;
+                    }
+                    typed.push((Some(x), t));
+                }
+            }
+        }
+        let (array_type, coerce_type, coerce_hard, typmod) =
+            if let Some((array, element, typmod)) = target {
+                (array, if multidims { array } else { element }, true, typmod)
+            } else {
+                if typed.is_empty() {
+                    return Err(Diagnostic::new("42P18", "cannot determine type of empty array")
+                    .hint("Explicitly cast to the desired type, for example ARRAY[]::integer[].")
+                    .at(location)
+                    .into());
+                }
+                let type_list: Vec<TypeRef> = typed.iter().map(|(_, t)| t.ty).collect();
+                let coerce_type = match self.coercer().common_type(&type_list) {
+                    Ok(t) => t,
+                    Err((p, n)) => {
+                        let offender = typed
+                            .iter()
+                            .find(|(_, t)| self.types().base_type(t.ty) == n)
+                            .map_or(location, |(_, t)| t.location);
+                        return Err(Diagnostic::new(
+                            "42804",
+                            format!(
+                                "ARRAY types {} and {} cannot be matched",
+                                self.types().format(p),
+                                self.types().format(n)
+                            ),
+                        )
+                        .at(offender)
+                        .into());
+                    }
+                };
+                let array_type = if multidims {
+                    if self.types().element_type(coerce_type).is_none() {
+                        return Err(Diagnostic::new(
+                            "42704",
+                            format!(
+                                "could not find element type for data type {}",
+                                self.types().format(coerce_type)
+                            ),
+                        )
+                        .at(location)
+                        .into());
+                    }
+                    coerce_type
+                } else {
+                    let Some(array) = self.types().array_type(coerce_type) else {
+                        return Err(Diagnostic::new(
+                            "42704",
+                            format!(
+                                "could not find array type for data type {}",
+                                self.types().format(coerce_type)
+                            ),
+                        )
+                        .at(location)
+                        .into());
+                    };
+                    array
+                };
+                (array_type, coerce_type, false, -1)
+            };
+        for (h, t) in &typed {
+            if coerce_hard {
+                let coerced = self.coercer().coerce_to_target_type(
+                    t,
+                    coerce_type,
+                    typmod,
+                    CoercionContext::Explicit,
+                )?;
+                match coerced {
+                    Some((_, steps)) => {
+                        if let Some(h) = h {
+                            self.record_coercions(*h, steps);
+                        }
+                    }
+                    None => {
+                        return Err(Diagnostic::new(
+                            "42846",
+                            format!(
+                                "cannot cast type {} to {}",
+                                self.types().format(t.ty),
+                                self.types().format(coerce_type)
+                            ),
+                        )
+                        .at(t.location)
+                        .into());
+                    }
+                }
+            } else if t.ty != coerce_type {
+                let steps = self
+                    .coercer()
+                    .coerce_to_common_type(t, coerce_type, "ARRAY")?;
+                if let Some(h) = h {
+                    self.record_coercions(*h, steps);
+                }
+            }
+        }
+        Ok(Typed {
+            ty: array_type,
+            typmod: -1,
+            form: Form::Other,
+            location,
+            returns_set: false,
+        })
+    }
+
+    /// `transformCaseExpr`.
+    fn case_expr(
+        &mut self,
+        scope: &Scope,
+        body: Handle<FlatCaseBody>,
+        location: usize,
+    ) -> Result<Typed> {
+        let (operand, first, rest, else_clause) = match self.get(body) {
+            FlatCaseBody::Searched(s) => {
+                let s = self.get(*s);
+                (None, s.first_arm, s.rest_arms, s.else_clause)
+            }
+            FlatCaseBody::Simple(s) => {
+                let s = self.get(*s);
+                (Some(s.operand), s.first_arm, s.rest_arms, s.else_clause)
+            }
+        };
+        // The operand: an unknown one becomes text.
+        let placeholder = match operand {
+            None => None,
+            Some(o) => {
+                let mut t = self.expr(scope, o)?;
+                if self.types().is_unknown(t.ty) {
+                    let text = self.types().builtin(Builtin::Text);
+                    let steps = self.coercer().coerce_to_common_type(&t, text, "CASE")?;
+                    self.record_coercions(o, steps);
+                    t.ty = text;
+                }
+                Some(t)
+            }
+        };
+        let mut arms = vec![first];
+        arms.extend(self.list(rest));
+        let mut results: Vec<(Option<Handle<FlatExpr>>, Typed)> = Vec::new();
+        for arm in arms {
+            let arm = self.get(arm);
+            let cond = self.expr(scope, arm.condition)?;
+            match &placeholder {
+                None => {
+                    let (_, steps) = self.coercer().coerce_to_boolean(&cond, "CASE/WHEN")?;
+                    self.record_coercions(arm.condition, steps);
+                }
+                Some(p) => {
+                    // placeholder = value, then coerced to boolean.
+                    let when_location = self.span(arm.condition).start;
+                    let resolved = self.resolver.make_op(
+                        &ObjectName {
+                            schema: None,
+                            name: "=".to_owned(),
+                        },
+                        Some(p),
+                        &cond,
+                        when_location,
+                    )?;
+                    self.record_coercions(arm.condition, resolved.right_coercions);
+                    let (_, steps) = self
+                        .coercer()
+                        .coerce_to_boolean(&resolved.result, "CASE/WHEN")?;
+                    let _ = steps;
+                }
+            }
+            let r = self.expr(scope, arm.result)?;
+            results.push((Some(arm.result), r));
+        }
+        let default = match else_clause {
+            Some(e) => {
+                let e = self.get(e).result;
+                (Some(e), self.expr(scope, e)?)
+            }
+            None => (
+                None,
+                make_const(self.types(), LiteralKind::Null, "", location),
+            ),
+        };
+        // select_common_type over [default, results...].
+        let mut all = vec![default];
+        all.extend(results);
+        let type_list: Vec<TypeRef> = all.iter().map(|(_, t)| t.ty).collect();
+        let ptype = match self.coercer().common_type(&type_list) {
+            Ok(t) => t,
+            Err((p, n)) => {
+                let offender = all
+                    .iter()
+                    .find(|(_, t)| self.types().base_type(t.ty) == n)
+                    .map_or(location, |(_, t)| t.location);
+                return Err(Diagnostic::new(
+                    "42804",
+                    format!(
+                        "CASE types {} and {} cannot be matched",
+                        self.types().format(p),
+                        self.types().format(n)
+                    ),
+                )
+                .at(offender)
+                .into());
+            }
+        };
+        for (i, (h, t)) in all.iter().enumerate() {
+            if t.ty != ptype {
+                let construct = if i == 0 { "CASE/ELSE" } else { "CASE/WHEN" };
+                let steps = self.coercer().coerce_to_common_type(t, ptype, construct)?;
+                if let Some(h) = h {
+                    self.record_coercions(*h, steps);
+                }
+            }
+        }
+        let typmod = {
+            let first = all[0].1.typmod;
+            if all.iter().all(|(_, t)| t.ty == ptype && t.typmod == first) {
+                first
+            } else {
+                -1
+            }
+        };
+        Ok(Typed {
+            ty: ptype,
+            typmod,
+            form: Form::Other,
+            location,
+            returns_set: false,
+        })
+    }
+
+    /// `transformAExprIn` for a value list: the non-variable items share a
+    /// common type and the test becomes `= ANY (array)`; anything else
+    /// becomes a chain of comparisons.
+    fn in_list(
+        &mut self,
+        scope: &Scope,
+        handle: Handle<FlatExpr>,
+        left: Handle<FlatExpr>,
+        items: &[Handle<FlatExpr>],
+        negated: bool,
+        op_location: usize,
+    ) -> Result<Typed> {
+        let lt = self.expr(scope, left)?;
+        let mut typed = Vec::with_capacity(items.len());
+        for &i in items {
+            typed.push(self.expr(scope, i)?);
+        }
+        let op = ObjectName {
+            schema: None,
+            name: if negated { "<>" } else { "=" }.to_owned(),
+        };
+        // Items containing a column reference are compared one by one.
+        let mut nonvars = Vec::new();
+        let mut vars = Vec::new();
+        for (h, t) in items.iter().zip(&typed) {
+            if self.contains_var(*h) {
+                vars.push((*h, t.clone()));
+            } else {
+                nonvars.push((*h, t.clone()));
+            }
+        }
+        let mut remaining: Vec<(Handle<FlatExpr>, Typed)> = Vec::new();
+        remaining.extend(vars.iter().cloned());
+        let mut array_done = false;
+        if nonvars.len() > 1 {
+            let mut all_types = vec![lt.ty];
+            all_types.extend(nonvars.iter().map(|(_, t)| t.ty));
+            let scalar = self.coercer().common_type(&all_types).ok().filter(|&s| {
+                all_types.iter().all(|&t| {
+                    self.coercer()
+                        .can_coerce_type(&[t], &[s], CoercionContext::Implicit)
+                })
+            });
+            let array = scalar
+                .filter(|&s| !self.types().is_record(s))
+                .and_then(|s| self.types().array_type(s).map(|a| (s, a)));
+            if let Some((scalar, array)) = array {
+                for (h, t) in &nonvars {
+                    if t.ty != scalar {
+                        let steps = self.coercer().coerce_to_common_type(t, scalar, "IN")?;
+                        self.record_coercions(*h, steps);
+                    }
+                }
+                // make_scalar_array_op: the operator over (left, scalar).
+                let resolved = self
+                    .resolver
+                    .make_op(&op, Some(&lt), &nonvars[0].1, op_location)?;
+                let elem_typed = Typed {
+                    ty: scalar,
+                    typmod: -1,
+                    form: Form::Other,
+                    location: op_location,
+                    returns_set: false,
+                };
+                let resolved = self
+                    .resolver
+                    .make_op(&op, Some(&lt), &elem_typed, op_location)?;
+                if !self.types().is(resolved.result.ty, Builtin::Bool) {
+                    return Err(Diagnostic::new(
+                        "42809",
+                        "op ANY/ALL (array) requires operator to yield boolean",
+                    )
+                    .at(op_location)
+                    .into());
+                }
+                let _ = array;
+                self.analysis.operators.insert(handle, resolved.operator);
+                self.record_coercions(left, resolved.left_coercions);
+                array_done = true;
+            } else {
+                remaining = vars
+                    .iter()
+                    .cloned()
+                    .chain(nonvars.iter().cloned())
+                    .collect();
+            }
+        } else {
+            remaining = vars
+                .iter()
+                .cloned()
+                .chain(nonvars.iter().cloned())
+                .collect();
+        }
+        for (h, t) in &remaining {
+            let resolved = self.resolver.make_op(&op, Some(&lt), t, op_location)?;
+            let (_, _) = self.coercer().coerce_to_boolean(&resolved.result, "IN")?;
+            if !array_done {
+                self.analysis.operators.insert(handle, resolved.operator);
+            }
+            self.record_coercions(*h, resolved.right_coercions);
+        }
+        Ok(self.bool_result(lt.location))
     }
 
     /// COALESCE, GREATEST and LEAST: `select_common_type` over the

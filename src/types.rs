@@ -190,6 +190,102 @@ impl<'c> Types<'c> {
         self.catalog[t].is_collatable
     }
 
+    /// `lookup_type_cache(TYPECACHE_LT_OPR | TYPECACHE_EQ_OPR | TYPECACHE_GT_OPR)`:
+    /// the btree ordering operators for the type, with `GetDefaultOpClass`'s
+    /// fallbacks (a domain's base type, then the `anyarray`, `anyenum`,
+    /// `anyrange`, `anymultirange` and `record` classes) and the type cache's
+    /// rule that an array, range, multirange or record is orderable only
+    /// when its element type is.
+    pub fn btree_ordering(&self, t: TypeRef) -> Option<pg_catalog::BtreeOperators> {
+        let catalog = self.catalog;
+        let base = self.base_type(t);
+        if let Some(ops) = catalog.btree_ordering(base) {
+            return Some(ops);
+        }
+        // GetDefaultOpClass: a class whose input type the type is
+        // binary-coercible to, such as varchar to text or regclass to oid.
+        for &cast in catalog.casts_from(base) {
+            let c = &catalog[cast];
+            if c.method == pg_catalog::CastMethod::Binary
+                && c.context == pg_catalog::CastContext::Implicit
+                && let Some(ops) = catalog.btree_ordering(c.target)
+            {
+                return Some(ops);
+            }
+        }
+        let fallback = match &catalog[base].kind {
+            TypeKind::Array { element } => {
+                self.btree_ordering(*element)?;
+                Builtin::Anyarray
+            }
+            TypeKind::Enum { .. } => Builtin::Anyenum,
+            TypeKind::Range(r) => {
+                self.btree_ordering(r.subtype)?;
+                Builtin::Anyrange
+            }
+            TypeKind::Multirange { range } => {
+                let sub = self.range_subtype(*range)?;
+                self.btree_ordering(sub)?;
+                Builtin::Anymultirange
+            }
+            TypeKind::Composite(detail) => {
+                for field in &detail.fields {
+                    self.btree_ordering(field.ty)?;
+                }
+                Builtin::Record
+            }
+            TypeKind::Pseudo(PseudoType::Record) => return catalog.btree_ordering(base),
+            _ => return None,
+        };
+        catalog.btree_ordering(catalog.builtin(fallback))
+    }
+
+    /// `TYPECACHE_EQ_OPR`: the equality operator, from the btree class or,
+    /// failing that, the hash class, with the same fallbacks.
+    pub fn equality_operator(&self, t: TypeRef) -> Option<Handle<pg_catalog::Operator>> {
+        if let Some(ops) = self.btree_ordering(t) {
+            return Some(ops.eq);
+        }
+        let catalog = self.catalog;
+        let base = self.base_type(t);
+        if let Some(op) = catalog.hash_equality(base) {
+            return Some(op);
+        }
+        for &cast in catalog.casts_from(base) {
+            let c = &catalog[cast];
+            if c.method == pg_catalog::CastMethod::Binary
+                && c.context == pg_catalog::CastContext::Implicit
+                && let Some(op) = catalog.hash_equality(c.target)
+            {
+                return Some(op);
+            }
+        }
+        let fallback = match &catalog[base].kind {
+            TypeKind::Array { element } => {
+                self.equality_operator(*element)?;
+                Builtin::Anyarray
+            }
+            TypeKind::Enum { .. } => Builtin::Anyenum,
+            TypeKind::Range(r) => {
+                self.equality_operator(r.subtype)?;
+                Builtin::Anyrange
+            }
+            TypeKind::Multirange { range } => {
+                let sub = self.range_subtype(*range)?;
+                self.equality_operator(sub)?;
+                Builtin::Anymultirange
+            }
+            TypeKind::Composite(detail) => {
+                for field in &detail.fields {
+                    self.equality_operator(field.ty)?;
+                }
+                Builtin::Record
+            }
+            _ => return None,
+        };
+        catalog.hash_equality(catalog.builtin(fallback))
+    }
+
     /// `format_type_be`: PostgreSQL's name for a type in a message.
     pub fn format(&self, t: TypeRef) -> String {
         self.format_with_typmod(t, None)
