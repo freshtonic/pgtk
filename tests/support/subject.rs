@@ -107,7 +107,11 @@ impl Subject for AnalyzerSubject {
                                 type_oid,
                                 typmod,
                                 table_oid: c.origin.map(|(r, _)| catalog[r].oid.0),
-                                column_id: c.origin.map(|(_, attnum)| attnum),
+                                // A whole-row origin is sent as column 0,
+                                // which the wire protocol reads as none.
+                                column_id: c
+                                    .origin
+                                    .and_then(|(_, attnum)| (attnum != 0).then_some(attnum)),
                             }
                         })
                         .collect(),

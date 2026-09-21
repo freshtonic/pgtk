@@ -17,6 +17,10 @@ _Avoid_: Query (that is PostgreSQL's name for the analysed form), AST, parse tre
 **Utility Statement**:
 A Statement that PostgreSQL's `parse_analyze` does not transform, such as DDL. Analysis leaves it unanalysed except for any query embedded in it.
 
+**Rewrite**:
+The part of PostgreSQL's rewriter that runs before a Describe answers, which Analysis reproduces: a data-modifying Statement on a view is checked as the rewriter checks it and its target becomes the base relation, a rule refuses RETURNING or ON CONFLICT as the rewriter does, and generated and identity columns refuse the values the rewriter refuses. Analysis does not reproduce a rule's actions.
+_Avoid_: Query rewriting (the whole of PostgreSQL's rewriter), view expansion
+
 **Catalog**:
 The immutable snapshot of one database's system catalog, as defined by `pg-catalog`. Analysis reads it and never changes it.
 

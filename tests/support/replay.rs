@@ -258,6 +258,7 @@ fn has_query(statement: &Statement<'_>) -> bool {
             | Statement::CreateMaterializedView(_)
             | Statement::CreateTable(_)
             | Statement::CreateRule(_)
+            | Statement::Call(_)
     )
 }
 
@@ -288,11 +289,13 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
         }
         // Rejections raised outside parse analysis while the Subject
         // analysed: data errors from input functions (class 22, 54 and 55,
-        // and 42602), scanner-level syntax (42601, 0A000), the rewriter's
+        // and 42602), domain checks folded at parse time (class 23),
+        // scanner-level syntax (42601, 0A000), the rewriter's
         // policy recursion and restricted-view checks (42P17, 55000), and
         // catalog lookups done by reg* input functions.
         (OracleOutcome::Rejected(error), SubjectOutcome::Analysed { reg_literals, .. })
             if error.sqlstate.starts_with("22")
+                || error.sqlstate.starts_with("23")
                 || error.sqlstate.starts_with("54")
                 || error.sqlstate.starts_with("55")
                 || matches!(
@@ -466,6 +469,7 @@ pub fn replay_file(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn replay_one(
     session: &mut Session,
     subject: &mut dyn Subject,
@@ -493,9 +497,7 @@ fn replay_one(
     // the current search path; any other is analysed against whatever
     // Catalog the session has, loading one only when it has none yet.
     let wants = subject.wants(shape);
-    let load = if wants {
-        session.ensure_catalog()
-    } else if session.catalog.is_none() {
+    let load = if wants || session.catalog.is_none() {
         session.ensure_catalog()
     } else {
         Ok(())
