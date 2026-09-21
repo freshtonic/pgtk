@@ -43,6 +43,7 @@ mod builder;
 mod builtin;
 mod cast;
 mod catalog;
+mod collation;
 mod diagnostic;
 mod error;
 mod executor;
@@ -68,6 +69,7 @@ pub use builder::{BuildError, CatalogBuilder};
 pub use builtin::Builtin;
 pub use cast::{Cast, CastContext, CastMethod};
 pub use catalog::{Catalog, Metadata, ServerVersion};
+pub use collation::{Collation, CollationProvider, Encoding};
 pub use diagnostic::{Diagnostic, EntityKind, SkipReason};
 pub use error::LoadError;
 #[cfg(feature = "async")]

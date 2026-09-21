@@ -161,6 +161,20 @@ mod sync_tests {
             );
         }
 
+        // The database has an encoding, and the three collations that each
+        // server has are there for it.
+        let encoding = &catalog.metadata().encoding;
+        assert!(!encoding.name.is_empty());
+        for name in ["default", "C", "POSIX"] {
+            let handle = catalog
+                .collation_named(&QualifiedName::new("pg_catalog", name))
+                .unwrap_or_else(|| panic!("{name} is a collation"));
+            assert!(encoding.can_use(&catalog[handle]));
+        }
+        for (_, ty) in catalog.types() {
+            assert_eq!(ty.is_collatable, ty.collation.is_some(), "{}", ty.name);
+        }
+
         // `SHOW timezone` names its column `TimeZone`.
         let timezone = catalog.parameter("timezone").expect("TimeZone is there");
         assert_eq!(timezone.name, "TimeZone");
@@ -412,6 +426,15 @@ mod sync_tests {
              );
              CREATE RULE note_off AS ON UPDATE TO {schema}.reading_note DO INSTEAD NOTHING;
              ALTER TABLE {schema}.reading_note DISABLE RULE note_off;
+             CREATE COLLATION {schema}.shouty (LOCALE = 'C');
+             CREATE TABLE {schema}.worded (
+                 plain text,
+                 c_text text COLLATE \"C\",
+                 posix_text text COLLATE \"POSIX\",
+                 shouty_text text COLLATE {schema}.shouty,
+                 n int4
+             );
+             CREATE DOMAIN {schema}.c_word AS text COLLATE \"C\";
              CREATE TABLE {schema}.p1 (a int4);
              CREATE TABLE {schema}.p2 (b text);
              CREATE TABLE {schema}.c1 (c int4) INHERITS ({schema}.p2, {schema}.p1);
@@ -623,6 +646,45 @@ mod sync_tests {
         assert_eq!(audit.timing, TriggerTiming::After);
         assert!(audit.insert && audit.delete && !audit.update && !audit.row_level);
         assert_eq!(audit.fires, FiresWhen::Origin);
+
+        // Each column has its collation. A column with no COLLATE clause has
+        // the `default` collation of `text`. An `int4` column has none.
+        let collation = |schema: &str, name: &str| {
+            catalog
+                .collation_named(&QualifiedName::new(schema, name))
+                .expect("the collation is there")
+        };
+        let default = collation("pg_catalog", "default");
+        let shouty = collation(schema, "shouty");
+        let worded = &catalog[relation("worded")];
+        let collation_of = |name: &str| worded.column(name).expect("the column is there").collation;
+        assert_eq!(collation_of("plain"), Some(default));
+        assert_eq!(collation_of("c_text"), Some(collation("pg_catalog", "C")));
+        assert_eq!(
+            collation_of("posix_text"),
+            Some(collation("pg_catalog", "POSIX"))
+        );
+        assert_eq!(collation_of("shouty_text"), Some(shouty));
+        assert_eq!(collation_of("n"), None);
+        assert_eq!(
+            catalog[shouty].schema,
+            catalog.schema_named(schema).unwrap()
+        );
+        assert_eq!(catalog[shouty].extension, None);
+
+        // A domain can have a collation that is not that of its base type.
+        let c_word = catalog
+            .type_named(&named("c_word"))
+            .expect("c_word is a type");
+        assert_eq!(
+            catalog[c_word].collation,
+            Some(collation("pg_catalog", "C"))
+        );
+        assert_eq!(
+            catalog[catalog.builtin(Builtin::Text)].collation,
+            Some(default)
+        );
+        assert_eq!(catalog[int4].collation, None);
 
         // A typed table names the type that it is `OF`. Its row type is
         // another type, with the same fields.

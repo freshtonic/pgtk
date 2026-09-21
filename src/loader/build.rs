@@ -21,6 +21,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::builder::CatalogBuilder;
 use crate::cast::{Cast, CastContext, CastMethod};
 use crate::catalog::{Catalog, Metadata, ServerVersion};
+use crate::collation::{Collation, CollationProvider, Encoding};
 use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
 use crate::error::LoadError;
 use crate::extension::Extension;
@@ -100,6 +101,8 @@ enum MemberClass {
     Cast,
     /// A row of `pg_namespace`.
     Namespace,
+    /// A row of `pg_collation`.
+    Collation,
     /// A catalog that this model does not hold.
     Other,
 }
@@ -114,6 +117,7 @@ impl MemberClass {
             "operator" => MemberClass::Operator,
             "cast" => MemberClass::Cast,
             "namespace" => MemberClass::Namespace,
+            "collation" => MemberClass::Collation,
             _ => MemberClass::Other,
         }
     }
@@ -160,6 +164,8 @@ struct TypeRow {
     multirange_of: Option<Oid>,
     /// The number of `CHECK` constraints on a domain.
     check_count: u32,
+    /// The OID of the collation of the type, or 0.
+    typcollation: Oid,
 }
 
 /// One row of [`QueryId::Attributes`].
@@ -183,6 +189,8 @@ struct AttributeRow {
     generated: bool,
     /// The `attidentity` letter, when the attribute is an identity column.
     identity: Option<char>,
+    /// The OID of the collation of the attribute, or 0.
+    collation: Oid,
 }
 
 /// One row of [`QueryId::Relations`].
@@ -315,14 +323,6 @@ where
         .collect()
 }
 
-/// The one text value of a query that gives one row and one column.
-fn single_text(rows: &HashMap<QueryId, Rows>, query: QueryId) -> Result<String, LoadError> {
-    let rows = rows_of(rows, query)?;
-    let empty: Vec<Option<String>> = Vec::new();
-    let first = rows.first().unwrap_or(&empty);
-    Ok(Cells::new(query, 0, first).text(0)?.to_owned())
-}
-
 /// The first column of every row of a query.
 fn first_column(rows: &HashMap<QueryId, Rows>, query: QueryId) -> Result<Vec<Name>, LoadError> {
     read(rows_of(rows, query)?, query, |row| row.name(0))
@@ -385,6 +385,7 @@ fn type_rows(rows: &Rows) -> Result<Vec<TypeRow>, LoadError> {
             rngmultitypid: row.opt_oid(16)?,
             multirange_of: row.opt_oid(17)?,
             check_count: row.u32(18)?,
+            typcollation: row.oid(19)?,
         })
     })
 }
@@ -435,6 +436,7 @@ fn attribute_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<AttributeRow>>, LoadEr
             has_default: row.bool(6)?,
             generated: row.bool(7)?,
             identity: row.opt_char(8)?,
+            collation: row.oid(9)?,
         };
         attributes
             .entry(attribute.relid)
@@ -649,6 +651,61 @@ fn trigger_rows(rows: &Rows) -> Result<Vec<TriggerRow>, LoadError> {
     })
 }
 
+/// One row of [`QueryId::Collations`].
+#[derive(Debug, Clone)]
+struct CollationRow {
+    /// The OID of the collation.
+    oid: Oid,
+    /// The name of the collation.
+    name: Name,
+    /// The OID of the schema that holds the collation.
+    namespace: Oid,
+    /// The `collprovider` letter.
+    provider: char,
+    /// True for a deterministic collation.
+    deterministic: bool,
+    /// The encoding number, or -1.
+    encoding: i32,
+}
+
+/// Read [`QueryId::Collations`].
+fn collation_rows(rows: &Rows) -> Result<Vec<CollationRow>, LoadError> {
+    read(rows, QueryId::Collations, |row| {
+        Ok(CollationRow {
+            oid: row.oid(0)?,
+            name: row.name(1)?,
+            namespace: row.oid(2)?,
+            provider: row.char(3)?,
+            deterministic: row.bool(4)?,
+            encoding: row.i32(5)?,
+        })
+    })
+}
+
+/// The provider of a collation, from its letter.
+fn collation_provider(letter: char) -> Option<CollationProvider> {
+    match letter {
+        'd' => Some(CollationProvider::Default),
+        'c' => Some(CollationProvider::Libc),
+        'i' => Some(CollationProvider::Icu),
+        'b' => Some(CollationProvider::Builtin),
+        _ => None,
+    }
+}
+
+/// Read the one row of [`QueryId::Database`].
+fn database_row(rows: &HashMap<QueryId, Rows>) -> Result<(Name, Encoding), LoadError> {
+    let query = QueryId::Database;
+    let rows = rows_of(rows, query)?;
+    let empty: Vec<Option<String>> = Vec::new();
+    let row = Cells::new(query, 0, rows.first().unwrap_or(&empty));
+    let encoding = Encoding {
+        id: row.i32(1)?,
+        name: row.text(2)?.to_owned(),
+    };
+    Ok((row.name(0)?, encoding))
+}
+
 /// Read [`QueryId::Parameters`] into a name and a `vartype` for each row.
 fn parameter_rows(rows: &Rows) -> Result<Vec<(String, String)>, LoadError> {
     read(rows, QueryId::Parameters, |row| {
@@ -760,6 +817,10 @@ fn inherits_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<Oid>>, LoadError> {
 struct Input {
     /// The name of the database.
     database: Name,
+    /// The encoding of the database.
+    encoding: Encoding,
+    /// Every collation.
+    collations: Vec<CollationRow>,
     /// The effective search path at the moment of the load.
     search_path: Vec<Name>,
     /// Every schema.
@@ -803,8 +864,11 @@ struct Input {
 impl Input {
     /// Read every query.
     fn read(rows: &HashMap<QueryId, Rows>) -> Result<Self, LoadError> {
+        let (database, encoding) = database_row(rows)?;
         let mut input = Input {
-            database: Name::new(single_text(rows, QueryId::Database)?),
+            database,
+            encoding,
+            collations: collation_rows(rows_of(rows, QueryId::Collations)?)?,
             search_path: first_column(rows, QueryId::SearchPath)?,
             schemas: schema_rows(rows_of(rows, QueryId::Schemas)?)?,
             extensions: extension_rows(rows_of(rows, QueryId::Extensions)?)?,
@@ -831,6 +895,7 @@ impl Input {
         // rows.
         input.schemas.sort_by_key(|row| row.oid);
         input.extensions.sort_by_key(|row| row.oid);
+        input.collations.sort_by_key(|row| row.oid);
         input.types.sort_by_key(|row| row.oid);
         input.relations.sort_by_key(|row| row.oid);
         input.functions.sort_by_key(|row| row.oid);
@@ -1203,6 +1268,7 @@ pub(crate) fn assemble(
     let metadata = Metadata {
         server_version: version,
         database: input.database.clone(),
+        encoding: input.encoding.clone(),
         search_path: input.search_path.clone(),
         loaded_at_unix_secs: now_unix_secs(),
         format_version: Catalog::FORMAT_VERSION,
@@ -1255,6 +1321,43 @@ pub(crate) fn assemble(
         .collect();
     let owner = |class: MemberClass, oid: Oid| members.get(&(class, oid)).copied();
 
+    // Step 3a. Collations. A type and a column point at one, so they come
+    // before the types. The rows are in OID order, so a handle is the number
+    // of collations before it.
+    let mut collations: Vec<Collation> = Vec::new();
+    let mut collation_handles: HashMap<Oid, Handle<Collation>> = HashMap::new();
+    for row in &input.collations {
+        let Some(schema) = schema_handles.get(&row.namespace) else {
+            diagnostics.push(missing(
+                EntityKind::Collation,
+                row.oid,
+                &row.name,
+                EntityKind::Schema,
+                row.namespace,
+            ));
+            continue;
+        };
+        let Some(provider) = collation_provider(row.provider) else {
+            diagnostics.push(unparsable(
+                EntityKind::Collation,
+                row.oid,
+                "collprovider",
+                row.provider,
+            ));
+            continue;
+        };
+        collation_handles.insert(row.oid, Handle::new(collations.len() as u32));
+        collations.push(Collation {
+            oid: row.oid,
+            name: row.name.clone(),
+            schema: *schema,
+            encoding: (row.encoding >= 0).then_some(row.encoding),
+            provider,
+            deterministic: row.deterministic,
+            extension: owner(MemberClass::Collation, row.oid),
+        });
+    }
+
     // Steps 4 and 5. The kept sets.
     let kept_type_set = kept_types(
         &input.types,
@@ -1290,6 +1393,12 @@ pub(crate) fn assemble(
             &input.attributes,
             &mut diagnostics,
         );
+        let collation = collation_of(
+            row.typcollation,
+            &collation_handles,
+            (EntityKind::Type, row.oid, &row.name),
+            &mut diagnostics,
+        );
         types.push(Type {
             oid: row.oid,
             name: row.name.clone(),
@@ -1297,6 +1406,7 @@ pub(crate) fn assemble(
             category: TypeCategory::from_char(row.category),
             is_preferred: row.is_preferred,
             is_collatable: row.collatable,
+            collation,
             btree: None,
             hash_equality: None,
             array: type_handles.get(&row.typarray).copied(),
@@ -1312,7 +1422,13 @@ pub(crate) fn assemble(
         if !kept_relation_set.keep[index] {
             continue;
         }
-        let columns = columns_of(row, &input.attributes, &type_handles, &mut diagnostics);
+        let columns = columns_of(
+            row,
+            &input.attributes,
+            &type_handles,
+            &collation_handles,
+            &mut diagnostics,
+        );
         // A key stays only when each of its columns stays. A column goes, with
         // its own note, when its type is not kept. A part of a key would let
         // a consumer accept a `GROUP BY` that the server rejects.
@@ -1427,6 +1543,9 @@ pub(crate) fn assemble(
     for extension in extensions {
         builder.push_extension(extension);
     }
+    for collation in collations {
+        builder.push_collation(collation);
+    }
     for ty in types {
         builder.push_type(ty);
     }
@@ -1467,11 +1586,33 @@ pub(crate) fn assemble(
     })
 }
 
+/// The handle of the collation that a type or a column names.
+///
+/// OID 0 says that there is no collation. A collation that the catalog does
+/// not hold gives a note, and the owner stays without it.
+fn collation_of(
+    oid: Oid,
+    collations: &HashMap<Oid, Handle<Collation>>,
+    owner: (EntityKind, Oid, &Name),
+    diagnostics: &mut Vec<Diagnostic>,
+) -> Option<Handle<Collation>> {
+    if oid == Oid(0) {
+        return None;
+    }
+    let handle = collations.get(&oid).copied();
+    if handle.is_none() {
+        let (entity, owner_oid, name) = owner;
+        diagnostics.push(missing(entity, owner_oid, name, EntityKind::Collation, oid));
+    }
+    handle
+}
+
 /// The columns of one relation.
 fn columns_of(
     row: &RelationRow,
     attributes: &HashMap<Oid, Vec<AttributeRow>>,
     types: &HashMap<Oid, Handle<Type>>,
+    collations: &HashMap<Oid, Handle<Collation>>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Vec<Column> {
     attributes
@@ -1492,6 +1633,12 @@ fn columns_of(
                 });
                 return None;
             };
+            let collation = collation_of(
+                attribute.collation,
+                collations,
+                (EntityKind::Column, row.oid, &attribute.name),
+                diagnostics,
+            );
             let identity = match attribute.identity {
                 None => None,
                 Some('a') => Some(Identity::Always),
@@ -1516,6 +1663,7 @@ fn columns_of(
                 not_null: attribute.not_null,
                 has_default: attribute.has_default,
                 generated: attribute.generated,
+                collation,
                 identity,
             })
         })
@@ -2078,6 +2226,7 @@ mod tests {
     use super::assemble;
     use crate::cast::{CastContext, CastMethod};
     use crate::catalog::ServerVersion;
+    use crate::collation::CollationProvider;
     use crate::diagnostic::{Diagnostic, EntityKind, SkipReason};
     use crate::function::{ArgMode, FunctionKind, Volatility};
     use crate::loader::queries::QueryId;
@@ -2112,7 +2261,7 @@ mod tests {
     fn empty_rows() -> HashMap<QueryId, Rows> {
         let mut rows: HashMap<QueryId, Rows> =
             QueryId::ALL.iter().map(|id| (*id, Vec::new())).collect();
-        rows.insert(QueryId::Database, vec![row(&["testdb"])]);
+        rows.insert(QueryId::Database, vec![row(&["testdb", "6", "UTF8"])]);
         rows.insert(
             QueryId::SearchPath,
             vec![row(&["pg_catalog"]), row(&["public"])],
@@ -2161,22 +2310,22 @@ mod tests {
                 // bool, with its array.
                 row(&[
                     "16", "bool", "11", "b", "B", "t", "f", "1000", "0", "f", "0", NULL, "0", "-1",
-                    "f", NULL, NULL, NULL, "0",
+                    "f", NULL, NULL, NULL, "0", "0",
                 ]),
                 // _bool, the array of bool.
                 row(&[
                     "1000", "_bool", "11", "b", "A", "f", "f", "0", "16", "t", "0", NULL, "0",
-                    "-1", "f", NULL, NULL, NULL, "0",
+                    "-1", "f", NULL, NULL, NULL, "0", "0",
                 ]),
                 // The row type of the table.
                 row(&[
                     "16385", "t1", "2200", "c", "C", "f", "f", "0", "0", "f", "16384", "r", "0",
-                    "-1", "f", NULL, NULL, NULL, "0",
+                    "-1", "f", NULL, NULL, NULL, "0", "0",
                 ]),
                 // An array whose element type is not in the catalog.
                 row(&[
                     "16386", "_ghost", "2200", "b", "A", "f", "f", "0", "99999", "t", "0", NULL,
-                    "0", "-1", "f", NULL, NULL, NULL, "0",
+                    "0", "-1", "f", NULL, NULL, NULL, "0", "0",
                 ]),
             ],
         );
@@ -2187,8 +2336,10 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL]),
-                row(&["16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL]),
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "0"]),
+                row(&[
+                    "16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL, "0",
+                ]),
             ],
         );
         rows.insert(
@@ -2391,13 +2542,13 @@ mod tests {
                 // the catalog does not hold.
                 row(&[
                     "16385", "t1", "2200", "c", "C", "f", "f", "16386", "0", "f", "16384", "r",
-                    "0", "-1", "f", NULL, NULL, NULL, "0",
+                    "0", "-1", "f", NULL, NULL, NULL, "0", "0",
                 ]),
                 // The array of that row type. It goes when the row type
                 // goes.
                 row(&[
                     "16386", "_t1", "2200", "b", "A", "f", "f", "0", "16385", "t", "0", NULL, "0",
-                    "-1", "f", NULL, NULL, NULL, "0",
+                    "-1", "f", NULL, NULL, NULL, "0", "0",
                 ]),
             ],
         );
@@ -2408,7 +2559,7 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![row(&[
-                "16384", "1", "ghost", "99999", "-1", "f", "f", "f", "f",
+                "16384", "1", "ghost", "99999", "-1", "f", "f", "f", NULL, "0",
             ])],
         );
 
@@ -2451,7 +2602,7 @@ mod tests {
             QueryId::Types,
             vec![row(&[
                 "16400", "odd", "2200", "q", "U", "f", "f", "0", "0", "f", "0", NULL, "0", "-1",
-                "f", NULL, NULL, NULL, "0",
+                "f", NULL, NULL, NULL, "0", "0",
             ])],
         );
         let loaded = load(rows);
@@ -2474,7 +2625,7 @@ mod tests {
             QueryId::Types,
             vec![row(&[
                 "16410", "s1", "2200", "c", "C", "f", "f", "0", "0", "f", "16409", "S", "0", "-1",
-                "f", NULL, NULL, NULL, "0",
+                "f", NULL, NULL, NULL, "0", "0",
             ])],
         );
         let loaded = load(rows);
@@ -2491,11 +2642,11 @@ mod tests {
             vec![
                 row(&[
                     "16", "bool", "2200", "b", "B", "t", "f", "0", "0", "f", "0", NULL, "0", "-1",
-                    "f", NULL, NULL, NULL, "0",
+                    "f", NULL, NULL, NULL, "0", "0",
                 ]),
                 row(&[
                     "20", "int8", "2200", "b", "N", "f", "f", "0", "0", "f", "0", NULL, "0", "-1",
-                    "f", NULL, NULL, NULL, "0",
+                    "f", NULL, NULL, NULL, "0", "0",
                 ]),
             ],
         );
@@ -2507,9 +2658,33 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16409", "1", "last_value", "20", "-1", "t", "f", "f", NULL]),
-                row(&["16409", "2", "log_cnt", "20", "-1", "t", "f", "f", NULL]),
-                row(&["16409", "3", "is_called", "16", "-1", "t", "f", "f", NULL]),
+                row(&[
+                    "16409",
+                    "1",
+                    "last_value",
+                    "20",
+                    "-1",
+                    "t",
+                    "f",
+                    "f",
+                    NULL,
+                    "0",
+                ]),
+                row(&[
+                    "16409", "2", "log_cnt", "20", "-1", "t", "f", "f", NULL, "0",
+                ]),
+                row(&[
+                    "16409",
+                    "3",
+                    "is_called",
+                    "16",
+                    "-1",
+                    "t",
+                    "f",
+                    "f",
+                    NULL,
+                    "0",
+                ]),
             ],
         );
         let loaded = load(rows);
@@ -2729,9 +2904,20 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "always", "16", "-1", "t", "f", "f", "a"]),
-                row(&["16384", "2", "by_default", "16", "-1", "t", "f", "f", "d"]),
-                row(&["16384", "3", "plain", "16", "-1", "f", "f", "f", NULL]),
+                row(&["16384", "1", "always", "16", "-1", "t", "f", "f", "a", "0"]),
+                row(&[
+                    "16384",
+                    "2",
+                    "by_default",
+                    "16",
+                    "-1",
+                    "t",
+                    "f",
+                    "f",
+                    "d",
+                    "0",
+                ]),
+                row(&["16384", "3", "plain", "16", "-1", "f", "f", "f", NULL, "0"]),
             ],
         );
         let loaded = load(rows);
@@ -2753,8 +2939,8 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL]),
-                row(&["16384", "2", "odd", "16", "-1", "t", "f", "f", "q"]),
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "0"]),
+                row(&["16384", "2", "odd", "16", "-1", "t", "f", "f", "q", "0"]),
             ],
         );
         let loaded = load(rows);
@@ -2776,11 +2962,11 @@ mod tests {
         rows.get_mut(&QueryId::Types).unwrap().extend([
             row(&[
                 "16501", "p1", "2200", "c", "C", "f", "f", "0", "0", "f", "16500", "r", "0", "-1",
-                "f", NULL, NULL, NULL, "0",
+                "f", NULL, NULL, NULL, "0", "0",
             ]),
             row(&[
                 "16503", "p2", "2200", "c", "C", "f", "f", "0", "0", "f", "16502", "r", "0", "-1",
-                "f", NULL, NULL, NULL, "0",
+                "f", NULL, NULL, NULL, "0", "0",
             ]),
         ]);
         rows.get_mut(&QueryId::Relations).unwrap().extend([
@@ -3028,6 +3214,108 @@ mod tests {
             oid: Oid(0),
             column: "vartype",
             value: "tensor (parameter odd_one)".to_owned(),
+        }));
+    }
+
+    /// The sample rows with three collations: `default`, and two with the
+    /// name `fr`, one for LATIN1 (8) and one for UTF8 (6).
+    fn rows_with_collations() -> HashMap<QueryId, Rows> {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Collations,
+            vec![
+                row(&["100", "default", "2200", "d", "t", "-1"]),
+                row(&["12001", "fr", "2200", "c", "t", "8"]),
+                row(&["12002", "fr", "2200", "c", "f", "6"]),
+                row(&["12003", "odd", "2200", "q", "t", "-1"]),
+                row(&["12004", "lost", "99999", "c", "t", "-1"]),
+            ],
+        );
+        rows
+    }
+
+    #[test]
+    fn the_catalog_takes_the_collations_and_the_encoding() {
+        let loaded = load(rows_with_collations());
+        let catalog = &loaded.catalog;
+        assert_eq!(catalog.metadata().encoding.id, 6);
+        assert_eq!(catalog.metadata().encoding.name, "UTF8");
+        assert_eq!(catalog.collations().len(), 3);
+
+        let default = catalog.collation_by_oid(Oid(100)).unwrap();
+        assert_eq!(catalog[default].provider, CollationProvider::Default);
+        assert_eq!(catalog[default].encoding, None);
+        assert!(catalog[default].deterministic);
+
+        // Two collations have the name `fr`. The database is UTF8, so the
+        // lookup gives the one for UTF8.
+        let name = QualifiedName::new("public", "fr");
+        assert_eq!(catalog.collations_named(&name).len(), 2);
+        let fr = catalog.collation_named(&name).unwrap();
+        assert_eq!(catalog[fr].oid, Oid(12002));
+        assert_eq!(catalog[fr].encoding, Some(6));
+        assert!(!catalog[fr].deterministic);
+
+        assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+            entity: EntityKind::Collation,
+            oid: Oid(12003),
+            column: "collprovider",
+            value: "q".to_owned(),
+        }));
+        assert!(loaded.diagnostics.contains(&Diagnostic::MissingReference {
+            entity: EntityKind::Collation,
+            oid: Oid(12004),
+            name: Name::new("lost"),
+            referenced: EntityKind::Schema,
+            referenced_oid: Oid(99999),
+        }));
+    }
+
+    #[test]
+    fn a_type_and_a_column_take_their_collation() {
+        let mut rows = rows_with_collations();
+        // `bool` now has the `default` collation, as `text` has on a server.
+        rows.get_mut(&QueryId::Types).unwrap()[0] = row(&[
+            "16", "bool", "2200", "b", "B", "t", "t", "1000", "0", "f", "0", NULL, "0", "-1", "f",
+            NULL, NULL, NULL, "0", "100",
+        ]);
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&[
+                    "16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "12002",
+                ]),
+                row(&[
+                    "16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL, "0",
+                ]),
+                row(&[
+                    "16384", "3", "gone", "16", "-1", "f", "f", "f", NULL, "77777",
+                ]),
+            ],
+        );
+        let loaded = load(rows);
+        let catalog = &loaded.catalog;
+        let default = catalog.collation_by_oid(Oid(100));
+        let fr = catalog.collation_by_oid(Oid(12002));
+        assert!(default.is_some() && fr.is_some());
+
+        let boolean = catalog.type_by_oid(Oid(16)).unwrap();
+        assert_eq!(catalog[boolean].collation, default);
+        assert!(catalog[boolean].is_collatable);
+
+        let relation = &catalog[catalog.relation_by_oid(Oid(16384)).unwrap()];
+        assert_eq!(relation.column("flag").unwrap().collation, fr);
+        assert_eq!(relation.column("flags").unwrap().collation, None);
+
+        // A collation that is not in the catalog gives a note. The column
+        // stays.
+        assert_eq!(relation.column("gone").unwrap().collation, None);
+        assert!(loaded.diagnostics.contains(&Diagnostic::MissingReference {
+            entity: EntityKind::Column,
+            oid: Oid(16384),
+            name: Name::new("gone"),
+            referenced: EntityKind::Collation,
+            referenced_oid: Oid(77777),
         }));
     }
 }

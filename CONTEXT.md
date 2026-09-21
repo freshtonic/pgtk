@@ -207,6 +207,18 @@ _Avoid_: Namespace (in prose)
 A `pg_extension` row. An installed package that owns Entities; ownership comes
 from `pg_depend`.
 
+**Collation**:
+A `pg_collation` row: a name in a Schema, the encoding that it is for (or
+none, for each encoding), its provider, and if it is deterministic. A
+collatable Type and a Column of such a Type point at one. The `default`
+Collation stands for the collation of the database. Two Collations in one
+Schema can have one name, each for a different encoding; a lookup by name
+gives the one that the database encoding can use.
+
+**Encoding**:
+The character encoding of the database, as a number and a name. The Catalog
+holds it because a lookup of a Collation by name needs it.
+
 **Parameter**:
 A configuration parameter of the server, from `pg_settings`: its name in the
 canonical spelling, such as `TimeZone`, and its kind of value. `SHOW` gives
@@ -231,8 +243,11 @@ These are deliberate exclusions, not omissions:
   than btree and hash, non-default operator classes, and cross-type members of
   an operator family (such as `int4 < int8`). Only the Sort Operators of each
   Type are in scope.
-- Collations. A Type keeps a collatable flag so collation checking can be
-  added later without reshaping the model.
+- The locale of a Collation: `collcollate`, `collctype`, the ICU locale and
+  rules, and the version. The collation settings of the database other than
+  its encoding (`datcollate`, `datlocprovider`). Parse analysis compares the
+  identity of two Collations and never sorts text.
+- The Collation of a Field of a composite Type and of a range subtype.
 - Indexes, constraints (other than Primary Keys and counts on Domains),
   policies, roles, and privileges. Unique, foreign key, check, and exclusion
   constraints on a Relation are out of scope.

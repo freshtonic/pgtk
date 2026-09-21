@@ -115,6 +115,9 @@ pub struct Type {
     pub category: TypeCategory,
     pub is_preferred: bool,
     pub is_collatable: bool,          // typcollation <> 0
+    /// typcollation. None when 0, and when the collation is not kept (with a
+    /// MissingReference). `default` (OID 100) for a collatable base type.
+    pub collation: Option<Handle<Collation>>,   // #[serde(default)]
     pub array: Option<Handle<Type>>,  // typarray, None for array types and when 0
     pub kind: TypeKind,
     /// From the default btree operator class whose opcintype is this type.
@@ -182,6 +185,25 @@ pub struct Relation {
     pub extension: Option<Handle<Extension>>,
 }
 
+/// pg_collation. No locale data: parse analysis never sorts text.
+pub struct Collation {
+    pub oid: Oid, pub name: Name, pub schema: Handle<Schema>,
+    pub encoding: Option<i32>,           // collencoding; None for -1
+    pub provider: CollationProvider,     // collprovider
+    pub deterministic: bool,             // collisdeterministic
+    pub extension: Option<Handle<Extension>>,
+}
+pub enum CollationProvider { Default, Libc, Icu, Builtin }   // d c i b (b: PostgreSQL 17)
+pub struct Encoding { pub id: i32, pub name: String }        // 6, "UTF8"
+impl Encoding {
+    pub fn utf8() -> Self;
+    /// False for SQL_ASCII (0), EUC_JIS_2004 (5), MULE_INTERNAL (7), WIN874 (21).
+    pub fn is_supported_by_icu(&self) -> bool;
+    /// lookup_collation: Some(id) needs id == self.id; None is usable, but an
+    /// Icu collation also needs is_supported_by_icu().
+    pub fn can_use(&self, collation: &Collation) -> bool;
+}
+
 pub struct Parameter { pub name: String, pub kind: ParameterKind }   // pg_settings.name, vartype
 pub enum ParameterKind { Bool, Integer, Real, String, Enum }
 impl ParameterKind { pub fn from_vartype(vartype: &str) -> Option<Self>; }
@@ -239,6 +261,7 @@ pub enum RelationKind { Table, View, MaterializedView, ForeignTable, Partitioned
 pub struct Column {
     pub name: Name, pub position: i16, pub ty: Handle<Type>, pub typmod: Typmod,
     pub not_null: bool, pub has_default: bool, pub generated: bool,
+    pub collation: Option<Handle<Collation>>,   // attcollation: None for 0
     pub identity: Option<Identity>,   // attidentity: None for ''
 }
 /// attidentity. An INSERT or UPDATE of a non-DEFAULT value into an Always
@@ -373,6 +396,7 @@ pub struct ServerVersion { pub major: u16, pub minor: u16 }
 pub struct Metadata {
     pub server_version: ServerVersion,
     pub database: Name,
+    pub encoding: Encoding,         // pg_database.encoding; serde default UTF8
     pub search_path: Vec<Name>,     // current_schemas(true) at load
     pub loaded_at_unix_secs: u64,
     pub format_version: u32,        // == Catalog::FORMAT_VERSION at build time
@@ -388,6 +412,7 @@ impl Catalog {
                                          // 6: Relation gained of_type
                                          // 7: Relation gained view_definition, rules, triggers
                                          // 8: Catalog gained parameters
+                                         // 9: collations; Type.collation, Column.collation, Metadata.encoding
     pub fn metadata(&self) -> &Metadata;
 
     // Built-ins
@@ -437,6 +462,17 @@ impl Catalog {
     pub fn cast(&self, from: Handle<Type>, to: Handle<Type>) -> Option<Handle<Cast>>;
     /// Casts whose source is `from`, OID order.
     pub fn casts_from(&self, from: Handle<Type>) -> &[Handle<Cast>];
+
+    // Collations. An arena like the others: collations(), collation_by_oid,
+    // Index<Handle<Collation>>, qualified_name_of_collation.
+    /// Every row with this name, for each encoding, OID order.
+    pub fn collations_named(&self, name: &QualifiedName) -> &[Handle<Collation>];
+    /// The row that metadata().encoding can use: a row for that encoding
+    /// first, then a row for each encoding.
+    pub fn collation_named(&self, name: &QualifiedName) -> Option<Handle<Collation>>;
+    /// First schema on the path with a usable row (CollationGetCollid). A
+    /// schema with the name only for another encoding does not stop the walk.
+    pub fn collation_visible(&self, path: &SearchPath, name: &str) -> Option<Handle<Collation>>;
 
     // Configuration parameters (pg_settings). Not an arena: no OID, no handle.
     /// Sorted by the ASCII-lower-case name.
@@ -504,6 +540,7 @@ impl CatalogBuilder {
     pub fn push_operator(&mut self, o: Operator) -> Handle<Operator>;
     pub fn push_cast(&mut self, c: Cast) -> Handle<Cast>;
     pub fn push_parameter(&mut self, p: Parameter);   // no handle
+    pub fn push_collation(&mut self, c: Collation) -> Handle<Collation>;
     /// The handle the next push_type will return (for forward references in cycles).
     pub fn next_type_handle(&self) -> Handle<Type>;
     pub fn next_relation_handle(&self) -> Handle<Relation>;
@@ -551,7 +588,7 @@ pub enum Diagnostic {
     /// Skipped for a stated reason (e.g. shell operator with no function).
     Skipped { entity: EntityKind, oid: Oid, name: Name, reason: SkipReason },
 }
-pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger, Parameter }
+pub enum EntityKind { Schema, Extension, Type, Relation, Column, Function, Operator, Cast, OperatorClass, Rule, Trigger, Parameter, Collation }
 #[non_exhaustive]
 pub enum SkipReason { ShellOperator, DependsOnSkipped, UnsupportedRelationKind(char), IncompleteOperatorClass }
 impl Display for Diagnostic;
@@ -589,7 +626,7 @@ pub struct Loaded { pub catalog: Catalog, pub diagnostics: Vec<Diagnostic> }
 pub enum QueryId { Version, Database, SearchPath, Schemas, Extensions, ExtensionMembers,
     Types, EnumLabels, Relations, Attributes, Functions, FunctionArguments, Aggregates,
     Operators, Casts, DefaultOperatorClasses, PrimaryKeys, Inherits, Rules, Triggers,
-    Parameters }
+    Parameters, Collations }
 impl QueryId { pub const ALL: &'static [QueryId]; }
 
 pub struct Loader { ... }
@@ -625,7 +662,8 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
 `pg_toast_temp_N` matches `pg\_toast%`, so it stays out.
 
 - **Version**: `SELECT current_setting('server_version_num')`.
-- **Database**: `SELECT current_database()::text`.
+- **Database**: `datname, encoding, pg_encoding_to_char(encoding)` from
+  `pg_database WHERE datname = current_database()`.
 - **SearchPath**: `SELECT s::text FROM unnest(current_schemas(true)) WITH ORDINALITY AS t(s, n) ORDER BY n`.
 - **Schemas**: `oid, nspname, (oid = pg_my_temp_schema()) AS is_temporary` from
   `pg_namespace` with the filter, `ORDER BY oid`.
@@ -634,6 +672,7 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `refclassid = 'pg_catalog.pg_extension'::regclass`: columns
   `class_label, objid, refobjid` where `class_label` is a `CASE classid`
   producing one of `type`, `class`, `proc`, `operator`, `cast`, `namespace`,
+  `collation`,
   else `other`. Use `'pg_catalog.pg_type'::regclass` etc. in the CASE.
 - **Types**: from `pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace`
   (filter) `LEFT JOIN pg_class c ON c.oid = t.typrelid`
@@ -701,6 +740,10 @@ other sessions. `pg_my_temp_schema()` is 0 when the session has none.
   `WHERE NOT tgisinternal` and the relation relkinds,
   `ORDER BY tgrelid, tgname`.
 - **Parameters**: `name, vartype` from `pg_settings` `ORDER BY name`. No value.
+- **Collations**: `oid, collname, collnamespace, collprovider,
+  collisdeterministic, collencoding` from `pg_collation` with the filter on
+  `collnamespace`, `ORDER BY oid`. The Types query also gives `typcollation`
+  and the Attributes query also gives `attcollation`.
 
 Every query is a `&'static str` in `loader/queries.rs` with a comment
 listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
@@ -714,6 +757,10 @@ listing its column indexes. `loader/queries.rs` owns the `QueryId` enum and
 2. Extensions: rows whose `extnamespace` is a loaded schema; else
    `MissingReference` and skip.
 3. Extension membership map `(class_label, Oid) -> Handle<Extension>`.
+3a. Collations: keep when the schema is loaded (else `MissingReference`) and
+   `collprovider` is one of `d c i b` (else `UnparsableValue`). Handles are in
+   OID order. A type or a column whose collation is not kept stays, with
+   `collation = None` and a `MissingReference` to the collation.
 4. **Types, kept set.** Start with every row. Remove a type when:
    `typtype` not in `b c d e p r m` (`UnknownTypeKind`); schema not loaded;
    composite whose `relkind` is not in `r v m f p c` (silent, by design);

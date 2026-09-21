@@ -6,6 +6,7 @@ use std::ops::Index;
 
 use crate::builtin::Builtin;
 use crate::cast::Cast;
+use crate::collation::{Collation, Encoding};
 use crate::extension::Extension;
 use crate::function::Function;
 use crate::handle::Handle;
@@ -45,6 +46,12 @@ pub struct Metadata {
     pub server_version: ServerVersion,
     /// The name of the database.
     pub database: Name,
+    /// The encoding of the database.
+    ///
+    /// A lookup of a collation by name reads it: see
+    /// [`Catalog::collation_named`].
+    #[cfg_attr(feature = "serde", serde(default = "Encoding::utf8"))]
+    pub encoding: Encoding,
     /// The result of `current_schemas(true)` at the moment of the load.
     pub search_path: Vec<Name>,
     /// The moment of the load, in seconds since the Unix epoch.
@@ -60,11 +67,13 @@ impl Metadata {
     /// Metadata for a catalog that no server produced.
     ///
     /// Tests use this. The server version is `0.0`, the database is
-    /// `placeholder`, the search path is empty, and the load time is 0.
+    /// `placeholder`, the encoding is `UTF8`, the search path is empty, and
+    /// the load time is 0.
     pub fn placeholder() -> Self {
         Metadata {
             server_version: ServerVersion { major: 0, minor: 0 },
             database: Name::new("placeholder"),
+            encoding: Encoding::utf8(),
             search_path: Vec::new(),
             loaded_at_unix_secs: 0,
             format_version: Catalog::FORMAT_VERSION,
@@ -86,6 +95,7 @@ pub struct Catalog {
     metadata: Metadata,
     schemas: Vec<Schema>,
     extensions: Vec<Extension>,
+    collations: Vec<Collation>,
     types: Vec<Type>,
     relations: Vec<Relation>,
     functions: Vec<Function>,
@@ -95,6 +105,7 @@ pub struct Catalog {
     builtins: Vec<Option<Handle<Type>>>,
     schema_by_oid: HashMap<Oid, Handle<Schema>>,
     extension_by_oid: HashMap<Oid, Handle<Extension>>,
+    collation_by_oid: HashMap<Oid, Handle<Collation>>,
     type_by_oid: HashMap<Oid, Handle<Type>>,
     relation_by_oid: HashMap<Oid, Handle<Relation>>,
     function_by_oid: HashMap<Oid, Handle<Function>>,
@@ -109,6 +120,7 @@ pub struct Catalog {
     cast_by_pair: HashMap<(Handle<Type>, Handle<Type>), Handle<Cast>>,
     casts_by_source: HashMap<Handle<Type>, Vec<Handle<Cast>>>,
     parameter_by_name: HashMap<String, usize>,
+    collations_by_name: HashMap<(Handle<Schema>, Name), Vec<Handle<Collation>>>,
 }
 
 /// Make handles for an arena, then pair each handle with its entity.
@@ -123,7 +135,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 8;
+    pub const FORMAT_VERSION: u32 = 9;
 
     /// Make a catalog and build its indexes.
     ///
@@ -133,6 +145,7 @@ impl Catalog {
         metadata: Metadata,
         schemas: Vec<Schema>,
         extensions: Vec<Extension>,
+        collations: Vec<Collation>,
         types: Vec<Type>,
         relations: Vec<Relation>,
         functions: Vec<Function>,
@@ -140,6 +153,19 @@ impl Catalog {
         casts: Vec<Cast>,
         mut parameters: Vec<Parameter>,
     ) -> Self {
+        // One name in one schema can have a collation for each encoding.
+        let mut collations_by_name: HashMap<(Handle<Schema>, Name), Vec<Handle<Collation>>> =
+            HashMap::new();
+        for (handle, collation) in with_handles(&collations) {
+            collations_by_name
+                .entry((collation.schema, collation.name.clone()))
+                .or_default()
+                .push(handle);
+        }
+        for group in collations_by_name.values_mut() {
+            group.sort_by_key(|h| collations[h.index() as usize].oid);
+        }
+
         // A parameter has no OID. The order is that of the lookup key, so
         // that two loads of one server give one order.
         parameters.sort_by_key(|entity| parameter::lookup_key(&entity.name));
@@ -199,6 +225,9 @@ impl Catalog {
             extension_by_oid: with_handles(&extensions)
                 .map(|(handle, entity)| (entity.oid, handle))
                 .collect(),
+            collation_by_oid: with_handles(&collations)
+                .map(|(handle, entity)| (entity.oid, handle))
+                .collect(),
             relation_by_oid: with_handles(&relations)
                 .map(|(handle, entity)| (entity.oid, handle))
                 .collect(),
@@ -229,6 +258,8 @@ impl Catalog {
             cast_by_pair,
             casts_by_source,
             parameter_by_name,
+            collations_by_name,
+            collations,
             parameters,
             builtins,
             metadata,
@@ -251,6 +282,7 @@ impl Catalog {
         Metadata,
         Vec<Schema>,
         Vec<Extension>,
+        Vec<Collation>,
         Vec<Type>,
         Vec<Relation>,
         Vec<Function>,
@@ -262,6 +294,7 @@ impl Catalog {
             self.metadata,
             self.schemas,
             self.extensions,
+            self.collations,
             self.types,
             self.relations,
             self.functions,
@@ -315,6 +348,11 @@ impl Catalog {
     /// Every extension, in OID order.
     pub fn extensions(&self) -> impl ExactSizeIterator<Item = (Handle<Extension>, &Extension)> {
         with_handles(&self.extensions)
+    }
+
+    /// Every collation, in OID order.
+    pub fn collations(&self) -> impl ExactSizeIterator<Item = (Handle<Collation>, &Collation)> {
+        with_handles(&self.collations)
     }
 
     /// Every type, in OID order.
@@ -375,6 +413,11 @@ impl Catalog {
         self.extension_by_oid.get(&oid).copied()
     }
 
+    /// The collation with this OID.
+    pub fn collation_by_oid(&self, oid: Oid) -> Option<Handle<Collation>> {
+        self.collation_by_oid.get(&oid).copied()
+    }
+
     /// The type with this OID.
     pub fn type_by_oid(&self, oid: Oid) -> Option<Handle<Type>> {
         self.type_by_oid.get(&oid).copied()
@@ -423,6 +466,57 @@ impl Catalog {
     fn key(&self, name: &QualifiedName) -> Option<(Handle<Schema>, Name)> {
         let schema = self.schema_named(name.schema.as_str())?;
         Some((schema, name.name.clone()))
+    }
+
+    /// Every collation with this qualified name, for each encoding, in OID
+    /// order.
+    ///
+    /// Use [`collation_named`](Catalog::collation_named) to find the one that
+    /// a statement names. This lookup tells a consumer why that one found
+    /// nothing: no collation has the name, or one has it for another
+    /// encoding.
+    pub fn collations_named(&self, name: &QualifiedName) -> &[Handle<Collation>] {
+        self.key(name)
+            .and_then(|key| self.collations_by_name.get(&key))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The collation with this qualified name that the database can use.
+    ///
+    /// This is the rule of `lookup_collation` in PostgreSQL. A collation for
+    /// the encoding of the database wins. A collation for each encoding is
+    /// next. An ICU collation is not a match when ICU cannot work with the
+    /// encoding of the database. The encoding is
+    /// `catalog.metadata().encoding`.
+    pub fn collation_named(&self, name: &QualifiedName) -> Option<Handle<Collation>> {
+        self.usable_collation(self.collations_named(name))
+    }
+
+    /// The collation with this name in the first schema of the search path
+    /// that has one that the database can use.
+    ///
+    /// The rule for one schema is that of
+    /// [`collation_named`](Catalog::collation_named). A schema that has the
+    /// name only for another encoding does not stop the search, as in
+    /// `CollationGetCollid` of PostgreSQL.
+    pub fn collation_visible(&self, path: &SearchPath, name: &str) -> Option<Handle<Collation>> {
+        let key = Name::new(name);
+        path.schemas().iter().find_map(|schema| {
+            let group = self.collations_by_name.get(&(*schema, key.clone()))?;
+            self.usable_collation(group)
+        })
+    }
+
+    /// The collation of a group that the database can use.
+    fn usable_collation(&self, group: &[Handle<Collation>]) -> Option<Handle<Collation>> {
+        let encoding = &self.metadata.encoding;
+        let usable = |handle: &&Handle<Collation>| encoding.can_use(&self[**handle]);
+        group
+            .iter()
+            .filter(usable)
+            .find(|handle| self[**handle].encoding.is_some())
+            .or_else(|| group.iter().find(usable))
+            .copied()
     }
 
     /// The type with this qualified name.
@@ -575,6 +669,12 @@ impl Catalog {
             .unwrap_or_default()
     }
 
+    /// The qualified name of a collation.
+    pub fn qualified_name_of_collation(&self, h: Handle<Collation>) -> QualifiedName {
+        let entity = &self[h];
+        QualifiedName::new(self[entity.schema].name.clone(), entity.name.clone())
+    }
+
     /// The qualified name of a type.
     pub fn qualified_name_of_type(&self, h: Handle<Type>) -> QualifiedName {
         let entity = &self[h];
@@ -614,6 +714,7 @@ macro_rules! impl_index {
 
 impl_index!(Schema, schemas);
 impl_index!(Extension, extensions);
+impl_index!(Collation, collations);
 impl_index!(Type, types);
 impl_index!(Relation, relations);
 impl_index!(Function, functions);
@@ -630,6 +731,8 @@ struct CatalogData {
     metadata: Metadata,
     schemas: Vec<Schema>,
     extensions: Vec<Extension>,
+    #[serde(default)]
+    collations: Vec<Collation>,
     types: Vec<Type>,
     relations: Vec<Relation>,
     functions: Vec<Function>,
@@ -647,6 +750,7 @@ struct CatalogDataRef<'a> {
     metadata: &'a Metadata,
     schemas: &'a [Schema],
     extensions: &'a [Extension],
+    collations: &'a [Collation],
     types: &'a [Type],
     relations: &'a [Relation],
     functions: &'a [Function],
@@ -662,6 +766,7 @@ impl serde::Serialize for Catalog {
             metadata: &self.metadata,
             schemas: &self.schemas,
             extensions: &self.extensions,
+            collations: &self.collations,
             types: &self.types,
             relations: &self.relations,
             functions: &self.functions,
@@ -693,6 +798,9 @@ impl<'de> serde::Deserialize<'de> for Catalog {
         }
         for entity in data.extensions {
             builder.push_extension(entity);
+        }
+        for entity in data.collations {
+            builder.push_collation(entity);
         }
         for entity in data.types {
             builder.push_type(entity);

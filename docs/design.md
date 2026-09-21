@@ -31,7 +31,15 @@ rest so that they are not re-decided.
 - Kinds: base, composite, domain, enum, range, multirange, array, pseudo.
 - Array detection: `typsubscript = 'array_subscript_handler'`. `typelem` alone
   is not sufficient (`name`, `point`, `lseg`, `box`, `line` have one).
-- Every Type: name, Schema, category, is-preferred, collatable flag,
+- Collations: an Entity with name, Schema, `encoding: Option<i32>`, provider
+  (Default, Libc, Icu, Builtin), and deterministic flag. `Type.collation` is
+  `typcollation` and `Column.collation` is `attcollation`. Parse analysis
+  (`parse_collate.c`) only compares collation identities and finds a
+  collation by name, so no locale data is loaded. Lookup by name follows
+  `lookup_collation`: the row for the database encoding first, then the row
+  for each encoding, and an ICU row only when ICU supports the encoding.
+  `Metadata.encoding` holds the database encoding for that rule.
+- Every Type: name, Schema, category, is-preferred, collatable flag, collation,
   `array: Option<Handle<Type>>`, OID, owning Extension.
 - Array: element Handle. Domain: base, Type Modifier, NOT NULL, count of CHECK
   constraints. Enum: labels in `enumsortorder`. Range: subtype, multirange

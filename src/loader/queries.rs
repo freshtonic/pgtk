@@ -93,6 +93,8 @@ pub enum QueryId {
     Triggers,
     /// Every configuration parameter that the session can see.
     Parameters,
+    /// Every collation in a loaded schema.
+    Collations,
 }
 
 impl QueryId {
@@ -119,6 +121,7 @@ impl QueryId {
         QueryId::Rules,
         QueryId::Triggers,
         QueryId::Parameters,
+        QueryId::Collations,
     ];
 }
 
@@ -148,6 +151,7 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Rules => RULES,
         QueryId::Triggers => TRIGGERS,
         QueryId::Parameters => PARAMETERS,
+        QueryId::Collations => COLLATIONS,
     }
 }
 
@@ -164,9 +168,16 @@ SELECT current_setting('server_version_num')::text
 //
 // Columns:
 //   0  the name of the current database
+//   1  the encoding number of the database
+//   2  the encoding name of the database, such as `UTF8`
 //@sql Database
 const DATABASE: &str = r#"
-SELECT current_database()::text
+SELECT
+    d.datname::text,
+    d.encoding::text,
+    pg_catalog.pg_encoding_to_char(d.encoding)::text
+FROM pg_catalog.pg_database d
+WHERE d.datname = current_database()
 "#;
 
 // One row per schema on the effective search path, in path order.
@@ -228,7 +239,7 @@ ORDER BY e.oid
 //
 // Columns:
 //   0  class_label  one of `type`, `class`, `proc`, `operator`, `cast`,
-//                   `namespace`, or `other`
+//                   `namespace`, `collation`, or `other`
 //   1  objid        OID of the member object
 //   2  refobjid     OID of the extension that owns it
 //@sql ExtensionMembers
@@ -241,6 +252,7 @@ SELECT
         WHEN 'pg_catalog.pg_operator'::pg_catalog.regclass THEN 'operator'
         WHEN 'pg_catalog.pg_cast'::pg_catalog.regclass THEN 'cast'
         WHEN 'pg_catalog.pg_namespace'::pg_catalog.regclass THEN 'namespace'
+        WHEN 'pg_catalog.pg_collation'::pg_catalog.regclass THEN 'collation'
         ELSE 'other'
     END)::text AS class_label,
     d.objid::text,
@@ -278,6 +290,7 @@ WHERE d.deptype = 'e'
 //   16  rngmultitypid  OID of the multirange of a range
 //   17  multirange_of  OID of the range that this multirange holds
 //   18  check_count    number of CHECK constraints on a domain
+//   19  typcollation   OID of the collation of the type, 0 when there is none
 //@sql Types
 const TYPES: &str = r#"
 SELECT
@@ -308,7 +321,8 @@ SELECT
         FROM pg_catalog.pg_constraint k
         WHERE k.contypid = t.oid
           AND k.contype = 'c'
-    )::text AS check_count
+    )::text AS check_count,
+    t.typcollation::text
 FROM pg_catalog.pg_type t
 JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
 LEFT JOIN pg_catalog.pg_class c ON c.oid = t.typrelid
@@ -390,6 +404,8 @@ ORDER BY c.oid
 //   7  generated  `t` when the attribute is a generated column
 //   8  identity   identity letter: a for ALWAYS, d for BY DEFAULT, NULL when
 //                 the attribute is not an identity column
+//   9  attcollation  OID of the collation of the attribute, 0 when there is
+//                 none
 //@sql Attributes
 const ATTRIBUTES: &str = r#"
 SELECT
@@ -401,7 +417,8 @@ SELECT
     (CASE WHEN a.attnotnull THEN 't' ELSE 'f' END)::text AS attnotnull,
     (CASE WHEN a.atthasdef THEN 't' ELSE 'f' END)::text AS atthasdef,
     (CASE WHEN a.attgenerated <> '' THEN 't' ELSE 'f' END)::text AS generated,
-    NULLIF(a.attidentity, '')::text AS identity
+    NULLIF(a.attidentity, '')::text AS identity,
+    a.attcollation::text
 FROM pg_catalog.pg_attribute a
 JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -760,4 +777,34 @@ SELECT
     s.vartype::text
 FROM pg_catalog.pg_settings s
 ORDER BY s.name
+"#;
+
+// One row per collation in a loaded schema.
+//
+// `collencoding` is -1 for a collation that each encoding can use. One name
+// in one schema can have a row for each encoding. The locale of a collation
+// is not here, because parse analysis does not sort text.
+//
+// Columns:
+//   0  oid                  collation OID
+//   1  collname             collation name
+//   2  collnamespace        OID of the schema that holds the collation
+//   3  collprovider         provider letter: d c i b
+//   4  collisdeterministic  `t` for a deterministic collation
+//   5  collencoding         encoding number, -1 for each encoding
+//@sql Collations
+const COLLATIONS: &str = r#"
+SELECT
+    c.oid::text,
+    c.collname::text,
+    c.collnamespace::text,
+    c.collprovider::text,
+    (CASE WHEN c.collisdeterministic THEN 't' ELSE 'f' END)::text AS collisdeterministic,
+    c.collencoding::text
+FROM pg_catalog.pg_collation c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.collnamespace
+WHERE n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY c.oid
 "#;
