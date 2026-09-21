@@ -33,13 +33,16 @@ impl<'c> FuncResolver<'c> {
         };
         match &name.schema {
             Some(schema) => {
+                // LookupExplicitNamespace(missing_ok = true)
+                let _ = location;
+                let Some(schema) = crate::relation::resolve_schema_name(catalog, schema) else {
+                    return Ok(None);
+                };
                 if catalog.schema_named(schema).is_none() {
-                    // LookupExplicitNamespace(missing_ok = true)
-                    let _ = location;
                     return Ok(None);
                 }
                 Ok(catalog
-                    .operators_named(&QualifiedName::new(schema.as_str(), name.name.as_str()))
+                    .operators_named(&QualifiedName::new(schema, name.name.as_str()))
                     .iter()
                     .copied()
                     .find(|&o| matches(o)))
@@ -61,7 +64,7 @@ impl<'c> FuncResolver<'c> {
         let catalog = self.catalog();
         let ops: Vec<(Handle<Operator>, usize)> = match &name.schema {
             Some(schema) => {
-                self.lookup_schema(schema, location)?;
+                let (_, schema) = self.lookup_schema(schema, location)?;
                 catalog
                     .operators_named(&QualifiedName::new(schema.as_str(), name.name.as_str()))
                     .iter()

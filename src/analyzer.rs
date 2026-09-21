@@ -28,7 +28,7 @@ use crate::analysis::{
 use crate::coerce::Coercer;
 use crate::consts::{LiteralKind, make_const};
 use crate::diagnostic::{AnalyzeError, Diagnostic, Result, unsupported};
-use crate::func::{FuncResolver, ObjectName, ResolvedFunc};
+use crate::func::{FuncResolver, ObjectName, Projection, ResolvedFunc};
 use crate::relation::{NamespaceItem, Relations, Scope};
 use crate::settings::Settings;
 use crate::typename::{TypeName, TypeNames, TypmodArg};
@@ -785,6 +785,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::NullIf(_) => Colname {
                 name: Some("nullif".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::AtTimeZone(..) | FlatExpr::AtLocal(_) => Colname {
+                name: Some("timezone".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::XmlConcat(_) => Colname {
+                name: Some("xmlconcat".to_owned()),
+                strength: 2,
+            },
+            FlatExpr::Normalize(_) => Colname {
+                name: Some("normalize".to_owned()),
                 strength: 2,
             },
             FlatExpr::Coalesce(_) => Colname {
@@ -1595,6 +1607,104 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let (name, op_location) = self.decorated_operator(op)?;
                 self.prefix_op_named(handle, name, op_location, inner, &arg)
             }
+            FlatExpr::AtTimeZone(l, r) => {
+                // gram.y: timezone(rhs, lhs), located at AT.
+                let (l, r) = (*l, *r);
+                let lt = self.expr(scope, l)?;
+                let rt = self.expr(scope, r)?;
+                let at = self.next_token_start(self.span(l).end);
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "timezone".to_owned(),
+                };
+                let typed =
+                    self.resolve_call(handle, name, &[r, l], &[rt, lt.clone()], at, None)?;
+                Ok(Typed {
+                    location: lt.location,
+                    ..typed
+                })
+            }
+            FlatExpr::AtLocal(l) => {
+                let l = *l;
+                let lt = self.expr(scope, l)?;
+                let at = self.next_token_start(self.span(l).end);
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "timezone".to_owned(),
+                };
+                let typed = self.resolve_call(handle, name, &[l], &[lt.clone()], at, None)?;
+                Ok(Typed {
+                    location: lt.location,
+                    ..typed
+                })
+            }
+            FlatExpr::XmlConcat(x) => {
+                // transformXmlExpr for IS_XMLCONCAT: every argument becomes xml.
+                let args = self.list1(self.get(*x).args).to_vec();
+                let xml = self.types().builtin(Builtin::Xml);
+                for a in args {
+                    let t = self.expr(scope, a)?;
+                    if t.ty != xml {
+                        let coerced = self.coercer().coerce_to_target_type(
+                            &t,
+                            xml,
+                            -1,
+                            CoercionContext::Assignment,
+                        )?;
+                        match coerced {
+                            Some((_, steps)) => self.record_coercions(a, steps),
+                            None => {
+                                return Err(Diagnostic::new(
+                                    "42804",
+                                    format!(
+                                        "argument of XMLCONCAT must be type xml, not type {}",
+                                        self.types().format(t.ty)
+                                    ),
+                                )
+                                .at(t.location)
+                                .into());
+                            }
+                        }
+                    }
+                }
+                Ok(Typed {
+                    ty: xml,
+                    typmod: -1,
+                    form: Form::Other,
+                    location,
+                    returns_set: false,
+                })
+            }
+            FlatExpr::Normalize(n) => {
+                // gram.y: pg_catalog.normalize(arg [, 'FORM']) as a FuncCall.
+                let n = self.get(*n);
+                let arg_handle = n.arg;
+                let arg = self.expr(scope, arg_handle)?;
+                let mut args = vec![arg];
+                let mut handles = vec![arg_handle];
+                if let Some(form) = n.form {
+                    let form = match self.get(form) {
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfc => "NFC",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfd => "NFD",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfkc => "NFKC",
+                        pg_sql::ast::shared::expr::FlatUnicodeNormalForm::Nfkd => "NFKD",
+                    };
+                    args.push(make_const(
+                        self.types(),
+                        LiteralKind::String,
+                        form,
+                        location,
+                    ));
+                    // The form is a constant with no node of its own; its
+                    // coercion is recorded on the expression itself.
+                    handles.push(handle);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "normalize".to_owned(),
+                };
+                self.resolve_call(handle, name, &handles, &args, location, None)
+            }
             FlatExpr::Coalesce(c) => {
                 let args = self.list1(self.get(*c).args).to_vec();
                 self.common_type_call(scope, handle, &args, "COALESCE", location)
@@ -2085,11 +2195,98 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 _ => return Err(unsupported("aggregate call form", Some(location..location))),
             }
         }
+        // MERGE_ACTION() is a keyword form that only a MERGE may use.
+        if name.schema.is_none() && name.name == "merge_action" && arg_handles.is_empty() {
+            return Err(Diagnostic::new(
+                "42601",
+                "MERGE_ACTION() can only be used in the RETURNING list of a MERGE command",
+            )
+            .at(location)
+            .into());
+        }
+        // CURRENT_TIME(p) and kin are SQLValueFunction nodes with a typmod.
+        if name.schema.is_none()
+            && arg_handles.len() == 1
+            && matches!(
+                name.name.as_str(),
+                "current_time" | "current_timestamp" | "localtime" | "localtimestamp"
+            )
+            && let Some(ty) = self.sql_value_function(&name.name)
+            && let FlatExpr::IntegerLit(t) = self.get(arg_handles[0])
+        {
+            let text = self.text(*t);
+            let precision = crate::consts::integer_value(text).unwrap_or(0);
+            if precision < 0 {
+                let label = match name.name.as_str() {
+                    "current_time" => format!("TIME({precision}) WITH TIME ZONE"),
+                    "current_timestamp" => format!("TIMESTAMP({precision}) WITH TIME ZONE"),
+                    "localtime" => format!("TIME({precision})"),
+                    _ => format!("TIMESTAMP({precision})"),
+                };
+                return Err(Diagnostic::new(
+                    "22023",
+                    format!("{label} precision must not be negative"),
+                )
+                .at(location)
+                .into());
+            }
+            return Ok(Typed {
+                ty,
+                typmod: precision.min(6) as i32,
+                form: Form::Other,
+                location,
+                returns_set: false,
+            });
+        }
         let mut args = Vec::with_capacity(arg_handles.len());
         for &a in &arg_handles {
             args.push(self.expr(scope, a)?);
         }
-        match self.resolver.parse_func(&name, &args, location)? {
+        // ParseComplexProjection: f(composite) may be the field f.
+        let projection = if name.schema.is_none() && args.len() == 1 {
+            self.projection_field(args[0].ty, &name.name)
+        } else {
+            None
+        };
+        self.resolve_call(handle, name, &arg_handles, &args, location, projection)
+    }
+
+    /// The field `name` of a composite type, for function-call syntax.
+    fn projection_field(&self, ty: TypeRef, name: &str) -> Option<Projection> {
+        match &self.catalog()[ty].kind {
+            pg_catalog::TypeKind::Composite(detail) => detail
+                .fields
+                .iter()
+                .find(|f| f.name.as_str() == name)
+                .map(|f| Projection {
+                    ty: f.ty,
+                    typmod: f.typmod.0,
+                }),
+            _ => None,
+        }
+    }
+
+    /// `ParseFuncOrColumn` for arguments already transformed.
+    fn resolve_call(
+        &mut self,
+        handle: Handle<FlatExpr>,
+        name: ObjectName,
+        arg_handles: &[Handle<FlatExpr>],
+        args: &[Typed],
+        location: usize,
+        projection: Option<Projection>,
+    ) -> Result<Typed> {
+        match self
+            .resolver
+            .parse_func(&name, args, location, projection)?
+        {
+            ResolvedFunc::Projection(p) => Ok(Typed {
+                ty: p.ty,
+                typmod: p.typmod,
+                form: Form::Other,
+                location,
+                returns_set: false,
+            }),
             ResolvedFunc::Coercion { target } => {
                 let (result, steps) =
                     self.coercer()
@@ -2103,7 +2300,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 retset,
                 declared,
             } => {
-                for (i, (&a, arg)) in arg_handles.iter().zip(&args).enumerate() {
+                for (i, (&a, arg)) in arg_handles.iter().zip(args).enumerate() {
                     if arg.ty != declared[i] {
                         let (_, steps) = self.coercer().coerce_type(
                             arg,
@@ -2158,16 +2355,30 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     ..result
                 })
             }
-            None => Err(Diagnostic::new(
-                "42846",
-                format!(
-                    "cannot cast type {} to {}",
-                    self.types().format(arg.ty),
-                    self.types().format(target)
-                ),
-            )
-            .at(cast_location)
-            .into()),
+            None => {
+                // typeInheritsFrom / typeIsOfTypedTable: inheritance is not
+                // in the Catalog, so a cast between two relation row types
+                // may be one PostgreSQL allows.
+                let types = self.types();
+                if types.is_complex(types.base_type(arg.ty))
+                    && types.is_complex(types.base_type(target))
+                {
+                    return Err(unsupported(
+                        "row type conversion",
+                        Some(cast_location..cast_location),
+                    ));
+                }
+                Err(Diagnostic::new(
+                    "42846",
+                    format!(
+                        "cannot cast type {} to {}",
+                        types.format(arg.ty),
+                        types.format(target)
+                    ),
+                )
+                .at(cast_location)
+                .into())
+            }
         }
     }
 

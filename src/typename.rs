@@ -52,15 +52,17 @@ impl<'c> TypeNames<'c> {
         let catalog = self.types.catalog;
         let base = match &tn.schema {
             Some(schema) => {
-                if catalog.schema_named(schema).is_none() {
+                let real = crate::relation::resolve_schema_name(catalog, schema)
+                    .filter(|real| catalog.schema_named(real).is_some());
+                let Some(real) = real else {
                     return Err(Diagnostic::new(
                         "3F000",
                         format!("schema \"{schema}\" does not exist"),
                     )
                     .at(tn.location)
                     .into());
-                }
-                catalog.type_named(&QualifiedName::new(schema.as_str(), tn.name.as_str()))
+                };
+                catalog.type_named(&QualifiedName::new(real, tn.name.as_str()))
             }
             None => catalog.type_visible(self.search_path, &tn.name),
         };

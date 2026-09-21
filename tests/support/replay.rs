@@ -198,8 +198,6 @@ fn keeps_catalog(statement: &Statement<'_>) -> bool {
             | Statement::Execute(_)
             | Statement::Begin(_)
             | Statement::StartTransaction(_)
-            | Statement::Commit(_)
-            | Statement::End(_)
     )
 }
 
@@ -271,6 +269,7 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
             SubjectOutcome::Analysed {
                 params: subject_params,
                 columns: subject_columns,
+                ..
             },
         ) => {
             let same_columns = columns.len() == subject_columns.len()
@@ -287,10 +286,31 @@ fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome) -> Verdict {
                 Verdict::Disagree
             }
         }
-        (OracleOutcome::Rejected(error), SubjectOutcome::Analysed { .. })
+        // Rejections raised outside parse analysis while the Subject
+        // analysed: data errors from input functions (class 22, 54 and 55,
+        // and 42602), scanner-level syntax (42601, 0A000), the rewriter's
+        // policy recursion and restricted-view checks (42P17, 55000), and
+        // catalog lookups done by reg* input functions.
+        (OracleOutcome::Rejected(error), SubjectOutcome::Analysed { reg_literals, .. })
             if error.sqlstate.starts_with("22")
-                || error.sqlstate == "42601"
-                || error.sqlstate == "0A000" =>
+                || error.sqlstate.starts_with("54")
+                || error.sqlstate.starts_with("55")
+                || matches!(
+                    error.sqlstate.as_str(),
+                    "42601" | "42602" | "0A000" | "42P17"
+                )
+                || (*reg_literals
+                    && matches!(
+                        error.sqlstate.as_str(),
+                        "42883"
+                            | "42P01"
+                            | "42704"
+                            | "42P03"
+                            | "42725"
+                            | "42P05"
+                            | "42501"
+                            | "3F000"
+                    )) =>
         {
             Verdict::KnownDivergence
         }
@@ -321,6 +341,8 @@ struct Session {
     catalog: Option<Catalog>,
     catalog_dirty: bool,
     catalog_loads: usize,
+    /// The catalog fingerprint at the last load.
+    fingerprint: Option<String>,
 }
 
 impl Session {
@@ -333,6 +355,7 @@ impl Session {
             catalog: None,
             catalog_dirty: true,
             catalog_loads: 0,
+            fingerprint: None,
         }
     }
 
@@ -346,6 +369,7 @@ impl Session {
             self.catalog = Some(loaded.catalog);
             self.catalog_dirty = false;
             self.catalog_loads += 1;
+            self.fingerprint = self.oracle.catalog_fingerprint().ok();
         }
         Ok(())
     }
@@ -358,17 +382,30 @@ impl Session {
         }
         if !shape.keeps_catalog {
             self.catalog_dirty = true;
+        } else if !self.catalog_dirty {
+            // A statement that keeps the catalog by its kind may still
+            // change it: SELECT INTO, or a function that runs DDL.
+            match self.oracle.catalog_fingerprint() {
+                Ok(fingerprint) => {
+                    if self.fingerprint.as_ref() != Some(&fingerprint) {
+                        self.catalog_dirty = true;
+                    }
+                }
+                Err(error) => self.recover(&error),
+            }
         }
     }
 
-    /// The connection is gone, which some corpus statements cause on
-    /// purpose. Reconnect; the session state is lost, so the catalog must be
-    /// reloaded.
+    /// Something went wrong talking to the Oracle. When the connection is
+    /// gone, which some corpus statements cause on purpose, reconnect; the
+    /// session state is lost either way, so the catalog must be reloaded.
     fn recover(&mut self, error: &postgres::Error) {
-        eprintln!("oracle connection lost ({error}); reconnecting");
-        self.oracle
-            .reconnect()
-            .unwrap_or_else(|error| panic!("cannot reconnect to the oracle: {error}"));
+        if self.oracle.is_closed() {
+            eprintln!("oracle connection lost ({error}); reconnecting");
+            self.oracle
+                .reconnect()
+                .unwrap_or_else(|error| panic!("cannot reconnect to the oracle: {error}"));
+        }
         self.catalog_dirty = true;
     }
 }
@@ -471,10 +508,16 @@ fn replay_one(
         session.run(shape, sql);
         return Verdict::Skipped(SkipReason::CatalogUnavailable);
     }
-    let search_path = session
-        .oracle
-        .search_path()
-        .unwrap_or_else(|error| panic!("cannot read search_path: {error}"));
+    let search_path = match session.oracle.search_path() {
+        Ok(path) => path,
+        Err(error) => {
+            // A failed transaction that the probe did not see, or a lost
+            // connection: either way this statement is not compared.
+            session.recover(&error);
+            session.run(shape, sql);
+            return Verdict::Skipped(SkipReason::AbortedTransaction);
+        }
+    };
     let oracle_outcome = match session.oracle.describe(sql) {
         Ok(outcome) => outcome,
         Err(error) => {
