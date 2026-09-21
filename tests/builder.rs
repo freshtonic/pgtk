@@ -2,10 +2,11 @@
 
 use pg_catalog::{
     ArgMode, Argument, BtreeOperators, BuildError, Builtin, Cast, CastContext, CastMethod, Catalog,
-    CatalogBuilder, Column, CompositeDetail, DomainDetail, Extension, Field, FiresWhen, Function,
-    FunctionKind, Handle, Identity, Metadata, Name, Oid, Operator, OperatorKind, Parameter,
-    ParameterKind, PrimaryKey, QualifiedName, Relation, RelationKind, Rule, RuleEvent, Schema,
-    SearchPath, Trigger, TriggerTiming, Type, TypeCategory, TypeKind, Typmod, Volatility,
+    CatalogBuilder, Collation, CollationProvider, Column, CompositeDetail, DomainDetail, Encoding,
+    Extension, Field, FiresWhen, Function, FunctionKind, Handle, Identity, Metadata, Name, Oid,
+    Operator, OperatorKind, Parameter, ParameterKind, PrimaryKey, QualifiedName, Relation,
+    RelationKind, Rule, RuleEvent, Schema, SearchPath, Trigger, TriggerTiming, Type, TypeCategory,
+    TypeKind, Typmod, Volatility,
 };
 
 // These checks run when the test compiles, not when it runs.
@@ -56,6 +57,7 @@ fn base_type(oid: u32, name: &str, schema: Handle<Schema>, category: TypeCategor
         category,
         is_preferred: false,
         is_collatable: false,
+        collation: None,
         array: None,
         kind: TypeKind::Base,
         btree: None,
@@ -189,6 +191,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 not_null: true,
                 has_default: false,
                 generated: false,
+                collation: None,
                 identity: Some(Identity::Always),
             },
             Column {
@@ -199,6 +202,7 @@ fn small_catalog() -> (Catalog, Handles) {
                 not_null: false,
                 has_default: true,
                 generated: false,
+                collation: None,
                 identity: None,
             },
         ],
@@ -710,6 +714,7 @@ fn sequence_column(name: &str, position: i16, ty: Handle<Type>) -> Column {
         not_null: true,
         has_default: false,
         generated: false,
+        collation: None,
         identity: None,
     }
 }
@@ -1104,6 +1109,172 @@ fn a_catalog_keeps_its_parameters_through_a_builder() {
     builder.permit_missing_builtins();
     let catalog = builder.finish().expect("the catalog builds");
     assert_eq!(catalog.parameters().len(), 1);
+}
+
+/// The handles of the collations that [`collation_catalog`] builds.
+struct CollationHandles {
+    default: Handle<Collation>,
+    public_fr_latin1: Handle<Collation>,
+    catalog_fr_utf8: Handle<Collation>,
+    catalog_fr_latin1: Handle<Collation>,
+    icu_und: Handle<Collation>,
+}
+
+/// A catalog of a database with this encoding. `pg_catalog` has `default`,
+/// `fr` for UTF8 and for LATIN1, and the ICU collation `und-x-icu`. `public`
+/// has `fr` for LATIN1 only.
+fn collation_catalog(encoding: Encoding) -> (Catalog, CollationHandles) {
+    let mut builder = CatalogBuilder::new(Metadata {
+        encoding,
+        ..Metadata::placeholder()
+    });
+    builder.permit_missing_builtins();
+    let schema = |oid: u32, name: &str| Schema {
+        oid: Oid(oid),
+        name: Name::new(name),
+        is_temporary: false,
+        extension: None,
+    };
+    let pg_catalog = builder.push_schema(schema(11, "pg_catalog"));
+    let public = builder.push_schema(schema(2200, "public"));
+
+    let mut collation = |oid: u32, name: &str, schema, encoding, provider| {
+        builder.push_collation(Collation {
+            oid: Oid(oid),
+            name: Name::new(name),
+            schema,
+            encoding,
+            provider,
+            deterministic: true,
+            extension: None,
+        })
+    };
+    let handles = CollationHandles {
+        default: collation(100, "default", pg_catalog, None, CollationProvider::Default),
+        public_fr_latin1: collation(20000, "fr", public, Some(8), CollationProvider::Libc),
+        catalog_fr_utf8: collation(12001, "fr", pg_catalog, Some(6), CollationProvider::Libc),
+        catalog_fr_latin1: collation(12002, "fr", pg_catalog, Some(8), CollationProvider::Libc),
+        icu_und: collation(12003, "und-x-icu", pg_catalog, None, CollationProvider::Icu),
+    };
+    (builder.finish().expect("the catalog builds"), handles)
+}
+
+#[test]
+fn a_collation_lookup_reads_the_encoding_of_the_database() {
+    let name = QualifiedName::new("pg_catalog", "fr");
+
+    let (utf8, h) = collation_catalog(Encoding::utf8());
+    assert_eq!(utf8.collation_named(&name), Some(h.catalog_fr_utf8));
+    assert_eq!(
+        utf8.collations_named(&name),
+        &[h.catalog_fr_utf8, h.catalog_fr_latin1]
+    );
+
+    let latin1 = Encoding {
+        id: 8,
+        name: "LATIN1".to_owned(),
+    };
+    let (latin1, h) = collation_catalog(latin1);
+    assert_eq!(latin1.collation_named(&name), Some(h.catalog_fr_latin1));
+
+    // `public.fr` is for LATIN1 only. A UTF8 database does not find it, but
+    // the raw lookup shows that the name is there for another encoding.
+    let public_fr = QualifiedName::new("public", "fr");
+    assert_eq!(utf8.collation_named(&public_fr), None);
+    assert_eq!(utf8.collations_named(&public_fr).len(), 1);
+    assert_eq!(latin1.collation_named(&public_fr), Some(h.public_fr_latin1));
+
+    // A collation for each encoding is a match in each database.
+    let default = QualifiedName::new("pg_catalog", "default");
+    assert_eq!(utf8.collation_named(&default), Some(h.default));
+    assert_eq!(latin1.collation_named(&default), Some(h.default));
+    assert_eq!(
+        utf8.collation_named(&QualifiedName::new("pg_catalog", "nope")),
+        None
+    );
+}
+
+#[test]
+fn a_visible_collation_is_the_first_usable_one_on_the_path() {
+    // `public` is before `pg_catalog`, and it has `fr` only for LATIN1. A
+    // UTF8 database goes on to `pg_catalog`.
+    let (utf8, h) = collation_catalog(Encoding::utf8());
+    let path = SearchPath::new(&utf8, ["public", "pg_catalog"]);
+    assert_eq!(utf8.collation_visible(&path, "fr"), Some(h.catalog_fr_utf8));
+    assert_eq!(utf8.collation_visible(&path, "default"), Some(h.default));
+    assert_eq!(utf8.collation_visible(&path, "nope"), None);
+
+    let latin1 = Encoding {
+        id: 8,
+        name: "LATIN1".to_owned(),
+    };
+    let (latin1, h) = collation_catalog(latin1);
+    let path = SearchPath::new(&latin1, ["public", "pg_catalog"]);
+    assert_eq!(
+        latin1.collation_visible(&path, "fr"),
+        Some(h.public_fr_latin1)
+    );
+}
+
+#[test]
+fn an_icu_collation_needs_an_encoding_that_icu_can_work_with() {
+    let name = QualifiedName::new("pg_catalog", "und-x-icu");
+    let (utf8, h) = collation_catalog(Encoding::utf8());
+    assert_eq!(utf8.collation_named(&name), Some(h.icu_und));
+
+    let sql_ascii = Encoding {
+        id: 0,
+        name: "SQL_ASCII".to_owned(),
+    };
+    assert!(!sql_ascii.is_supported_by_icu());
+    let (ascii, h) = collation_catalog(sql_ascii);
+    assert_eq!(ascii.collation_named(&name), None);
+    // The `default` collation is not an ICU collation, so it is still there.
+    assert_eq!(
+        ascii.collation_named(&QualifiedName::new("pg_catalog", "default")),
+        Some(h.default)
+    );
+}
+
+#[test]
+fn a_collation_answers_its_oid_and_its_qualified_name() {
+    let (catalog, h) = collation_catalog(Encoding::utf8());
+    assert_eq!(catalog.collations().len(), 5);
+    assert_eq!(catalog.collation_by_oid(Oid(100)), Some(h.default));
+    assert_eq!(
+        catalog.qualified_name_of_collation(h.icu_und),
+        QualifiedName::new("pg_catalog", "und-x-icu")
+    );
+    // The arena is in push order for a hand-built catalog.
+    assert_eq!(catalog[h.public_fr_latin1].encoding, Some(8));
+}
+
+#[test]
+fn a_type_and_a_column_point_at_a_collation() {
+    let (catalog, h) = small_catalog();
+    assert_eq!(catalog[h.text].collation, None);
+
+    let mut builder = CatalogBuilder::from_catalog(catalog);
+    builder.permit_missing_builtins();
+    let default = builder.push_collation(Collation {
+        oid: Oid(100),
+        name: Name::new("default"),
+        schema: h.pg_catalog,
+        encoding: None,
+        provider: CollationProvider::Default,
+        deterministic: true,
+        extension: None,
+    });
+    builder.type_mut(h.text).is_collatable = true;
+    builder.type_mut(h.text).collation = Some(default);
+    builder.relation_mut(h.widget).columns[1].collation = Some(default);
+    let catalog = builder.finish().expect("the catalog builds");
+
+    assert_eq!(catalog[h.text].collation, Some(default));
+    assert_eq!(catalog[h.int4].collation, None);
+    let widget = &catalog[h.widget];
+    assert_eq!(widget.column("label").unwrap().collation, Some(default));
+    assert_eq!(widget.column("id").unwrap().collation, None);
 }
 
 #[test]

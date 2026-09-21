@@ -1,5 +1,6 @@
 //! Relations and their columns.
 
+use crate::collation::Collation;
 use crate::extension::Extension;
 use crate::handle::Handle;
 use crate::name::Name;
@@ -174,6 +175,13 @@ pub struct Column {
     pub has_default: bool,
     /// True when the column is a generated column.
     pub generated: bool,
+    /// The collation of the column, from `attcollation`.
+    ///
+    /// It is `None` for a column whose type is not collatable. A column of a
+    /// collatable type with no `COLLATE` clause has the collation of its
+    /// type, which is the `default` collation for a base type.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub collation: Option<Handle<Collation>>,
     /// The kind of identity column, when the column is one.
     ///
     /// This is `attidentity`. It is `None` for a column that is not an

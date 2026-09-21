@@ -1,5 +1,6 @@
 //! Types: the `pg_type` rows that the model keeps.
 
+use crate::collation::Collation;
 use crate::extension::Extension;
 use crate::handle::Handle;
 use crate::name::Name;
@@ -28,6 +29,15 @@ pub struct Type {
     pub is_preferred: bool,
     /// True when the type takes a collation, that is `typcollation <> 0`.
     pub is_collatable: bool,
+    /// The collation of the type, from `typcollation`.
+    ///
+    /// For a collatable base type this is the `default` collation, which
+    /// stands for the collation of the database. A domain can name another
+    /// one. It is `None` for a type that is not collatable. It is also `None`
+    /// when the catalog does not hold the collation; the load then has a
+    /// note, and [`is_collatable`](Type::is_collatable) is still true.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub collation: Option<Handle<Collation>>,
     /// The array type that has this type as its element.
     ///
     /// This is `typarray`. It is `None` for an array type, and `None` when

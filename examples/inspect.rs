@@ -188,8 +188,13 @@ fn print_type(catalog: &Catalog, handle: Handle<Type>) {
     if ty.is_preferred {
         println!("  preferred in its category");
     }
-    if ty.is_collatable {
-        println!("  takes a collation");
+    match ty.collation {
+        Some(collation) => println!(
+            "  collation {}",
+            catalog.qualified_name_of_collation(collation)
+        ),
+        None if ty.is_collatable => println!("  takes a collation"),
+        None => {}
     }
     if let Some(builtin) = catalog.as_builtin(handle) {
         println!("  built-in  {builtin:?}");

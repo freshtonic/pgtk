@@ -9,9 +9,10 @@
 #![cfg(feature = "fixture")]
 
 use pg_catalog::{
-    Builtin, CastContext, Catalog, CatalogBuilder, Column, CompositeDetail, Field, FiresWhen,
-    FunctionKind, Name, Oid, ParameterKind, QualifiedName, Relation, RelationKind, RuleEvent,
-    Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod, fixture::pg17,
+    Builtin, CastContext, Catalog, CatalogBuilder, CollationProvider, Column, CompositeDetail,
+    Field, FiresWhen, FunctionKind, Name, Oid, ParameterKind, QualifiedName, Relation,
+    RelationKind, RuleEvent, Schema, SearchPath, Type, TypeCategory, TypeKind, Typmod,
+    fixture::pg17,
 };
 
 #[test]
@@ -296,6 +297,57 @@ fn the_parameters_survive_a_serde_round_trip() {
 }
 
 #[test]
+fn text_has_the_default_collation_and_int4_has_none() {
+    let catalog = pg17();
+    assert_eq!(catalog.metadata().encoding.name, "UTF8");
+
+    let default = catalog
+        .collation_named(&QualifiedName::new("pg_catalog", "default"))
+        .expect("the default collation is there");
+    assert_eq!(catalog[default].oid, Oid(100));
+    assert_eq!(catalog[default].provider, CollationProvider::Default);
+    assert_eq!(catalog[default].encoding, None);
+
+    let text = catalog.builtin(Builtin::Text);
+    assert!(catalog[text].is_collatable);
+    assert_eq!(catalog[text].collation, Some(default));
+    let int4 = catalog.builtin(Builtin::Int4);
+    assert!(!catalog[int4].is_collatable);
+    assert_eq!(catalog[int4].collation, None);
+
+    // A type is collatable exactly when it has a collation.
+    for (_, ty) in catalog.types() {
+        assert_eq!(ty.is_collatable, ty.collation.is_some(), "{}", ty.name);
+    }
+}
+
+#[test]
+fn c_and_posix_are_visible_collations() {
+    let catalog = pg17();
+    let path = SearchPath::from_metadata(&catalog);
+    let c = catalog.collation_visible(&path, "C").expect("C is there");
+    let posix = catalog
+        .collation_visible(&path, "POSIX")
+        .expect("POSIX is there");
+    assert_ne!(c, posix);
+    assert_eq!(catalog[c].oid, Oid(950));
+    assert_eq!(catalog[posix].oid, Oid(951));
+    assert!(catalog[c].deterministic);
+    assert_eq!(catalog.collation_visible(&path, "no_such_collation"), None);
+
+    // `pg_class.relname` has the type `name`, whose collation is `C`.
+    let pg_class = catalog
+        .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
+        .expect("pg_class is a relation");
+    let relname = catalog[pg_class]
+        .column("relname")
+        .expect("relname is there");
+    assert_eq!(relname.collation, Some(c));
+    let oid = catalog[pg_class].column("oid").expect("oid is there");
+    assert_eq!(oid.collation, None);
+}
+
+#[test]
 fn count_is_visible_and_has_an_aggregate() {
     let catalog = pg17();
     let path = SearchPath::from_metadata(&catalog);
@@ -400,6 +452,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
         category: TypeCategory::Composite,
         is_preferred: false,
         is_collatable: false,
+        collation: None,
         array: None,
         btree: None,
         hash_equality: None,
@@ -427,6 +480,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             not_null: true,
             has_default: false,
             generated: false,
+            collation: None,
             identity: None,
         }],
         of_type: None,

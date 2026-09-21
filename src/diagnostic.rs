@@ -89,6 +89,8 @@ pub enum EntityKind {
     Trigger,
     /// A configuration parameter.
     Parameter,
+    /// A collation.
+    Collation,
 }
 
 impl EntityKind {
@@ -107,6 +109,7 @@ impl EntityKind {
             EntityKind::Rule => "rule",
             EntityKind::Trigger => "trigger",
             EntityKind::Parameter => "parameter",
+            EntityKind::Collation => "collation",
         }
     }
 }

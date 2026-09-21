@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use crate::builtin::Builtin;
 use crate::cast::{Cast, CastMethod};
 use crate::catalog::{Catalog, Metadata};
+use crate::collation::Collation;
 use crate::extension::Extension;
 use crate::function::Function;
 use crate::handle::Handle;
@@ -25,6 +26,7 @@ pub struct CatalogBuilder {
     metadata: Metadata,
     schemas: Vec<Schema>,
     extensions: Vec<Extension>,
+    collations: Vec<Collation>,
     types: Vec<Type>,
     relations: Vec<Relation>,
     functions: Vec<Function>,
@@ -134,6 +136,7 @@ impl CatalogBuilder {
             metadata,
             schemas: Vec::new(),
             extensions: Vec::new(),
+            collations: Vec::new(),
             types: Vec::new(),
             relations: Vec::new(),
             functions: Vec::new(),
@@ -153,6 +156,7 @@ impl CatalogBuilder {
             metadata,
             schemas,
             extensions,
+            collations,
             types,
             relations,
             functions,
@@ -164,6 +168,7 @@ impl CatalogBuilder {
             metadata,
             schemas,
             extensions,
+            collations,
             types,
             relations,
             functions,
@@ -223,6 +228,13 @@ impl CatalogBuilder {
     pub fn push_operator(&mut self, o: Operator) -> Handle<Operator> {
         let handle = Handle::new(self.operators.len() as u32);
         self.operators.push(o);
+        handle
+    }
+
+    /// Add a collation and give back its handle.
+    pub fn push_collation(&mut self, c: Collation) -> Handle<Collation> {
+        let handle = Handle::new(self.collations.len() as u32);
+        self.collations.push(c);
         handle
     }
 
@@ -293,6 +305,7 @@ impl CatalogBuilder {
     fn check_handles(&self) -> Result<(), BuildError> {
         let schemas = self.schemas.len();
         let extensions = self.extensions.len();
+        let collations = self.collations.len();
         let types = self.types.len();
         let relations = self.relations.len();
         let functions = self.functions.len();
@@ -304,8 +317,13 @@ impl CatalogBuilder {
         for entity in &self.extensions {
             check(entity.schema, schemas, "schema")?;
         }
+        for entity in &self.collations {
+            check(entity.schema, schemas, "schema")?;
+            check_opt(entity.extension, extensions, "extension")?;
+        }
         for entity in &self.types {
             check(entity.schema, schemas, "schema")?;
+            check_opt(entity.collation, collations, "collation")?;
             check_opt(entity.array, types, "type")?;
             check_opt(entity.extension, extensions, "extension")?;
             if let Some(btree) = entity.btree {
@@ -337,6 +355,7 @@ impl CatalogBuilder {
             check_opt(entity.extension, extensions, "extension")?;
             for column in &entity.columns {
                 check(column.ty, types, "type")?;
+                check_opt(column.collation, collations, "collation")?;
             }
             check_opt(entity.of_type, types, "type")?;
             for parent in &entity.parents {
@@ -397,6 +416,7 @@ impl CatalogBuilder {
     fn check_all_oids(&self) -> Result<(), BuildError> {
         check_oids(self.schemas.iter().map(|e| e.oid), "schema")?;
         check_oids(self.extensions.iter().map(|e| e.oid), "extension")?;
+        check_oids(self.collations.iter().map(|e| e.oid), "collation")?;
         check_oids(self.types.iter().map(|e| e.oid), "type")?;
         check_oids(self.relations.iter().map(|e| e.oid), "relation")?;
         check_oids(self.functions.iter().map(|e| e.oid), "function")?;
@@ -450,6 +470,7 @@ impl CatalogBuilder {
             self.metadata,
             self.schemas,
             self.extensions,
+            self.collations,
             self.types,
             self.relations,
             self.functions,
@@ -488,6 +509,7 @@ mod tests {
             category: TypeCategory::Numeric,
             is_preferred: false,
             is_collatable: false,
+            collation: None,
             array: None,
             kind: TypeKind::Base,
             btree: None,
