@@ -5,7 +5,7 @@ Each item belongs to the named crate, not here.
 
 ## pg-sql
 
-Done (pg-sql main 67b7f09): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
+Done (pg-sql main 80e7625): `COALESCE`, `NULLIF`, `GREATEST` and `LEAST` as
 their own nodes; infix `OPERATOR(schema.op)`; the identifier folding helper;
 `SELECT DISTINCT` requires a target list; `ROLLUP` and `CUBE` are grouping
 clauses; `SELECT ALL` parses; a set operation chain is a left-recursive
@@ -26,9 +26,30 @@ takes any `qual_all_Op` as one `SortOrder` with ASC/DESC, in a query, an
 aggregate, WITHIN GROUP and a window; `COLLATE any_name` and the collation
 and operator class names of index elements are `QualifiedName`; a CAST
 takes no COLLATE; function table aliases follow gram.y's `TableFuncElement`
-list, with a collation per column definition.
+list, with a collation per column definition; the windowless positions that
+took a type of their own now hold an `Expr`, so `FROM coalesce(a, b)`
+and `SELECT coalesce(a, b)` build one node and one expression walker reads
+both (`SpecialFuncTableRef.func`, `IndexTarget::Special` and
+`RowsFromFunc::Special`, with `CommonSubexprCall` and `JsonFuncExpr` gone);
+`TREAT(expr AS type)` is `Expr::Treat`; and MERGE's WHEN clauses take
+gram.y's own match kinds and actions, so `WHEN NOT MATCHED BY SOURCE` is a
+matched-side clause with a `MatchedKind`, an insert is `INSERT DEFAULT
+VALUES` or one `VALUES` row with no `INTO`, and the forms gram.y rejects no
+longer parse.
 
 Open:
+
+- `FROM current_user AS x (...)` and its family stay rejected on purpose.
+  pg-sql lexes `CURRENT_DATE`, `CURRENT_USER`, `SESSION_USER`, `LOCALTIME`,
+  `CURRENT_CATALOG` and `CURRENT_SCHEMA` as identifiers, so a windowless
+  position reads one as a relation name, not as the special expression
+  gram.y builds, and a column definition list after it does not parse.
+  `USER` is the one hard keyword of the family, so `FROM USER` does parse.
+  `JSON_OBJECTAGG` and `JSON_ARRAYAGG` stay rejected in these positions
+  too: their nodes carry a `FILTER` and an `OVER` that a windowless
+  position does not have, and either word could start an alias or an
+  operator class. An aggregate there fails PostgreSQL's own parse analysis
+  anyway.
 
 - Promoting shared-pool types that carry Annotations (`SelectItem`,
   `QualifiedRef`, `PositionalParam`, `QueryBody`, `InsertStmt`, `UpdateStmt`)
