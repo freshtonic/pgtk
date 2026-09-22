@@ -22,7 +22,9 @@ rest so that they are not re-decided.
   Entities inside those are skipped. The temporary schema of the loader's own
   session (`pg_my_temp_schema()`) is loaded and flagged `is_temporary`, so a
   consumer on the same connection can resolve a `CREATE TEMP TABLE`.
-- Server versions: 14 through 17, one binary, version detected at load.
+- Server versions: 14 through 17 now, one binary, version detected at load.
+  ADR 0005 extends this to 14 through 19 beta in the same build, with a model
+  that is the union of the versions and an additive `pg19-beta` feature.
 - Data source: `pg_catalog` only. `information_schema` is never read.
 - Out of scope: see `CONTEXT.md`.
 
