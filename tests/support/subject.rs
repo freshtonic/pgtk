@@ -1,5 +1,6 @@
 //! The Subject: the thing under test, asked the same question as the Oracle.
 
+use pg_analyze::{Session, SessionEffect};
 use pg_catalog::Catalog;
 
 use super::replay::Shape;
@@ -39,6 +40,14 @@ pub enum SubjectOutcome {
     Unsupported(String),
 }
 
+/// What the Subject said about one statement, with what the statement
+/// would add to the Session or remove from it.
+#[derive(Clone, Debug)]
+pub struct SubjectAnswer {
+    pub outcome: SubjectOutcome,
+    pub effect: Option<SessionEffect>,
+}
+
 /// A thing that analyses one statement against one Catalog.
 ///
 /// It must be `Send` because each worker thread drives its own copy.
@@ -50,8 +59,14 @@ pub trait Subject: Send {
     fn wants(&self, shape: Shape) -> bool;
 
     /// Analyse `sql`, one statement without its terminator, as PostgreSQL
-    /// would with `search_path` in effect.
-    fn analyze(&mut self, catalog: &Catalog, search_path: &[String], sql: &str) -> SubjectOutcome;
+    /// would with `search_path` in effect and `session` open.
+    fn analyze(
+        &mut self,
+        catalog: &Catalog,
+        search_path: &[String],
+        sql: &str,
+        session: &Session,
+    ) -> SubjectAnswer;
 }
 
 /// The real Analyzer as a Subject.
@@ -63,7 +78,13 @@ impl Subject for AnalyzerSubject {
         shape.has_query
     }
 
-    fn analyze(&mut self, catalog: &Catalog, search_path: &[String], sql: &str) -> SubjectOutcome {
+    fn analyze(
+        &mut self,
+        catalog: &Catalog,
+        search_path: &[String],
+        sql: &str,
+        session: &Session,
+    ) -> SubjectAnswer {
         use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
         let settings = Settings::new(
             catalog,
@@ -81,8 +102,10 @@ impl Subject for AnalyzerSubject {
             }
             (catalog[ty].oid.0, typmod)
         };
-        match analyzer.analyze_sql(sql, &[]) {
+        let mut effect = None;
+        let outcome = match analyzer.analyze_sql(sql, &[], session) {
             Ok(analysis) => {
+                effect = analysis.session_effect.clone();
                 let reg_literals = analysis.coercions.iter().any(|(_, steps)| {
                     steps.iter().any(|step| {
                         step.path == pg_analyze::CoercionPath::UnknownLiteral
@@ -124,7 +147,8 @@ impl Subject for AnalyzerSubject {
                 position: d.position,
             },
             Err(AnalyzeError::Unsupported(u)) => SubjectOutcome::Unsupported(u.what),
-        }
+        };
+        SubjectAnswer { outcome, effect }
     }
 }
 
@@ -137,7 +161,10 @@ impl Subject for Stub {
         false
     }
 
-    fn analyze(&mut self, _: &Catalog, _: &[String], _: &str) -> SubjectOutcome {
-        SubjectOutcome::Unsupported("no analyzer yet".to_owned())
+    fn analyze(&mut self, _: &Catalog, _: &[String], _: &str, _: &Session) -> SubjectAnswer {
+        SubjectAnswer {
+            outcome: SubjectOutcome::Unsupported("no analyzer yet".to_owned()),
+            effect: None,
+        }
     }
 }

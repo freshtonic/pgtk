@@ -78,7 +78,7 @@ such objects run one at a time in schedule order, in a cluster lane, and no
 file of a later group starts until the lane has finished every earlier group.
 Inside one group pg_regress's own rule applies: files use disjoint names.
 
-Three details follow:
+These details follow:
 
 - **Catalog reloads.** A statement that may change the catalog marks it
   dirty. The Catalog is reloaded lazily, before the next statement the
@@ -94,9 +94,28 @@ Three details follow:
   and 42602), domain checks folded at parse time (class 23), scanner-level
   syntax (42601, 0A000), the rewriter's policy and view checks (42P17,
   55000), and catalog lookups done by `reg*` input functions on unknown
-  literals. The rule is `compare` in `replay.rs`.
+  literals. One divergence runs the other way: Analysis reports the `26000`
+  or `34000` PostgreSQL raises for an EXECUTE or a FETCH of a name the
+  Session does not hold, while the Describe itself answers with no columns,
+  because `UtilityTupleDescriptor` says that raising the error is "not our
+  business". The same verdict covers the cursors the harness cannot see,
+  the ones a function opened. The rule is `compare` in `replay.rs`.
 - **Search path.** `current_schemas(false)` is read before every comparison,
   so `SET search_path` and `SET ROLE` need no tracking.
+- **The Session.** EXECUTE, FETCH and SHOW of a custom parameter are
+  answered from session state, so the harness keeps a `Session` for each
+  file it replays. After a statement the server accepted, it folds in the
+  Session Effect the Subject reported, so a PREPARE, a DECLARE or a SET
+  earlier in the file is there when the EXECUTE, the FETCH or the SHOW
+  arrives. A statement the server rejected changes nothing. The end of a
+  transaction closes the cursors that are not held; a transaction that ends
+  while it is failed closes every cursor, since it rolls everything back.
+  A Session holds Catalog handles, so it is rewritten against the new
+  Catalog whenever the harness reloads one, and a reconnection empties it.
+  A prepared statement or a cursor the Session does not hold is a known
+  divergence, not an agreement, in both directions: the Describe itself
+  never raises the error, and the Session the harness keeps misses a cursor
+  a function opened, since it sees only the statements it replays.
 - **Failed transactions.** PostgreSQL rejects everything after an error inside
   a transaction with `25P02`, which is not an analysis outcome. The harness
   probes the session before each statement and skips while it is failed.

@@ -28,8 +28,16 @@ The immutable snapshot of one database's system catalog, as defined by `pg-catal
 The ordered list of schemas used to resolve an unqualified name, as defined by `pg-catalog`.
 
 **Settings**:
-The session state that changes what a Statement means, supplied by the caller for every Analysis. The Search Path is the one mandatory member, given as already-resolved schema names; substituting `$user` and temporary schemas is the caller's job.
-_Avoid_: GUCs, config, options, session
+The configuration that changes what a Statement means, supplied by the caller for every Analysis. The Search Path is the one mandatory member, given as already-resolved schema names; substituting `$user` and temporary schemas is the caller's job.
+_Avoid_: GUCs, config, options, session state
+
+**Session**:
+The objects a PostgreSQL session holds that a Parse or a Describe reads: its prepared statements, its open cursors and the custom configuration placeholders a SET created. A Session is a snapshot the caller supplies next to the Settings; an empty Session is the default. Analysis reads it and never changes it: EXECUTE answers with the prepared statement's Result Descriptor, FETCH with the cursor's, SHOW of a placeholder with its name.
+_Avoid_: connection, backend, portal, plan cache
+
+**Session Effect**:
+What a Statement would add to or remove from the Session when it runs, reported by Analysis so that a caller replaying statements in order can fold it into the next Session: PREPARE adds a prepared statement, DECLARE a cursor, SET a placeholder, DEALLOCATE and CLOSE remove theirs, and the end of a transaction closes the cursors that are not held. Analysis reports the Effect; applying it is the caller's job.
+_Avoid_: side effect, mutation, execution
 
 **Target Version**:
 The PostgreSQL major version, 14 through 17, whose analysis rules and diagnostic wording an Analysis applies. The caller chooses it by entry point; the Catalog's own version does not choose it.
