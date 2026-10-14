@@ -1,0 +1,20 @@
+# Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
+
+rust_library(
+    name = "pg-proto",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pg_proto",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "pg-proto-test",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pg_proto",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = [],
+)
