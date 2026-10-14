@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo:
+    name: Cargo build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rustup reads rust-toolchain.toml and installs the pinned toolchain.
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
+
+  buck2:
+    name: Buck2 build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: facebook/install-dotslash@v2
+      - run: tools/buck2 build //...
+      - run: tools/buck2 test //...
+
+  third-party:
+    name: Third-party BUCK and vendor are up to date
+    runs-on: ubuntu-latest
+    env:
+      # Keep the same as the reindeer that generated the committed files.
+      REINDEER_REV: ffc8a53bf778283f9e1336b0d36ebf7899db1507
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo install --locked --git https://github.com/facebookincubator/reindeer --rev "$REINDEER_REV" reindeer
+      - run: scripts/update-third-party
+      - name: Fail if the generated files changed
+        run: |
+          git add -A
+          git diff --cached --exit-code --stat
