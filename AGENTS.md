@@ -14,4 +14,4 @@ Uses the five default triage labels (`needs-triage`, `needs-info`, `ready-for-ag
 
 ### Domain docs
 
-Multi-context: a root `CONTEXT-MAP.md` points to one `CONTEXT.md` for each crate under `crates/`. See `docs/agents/domain.md`.
+Multi-context: a root `CONTEXT-MAP.md` points to one `CONTEXT.md` for each package under `packages/`. See `docs/agents/domain.md`.
