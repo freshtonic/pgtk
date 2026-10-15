@@ -33,7 +33,7 @@ use pg_sql::ast::shared::expr::{
 };
 use pg_sql::ast::shared::expr::{
     FlatBitType, FlatBoolTestKind, FlatCastTypeHead, FlatCharacterType, FlatCharacterTypeName,
-    FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFuncArg,
+    FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFloatPrecision, FlatFuncArg,
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
     FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType, FlatParenContent,
     FlatParenthesizedIndirection, FlatPrecisionSqlValueFuncName, FlatQualifiedRefFirstIndirection,
@@ -12225,7 +12225,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         match self.get(f) {
             FlatTypeCastFunc::Fixed(fixed) => {
                 let fixed = self.get(*fixed);
-                let (name, _) = self.fixed_type(fixed.type_name, NO_LOCATION).ok()?;
+                let (name, _) = self.fixed_type(fixed.type_name).ok()?;
                 Some(name.to_owned())
             }
             #[cfg(feature = "since-pg17")]
@@ -12257,7 +12257,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         let (schema, name, typmods) = match self.get(ct.head) {
             FlatCastTypeHead::Numeric(n) => {
-                let (name, typmods) = self.numeric_type(*n, location)?;
+                let (name, typmods) = self.numeric_type(*n)?;
                 (Some("pg_catalog"), name.to_owned(), typmods)
             }
             FlatCastTypeHead::Bit(b) => {
@@ -12426,11 +12426,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
 
     /// gram.y `Numeric`: the `pg_catalog` type name and its modifiers, with
     /// `opt_float`'s precision rule for `FLOAT(p)`.
-    fn numeric_type(
-        &self,
-        n: Handle<FlatNumericType>,
-        location: usize,
-    ) -> Result<(&'static str, Vec<TypmodArg>)> {
+    fn numeric_type(&self, n: Handle<FlatNumericType>) -> Result<(&'static str, Vec<TypmodArg>)> {
         Ok(match self.get(n) {
             FlatNumericType::Int | FlatNumericType::Integer => ("int4", Vec::new()),
             FlatNumericType::Smallint => ("int2", Vec::new()),
@@ -12445,32 +12441,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 };
                 ("numeric", typmods)
             }
-            FlatNumericType::Float(f) => {
-                let Some(p) = self.get(*f).precision else {
-                    return Ok(("float8", Vec::new()));
-                };
-                let precision = self.iconst_precision(p);
-                if precision < 1 {
-                    return Err(Diagnostic::new(
-                        "22023",
-                        "precision for type float must be at least 1 bit",
-                    )
-                    .at(location)
-                    .into());
-                }
-                if precision <= 24 {
-                    ("float4", Vec::new())
-                } else if precision <= 53 {
-                    ("float8", Vec::new())
-                } else {
-                    return Err(Diagnostic::new(
-                        "22023",
-                        "precision for type float must be less than 54 bits",
-                    )
-                    .at(location)
-                    .into());
-                }
-            }
+            // opt_float: pg-sql refuses a precision outside 1..53.
+            FlatNumericType::Float(f) => match self.get(*f).precision {
+                Some(p) if self.float_precision(p) <= 24 => ("float4", Vec::new()),
+                _ => ("float8", Vec::new()),
+            },
         })
     }
 
@@ -12511,13 +12486,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn fixed_type(
         &self,
         f: Handle<FlatFixedTypeCastFuncName>,
-        location: usize,
     ) -> Result<(&'static str, Vec<TypmodArg>)> {
         match self.get(f) {
-            FlatFixedTypeCastFuncName::Numeric(n) => self.numeric_type(*n, location),
+            FlatFixedTypeCastFuncName::Numeric(n) => self.numeric_type(*n),
             FlatFixedTypeCastFuncName::Bit(b) => self.bit_type(*b),
             FlatFixedTypeCastFuncName::Character(c) => Ok(self.character_type(*c)),
         }
+    }
+
+    /// gram.y `opt_float`'s `'(' Iconst ')'`.
+    fn float_precision(&self, p: Handle<FlatFloatPrecision>) -> i64 {
+        let raw = self.text(self.get(p).value);
+        crate::consts::integer_value(raw).expect("an Iconst is an int32")
     }
 
     /// gram.y `'(' Iconst ')'`. The grammar admits only an unsigned
@@ -16551,7 +16531,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let (tn, value) = match self.get(f) {
             FlatTypeCastFunc::Fixed(fixed) => {
                 let fixed = self.get(*fixed);
-                let (name, typmods) = self.fixed_type(fixed.type_name, location)?;
+                let (name, typmods) = self.fixed_type(fixed.type_name)?;
                 (
                     TypeName {
                         schema: Some("pg_catalog".to_owned()),
