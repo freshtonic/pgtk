@@ -8,8 +8,8 @@ server: the type of each expression, the columns each `*` expands to, the
 Result Descriptor a Describe would return, and the Diagnostic PostgreSQL would
 raise, with the same SQLSTATE, message and cursor position.
 
-The target is fidelity, bug for bug, to PostgreSQL 14 to 17 as the
-`TargetVersion` selects. The measure is the Oracle harness, which replays
+The target is fidelity, bug for bug, to the PostgreSQL version the
+Target Version selects. The measure is the Oracle harness, which replays
 PostgreSQL's own regression corpus against a live PostgreSQL 17 and against
 this crate and compares the answers statement by statement.
 
@@ -44,7 +44,10 @@ the query inside CREATE VIEW, CREATE RULE, PREPARE and COPY.
 use pg_analyze::{AnalyzeError, Analyzer, Session, Settings, TargetVersion};
 
 let catalog = pg_catalog::fixture::pg17(); // or load one from a server
-let settings = Settings::new(&catalog, TargetVersion::V17, ["public"]);
+// The Target Version is the server the SQL will run on. It must not be
+// newer than the Grammar Version this build parses with.
+let settings = Settings::new(&catalog, TargetVersion::Pg17, ["public"])
+    .expect("the build parses PostgreSQL 17 or newer");
 let analyzer = Analyzer::new(&catalog, settings);
 let mut session = Session::new(); // empty: no prepared statement, no cursor
 

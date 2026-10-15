@@ -2,7 +2,7 @@
 //! Catalog: no server needed.
 
 use pg_analyze::{AnalyzeError, Analyzer, PreparedStatement, ResultDescriptor};
-use pg_analyze::{Session, SessionEffect, Settings, TargetVersion};
+use pg_analyze::{GRAMMAR_VERSION, Session, SessionEffect, Settings};
 use pg_catalog::Catalog;
 
 fn catalog() -> Catalog {
@@ -11,7 +11,7 @@ fn catalog() -> Catalog {
 
 /// The Result Descriptor, or the Diagnostic, as one line.
 fn describe(catalog: &Catalog, session: &Session, sql: &str) -> String {
-    let settings = Settings::new(catalog, TargetVersion::V17, ["public"]);
+    let settings = Settings::new(catalog, GRAMMAR_VERSION, ["public"]).unwrap();
     let analyzer = Analyzer::new(catalog, settings);
     match analyzer.analyze_sql(sql, &[], session) {
         Ok(analysis) => analysis
@@ -33,7 +33,7 @@ fn describe(catalog: &Catalog, session: &Session, sql: &str) -> String {
 
 /// The Session Effect the Statement reports.
 fn effect(catalog: &Catalog, session: &Session, sql: &str) -> Option<SessionEffect> {
-    let settings = Settings::new(catalog, TargetVersion::V17, ["public"]);
+    let settings = Settings::new(catalog, GRAMMAR_VERSION, ["public"]).unwrap();
     let analyzer = Analyzer::new(catalog, settings);
     analyzer
         .analyze_sql(sql, &[], session)

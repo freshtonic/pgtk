@@ -25,6 +25,11 @@
 //!   them.
 //!
 //! Every disagreement is written to `target/oracle/<file>.txt`.
+//!
+//! The baseline is for PostgreSQL 17, so the harness runs only in the `pg17`
+//! build.
+
+#![cfg(feature = "pg17")]
 
 mod support;
 
