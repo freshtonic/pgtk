@@ -25,9 +25,13 @@ pub use analysis::{
 };
 pub use analyzer::{Analyzer, FlatAnalysis, Statement};
 pub use diagnostic::{AnalyzeError, Diagnostic, Label, Severity, Unsupported};
+/// The Grammar Version of this build: the version of the `pg-sql` grammar
+/// that parses a Statement. A Target Version must not be newer.
+pub use pg_sql::TARGET_VERSION as GRAMMAR_VERSION;
+pub use pg_sql::TargetVersion;
 pub use recursa::Handle as NodeHandle;
 pub use relation::{RangeTableEntry, Var};
 pub use session::{Cursor, Placeholder, PreparedStatement, Session, SessionEffect};
-pub use settings::{Settings, TargetVersion};
+pub use settings::{Settings, TargetVersionError};
 pub use types::{TypeRef, Typmod};
 pub use value::{Coercion, CoercionContext, CoercionPath};

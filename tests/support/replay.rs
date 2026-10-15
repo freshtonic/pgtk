@@ -182,49 +182,49 @@ pub fn parse(sql: &str) -> Option<Shape> {
 /// Does running this statement leave the catalog as it was? Everything not
 /// listed is treated as DDL, which is the safe direction.
 fn keeps_catalog(statement: &Statement<'_>) -> bool {
-    matches!(
-        statement,
-        Statement::Query(_)
-            | Statement::With(_)
-            | Statement::Insert(_)
-            | Statement::Update(_)
-            | Statement::Delete(_)
-            | Statement::Merge(_)
-            | Statement::Explain(_)
-            | Statement::Copy(_)
-            | Statement::Truncate(_)
-            | Statement::Vacuum(_)
-            | Statement::Analyze(_)
-            | Statement::Checkpoint(_)
-            | Statement::Cluster(_)
-            | Statement::Reindex(_)
-            | Statement::Refresh(_)
-            | Statement::Comment(_)
-            | Statement::SecurityLabel(_)
-            | Statement::Grant(_)
-            | Statement::Revoke(_)
-            | Statement::Lock(_)
-            | Statement::Notify(_)
-            | Statement::Listen(_)
-            | Statement::Unlisten(_)
-            | Statement::Show(_)
-            | Statement::Fetch(_)
-            | Statement::Move(_)
-            | Statement::Close(_)
-            | Statement::Declare(_)
-            | Statement::Savepoint(_)
-            | Statement::Release(_)
-            | Statement::Set(_)
-            | Statement::Reset(_)
-            | Statement::SetConstraints(_)
-            | Statement::Discard(_)
-            | Statement::Load(_)
-            | Statement::Prepare(_)
-            | Statement::Deallocate(_)
-            | Statement::Execute(_)
-            | Statement::Begin(_)
-            | Statement::StartTransaction(_)
-    )
+    is_merge(statement)
+        || matches!(
+            statement,
+            Statement::Query(_)
+                | Statement::With(_)
+                | Statement::Insert(_)
+                | Statement::Update(_)
+                | Statement::Delete(_)
+                | Statement::Explain(_)
+                | Statement::Copy(_)
+                | Statement::Truncate(_)
+                | Statement::Vacuum(_)
+                | Statement::Analyze(_)
+                | Statement::Checkpoint(_)
+                | Statement::Cluster(_)
+                | Statement::Reindex(_)
+                | Statement::Refresh(_)
+                | Statement::Comment(_)
+                | Statement::SecurityLabel(_)
+                | Statement::Grant(_)
+                | Statement::Revoke(_)
+                | Statement::Lock(_)
+                | Statement::Notify(_)
+                | Statement::Listen(_)
+                | Statement::Unlisten(_)
+                | Statement::Show(_)
+                | Statement::Fetch(_)
+                | Statement::Move(_)
+                | Statement::Close(_)
+                | Statement::Declare(_)
+                | Statement::Savepoint(_)
+                | Statement::Release(_)
+                | Statement::Set(_)
+                | Statement::Reset(_)
+                | Statement::SetConstraints(_)
+                | Statement::Discard(_)
+                | Statement::Load(_)
+                | Statement::Prepare(_)
+                | Statement::Deallocate(_)
+                | Statement::Execute(_)
+                | Statement::Begin(_)
+                | Statement::StartTransaction(_)
+        )
 }
 
 /// `COPY ... FROM STDIN` would put the connection into copy mode, and every
@@ -265,17 +265,28 @@ fn cluster_ddl(statement: &Statement<'_>) -> bool {
     )
 }
 
+/// MERGE, which the grammar has from 15.
+fn is_merge(statement: &Statement<'_>) -> bool {
+    #[cfg(feature = "since-pg15")]
+    return matches!(statement, Statement::Merge(_));
+    #[cfg(not(feature = "since-pg15"))]
+    {
+        let _ = statement;
+        false
+    }
+}
+
 /// Statements Analysis resolves: DML, and Utility Statements with a query
 /// inside them.
 fn has_query(statement: &Statement<'_>) -> bool {
-    matches!(
-        statement,
-        Statement::Query(_)
+    is_merge(statement)
+        || matches!(
+            statement,
+            Statement::Query(_)
             | Statement::With(_)
             | Statement::Insert(_)
             | Statement::Update(_)
             | Statement::Delete(_)
-            | Statement::Merge(_)
             | Statement::Explain(_)
             | Statement::Declare(_)
             | Statement::Prepare(_)
@@ -290,7 +301,7 @@ fn has_query(statement: &Statement<'_>) -> bool {
             | Statement::Execute(_)
             | Statement::Fetch(_)
             | Statement::Move(_)
-    )
+        )
 }
 
 fn compare(oracle: &OracleOutcome, subject: &SubjectOutcome, shape: Shape) -> Verdict {

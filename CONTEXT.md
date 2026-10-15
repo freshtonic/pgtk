@@ -1,6 +1,6 @@
 # pg-analyze
 
-A Rust crate that performs PostgreSQL parse analysis: it takes one parsed Statement from `pg-sql` and a Catalog from `pg-catalog`, resolves every name, operator, function and type exactly as PostgreSQL 17 would, and reports the Diagnostic PostgreSQL would report. It exists so that a consumer can know what a Statement means without a live server.
+A Rust crate that performs PostgreSQL parse analysis: it takes one parsed Statement from `pg-sql` and a Catalog from `pg-catalog`, resolves every name, operator, function and type exactly as PostgreSQL of the Target Version would, and reports the Diagnostic PostgreSQL would report. It exists so that a consumer can know what a Statement means without a live server.
 
 ## Language
 
@@ -40,8 +40,16 @@ What a Statement would add to or remove from the Session when it runs, reported 
 _Avoid_: side effect, mutation, execution
 
 **Target Version**:
-The PostgreSQL major version, 14 through 17, whose analysis rules and diagnostic wording an Analysis applies. The caller chooses it by entry point; the Catalog's own version does not choose it.
-_Avoid_: Compatibility mode, dialect
+The PostgreSQL major version, 14 through 19, whose rules and diagnostic wording an Analysis applies: the version of the server the Statement will run on. The caller chooses it at run time, and it must not be newer than the Grammar Version. The Catalog's own version does not choose it. If Analysis accepts a Statement, PostgreSQL of the Target Version accepts it, except for the constructs whose Minimum Version `pg-sql` reports too low.
+_Avoid_: Compatibility mode, dialect, rules version
+
+**Grammar Version**:
+The PostgreSQL major version whose grammar parsed the Statement, fixed for each build. `pg-sql` calls it its target version. It can be newer than the Target Version; then Analysis rejects each construct that the Target Version cannot parse. A Grammar Version newer than the Target Version can also reject a Statement that the Target Version would accept.
+_Avoid_: parser version, build version
+
+**Minimum Version**:
+The lowest PostgreSQL major version whose grammar accepts a Statement, as `pg-sql` reports it. Analysis rejects a Statement whose Minimum Version is newer than the Target Version.
+_Avoid_: required version, since version
 
 **Analyzer**:
 The value a caller builds once from a Catalog, Settings and an optional Literal Validator, and then asks to analyse Statements.

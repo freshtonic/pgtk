@@ -88,9 +88,10 @@ impl Subject for AnalyzerSubject {
         use pg_analyze::{AnalyzeError, Analyzer, Settings, TargetVersion};
         let settings = Settings::new(
             catalog,
-            TargetVersion::V17,
+            TargetVersion::Pg17,
             search_path.iter().map(String::as_str),
-        );
+        )
+        .expect("the Oracle harness runs only in the pg17 build");
         let analyzer = Analyzer::new(catalog, settings);
         // getBaseTypeAndTypmod, as SendRowDescriptionMessage applies it.
         let base = |mut ty: pg_catalog::Handle<pg_catalog::Type>, mut typmod: i32| {

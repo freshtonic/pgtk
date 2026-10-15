@@ -194,10 +194,7 @@ impl<'c> Coercer<'c> {
             }
             return false;
         }
-        if have_generics && !self.check_generic_type_consistency(inputs, targets) {
-            return false;
-        }
-        true
+        !have_generics || self.check_generic_type_consistency(inputs, targets)
     }
 
     /// `coerce_to_target_type`: `None` when the coercion is not possible.

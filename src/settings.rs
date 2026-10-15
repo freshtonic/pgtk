@@ -1,49 +1,26 @@
 //! The session state that changes what a Statement means.
 
 use pg_catalog::{Catalog, SearchPath};
+use pg_sql::{TARGET_VERSION, TargetVersion};
 
-/// The PostgreSQL major version whose analysis rules and diagnostic wording
-/// an Analysis applies.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum TargetVersion {
-    /// PostgreSQL 14.
-    V14,
-    /// PostgreSQL 15.
-    V15,
-    /// PostgreSQL 16.
-    V16,
-    /// PostgreSQL 17.
-    V17,
-}
-
-impl TargetVersion {
-    /// The major number.
-    pub fn major(self) -> u32 {
-        match self {
-            Self::V14 => 14,
-            Self::V15 => 15,
-            Self::V16 => 16,
-            Self::V17 => 17,
-        }
-    }
-
-    /// The version for a major number, when it is one this crate supports.
-    pub fn from_major(major: u32) -> Option<Self> {
-        match major {
-            14 => Some(Self::V14),
-            15 => Some(Self::V15),
-            16 => Some(Self::V16),
-            17 => Some(Self::V17),
-            _ => None,
-        }
-    }
+/// A Target Version newer than the Grammar Version of this build.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "Target Version {} is newer than the Grammar Version {} of this build",
+    target.major(),
+    grammar.major()
+)]
+pub struct TargetVersionError {
+    /// The Target Version the caller asked for.
+    pub target: TargetVersion,
+    /// The Grammar Version of this build.
+    pub grammar: TargetVersion,
 }
 
 /// Session state supplied by the caller for every Analysis.
 #[derive(Clone, Debug)]
 pub struct Settings {
-    /// The Target Version.
-    pub target_version: TargetVersion,
+    target_version: TargetVersion,
     /// The schemas an unqualified name is looked up in, already resolved:
     /// `$user` substituted and temporary schemas removed. Mandatory.
     pub search_path: SearchPath,
@@ -53,17 +30,36 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Settings for one version with the given search path and every other
-    /// setting at PostgreSQL's default.
+    /// Settings for one Target Version with the given search path and every
+    /// other setting at PostgreSQL's default. The Target Version must not be
+    /// newer than the Grammar Version of this build.
+    ///
+    /// For a Target Version older than the Grammar Version,
+    /// [`Analyzer::analyze_sql`](crate::Analyzer::analyze_sql) rejects each
+    /// construct the Target Version cannot parse, and
+    /// [`Analyzer::analyze`](crate::Analyzer::analyze) does not check yet
+    /// (`NOTES.md`).
     pub fn new<'a>(
         catalog: &Catalog,
         target_version: TargetVersion,
         search_path: impl IntoIterator<Item = &'a str>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, TargetVersionError> {
+        if target_version > TARGET_VERSION {
+            return Err(TargetVersionError {
+                target: target_version,
+                grammar: TARGET_VERSION,
+            });
+        }
+        Ok(Self {
             target_version,
             search_path: SearchPath::new(catalog, search_path),
             transform_null_equals: false,
-        }
+        })
+    }
+
+    /// The Target Version: the PostgreSQL major version whose rules and
+    /// diagnostic wording an Analysis applies.
+    pub fn target_version(&self) -> TargetVersion {
+        self.target_version
     }
 }

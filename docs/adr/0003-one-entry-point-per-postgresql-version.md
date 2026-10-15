@@ -1,5 +1,5 @@
 ---
-status: accepted
+status: superseded by ADR-0005
 ---
 
 # One analysis entry point per PostgreSQL major version, 14 through 17, over one rule set
