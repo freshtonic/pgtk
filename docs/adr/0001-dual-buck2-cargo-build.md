@@ -6,7 +6,7 @@ Accepted (2026-10-14)
 
 ## Context
 
-dbtk must build with Buck2. It must also build with vanilla Cargo, so that crates.io users and
+pgtk must build with Buck2. It must also build with vanilla Cargo, so that crates.io users and
 Rust tooling (rust-analyzer, `cargo publish`) work as usual. The two build systems must not
 clobber each other.
 

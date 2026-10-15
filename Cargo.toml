@@ -5,7 +5,7 @@ members = ["packages/*"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/freshtonic/dbtk"
+repository = "https://github.com/freshtonic/pgtk"
 
 [workspace.dependencies]
 memchr = "2"
