@@ -106,8 +106,6 @@ pub struct Shape {
     pub keeps_catalog: bool,
     /// The harness may run it.
     pub runnable: bool,
-    /// It creates, alters or drops something cluster-wide.
-    pub cluster_ddl: bool,
     /// It is, or embeds, a query that Analysis would resolve.
     pub has_query: bool,
     /// It opens a transaction block.
@@ -164,7 +162,6 @@ pub fn parse(sql: &str) -> Option<Shape> {
     Some(Shape {
         keeps_catalog: keeps_catalog(statement),
         runnable: runnable(statement),
-        cluster_ddl: cluster_ddl(statement),
         has_query: has_query(statement),
         begins_transaction: matches!(
             statement,
@@ -231,38 +228,6 @@ fn keeps_catalog(statement: &Statement<'_>) -> bool {
 /// other `COPY` names a file the server cannot reach. None is run.
 fn runnable(statement: &Statement<'_>) -> bool {
     !matches!(statement, Statement::Copy(_))
-}
-
-/// Statements that touch objects shared by every database in the cluster.
-/// Role membership grants are cluster-wide too, so `GRANT` and `REVOKE`
-/// count, which is conservative for object grants.
-fn cluster_ddl(statement: &Statement<'_>) -> bool {
-    matches!(
-        statement,
-        Statement::CreateRole(_)
-            | Statement::CreateUser(_)
-            | Statement::CreateGroup(_)
-            | Statement::CreateTablespace(_)
-            | Statement::CreateDatabase(_)
-            | Statement::CreateSubscription(_)
-            | Statement::DropRole(_)
-            | Statement::DropUser(_)
-            | Statement::DropGroup(_)
-            | Statement::DropTablespace(_)
-            | Statement::DropDatabase(_)
-            | Statement::DropSubscription(_)
-            | Statement::DropOwned(_)
-            | Statement::AlterRole(_)
-            | Statement::AlterUser(_)
-            | Statement::AlterGroup(_)
-            | Statement::AlterTablespace(_)
-            | Statement::AlterDatabase(_)
-            | Statement::AlterSubscription(_)
-            | Statement::AlterDefaultPrivileges(_)
-            | Statement::Reassign(_)
-            | Statement::Grant(_)
-            | Statement::Revoke(_)
-    )
 }
 
 /// MERGE, which the grammar has from 15.
@@ -411,10 +376,10 @@ struct Session {
 }
 
 impl Session {
-    fn open(server: &Server, database: &str) -> Self {
+    fn open(server: &Server) -> Self {
         let oracle = server
-            .session(database)
-            .unwrap_or_else(|error| panic!("cannot open a session in {database}: {error}"));
+            .session()
+            .unwrap_or_else(|error| panic!("cannot open a session: {error}"));
         Self {
             oracle,
             catalog: None,
@@ -539,10 +504,10 @@ impl Session {
     }
 }
 
-/// Run every runnable statement of `file` in `database`, in a fresh session,
+/// Run every runnable statement of `file` on `server`, in a fresh session,
 /// without comparing anything.
-pub fn execute_file(server: &Server, database: &str, file: &PlannedFile) {
-    let mut session = Session::open(server, database);
+pub fn execute_file(server: &Server, file: &PlannedFile) {
+    let mut session = Session::open(server);
     for item in &file.items {
         if let (Some(sql), Some(shape)) = (&item.sql, item.shape) {
             session.run(shape, sql);
@@ -550,15 +515,10 @@ pub fn execute_file(server: &Server, database: &str, file: &PlannedFile) {
     }
 }
 
-/// Replay `file` in `database`, in a fresh session, comparing the Oracle and
+/// Replay `file` on `server`, in a fresh session, comparing the Oracle and
 /// the Subject on every statement.
-pub fn replay_file(
-    server: &Server,
-    database: &str,
-    file: &PlannedFile,
-    subject: &mut dyn Subject,
-) -> FileResult {
-    let mut session = Session::open(server, database);
+pub fn replay_file(server: &Server, file: &PlannedFile, subject: &mut dyn Subject) -> FileResult {
+    let mut session = Session::open(server);
     let mut counts = Counts::default();
     let mut report = String::new();
     let mut unsupported: std::collections::BTreeMap<String, usize> =

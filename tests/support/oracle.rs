@@ -3,8 +3,8 @@
 //! to `parse_analyze` a stock server exposes: it reports acceptance with the
 //! parameter and result column types, or the Diagnostic analysis raised.
 //!
-//! [`Server`] is an administrative connection that makes and drops
-//! databases. [`Oracle`] is one session in one database.
+//! [`Server`] is one server the harness started. [`Oracle`] is one session
+//! in its `regression` database.
 
 use pg_catalog::Loaded;
 use postgres::error::ErrorPosition;
@@ -55,73 +55,36 @@ const SESSION_SETUP: &str = "
     SET statement_timeout TO '60s';
 ";
 
-/// An administrative connection to the server the URL names.
+/// The superuser every cluster the harness makes has.
+pub const USER: &str = "oracle";
+
+/// The database the corpus runs in, as pg_regress names it.
+pub const DATABASE: &str = "regression";
+
+/// One server the harness started, reached at a port on this host.
 pub struct Server {
     config: postgres::Config,
-    client: Client,
 }
 
 impl Server {
-    pub fn connect(url: &str) -> Result<Self, postgres::Error> {
-        let config: postgres::Config = url.parse()?;
-        let client = config.connect(NoTls)?;
-        Ok(Self { config, client })
+    pub fn at_port(port: u16) -> Self {
+        let mut config = postgres::Config::new();
+        config
+            .host("127.0.0.1")
+            .port(port)
+            .user(USER)
+            .dbname(DATABASE);
+        Self { config }
     }
 
-    /// The connection settings, so another thread can open its own
-    /// connections with [`Server::from_config`]. A `Client` is `Send` but
-    /// not `Sync`, so a `Server` itself is never shared.
-    pub fn config(&self) -> &postgres::Config {
-        &self.config
-    }
-
-    /// A new administrative connection with the same settings.
-    pub fn from_config(config: &postgres::Config) -> Result<Self, postgres::Error> {
-        let client = config.connect(NoTls)?;
-        Ok(Self {
-            config: config.clone(),
+    /// Open a session in the `regression` database with the pg_regress
+    /// settings applied.
+    pub fn session(&self) -> Result<Oracle, postgres::Error> {
+        let client = Oracle::open(&self.config)?;
+        Ok(Oracle {
+            config: self.config.clone(),
             client,
         })
-    }
-
-    /// Database names matching a `LIKE` pattern.
-    pub fn databases_like(&mut self, pattern: &str) -> Vec<String> {
-        self.client
-            .query(
-                "SELECT datname FROM pg_database WHERE datname LIKE $1 ORDER BY datname",
-                &[&pattern],
-            )
-            .expect("list databases")
-            .iter()
-            .map(|row| row.get(0))
-            .collect()
-    }
-
-    /// Make `name` as a copy of `template`. The template must have no
-    /// sessions open, which is why every session is closed before a snapshot.
-    pub fn create_database(&mut self, name: &str, template: &str) {
-        self.client
-            .batch_execute(&format!(
-                "CREATE DATABASE {name} TEMPLATE {template} LOCALE 'C'"
-            ))
-            .unwrap_or_else(|error| {
-                panic!("cannot create database {name} from {template}: {error}")
-            });
-    }
-
-    /// Drop `name` if it exists, ending any session in it.
-    pub fn drop_database(&mut self, name: &str) {
-        self.client
-            .batch_execute(&format!("DROP DATABASE IF EXISTS {name} WITH (FORCE)"))
-            .unwrap_or_else(|error| panic!("cannot drop database {name}: {error}"));
-    }
-
-    /// Open a session in `database` with the pg_regress settings applied.
-    pub fn session(&self, database: &str) -> Result<Oracle, postgres::Error> {
-        let mut config = self.config.clone();
-        config.dbname(database);
-        let client = Oracle::open(&config)?;
-        Ok(Oracle { config, client })
     }
 }
 

@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub mod baseline;
+pub mod cluster;
 pub mod corpus;
 pub mod oracle;
 pub mod plan;

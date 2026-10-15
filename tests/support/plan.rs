@@ -26,9 +26,6 @@ pub struct PlannedFile {
     /// Index of the file inside its group.
     pub index: usize,
     pub items: Vec<PlannedItem>,
-    /// The file creates, alters or drops something cluster-wide, such as a
-    /// role, so it must not run concurrently with such files of other groups.
-    pub cluster_ddl: bool,
 }
 
 /// The whole corpus, grouped as `parallel_schedule` groups it.
@@ -66,15 +63,11 @@ impl Plan {
                         }
                     })
                     .collect::<Vec<_>>();
-                let cluster_ddl = items
-                    .iter()
-                    .any(|item| item.shape.is_some_and(|shape| shape.cluster_ddl));
                 files.push(PlannedFile {
                     name,
                     group: group_index,
                     index: files.len(),
                     items,
-                    cluster_ddl,
                 });
             }
             if !files.is_empty() {

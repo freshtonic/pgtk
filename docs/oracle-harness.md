@@ -54,29 +54,36 @@ all of which PostgreSQL rejects at parse too.
 ## Order, state and parallelism
 
 Files depend on state left by earlier files, so the schedule matters, and
-the run is parallel anyway. The harness does it in two passes.
+the run is parallel anyway. The harness does it in two passes. Both run in
+one Docker container that the harness makes from the image the run names,
+and keeps between runs (`tests/support/cluster.rs`).
 
-**Snapshots.** The first pass executes every file in `parallel_schedule`
-order in one database, with a fresh session per file as pg_regress uses, and
-after each schedule group copies the database into a snapshot named after the
-vendored PostgreSQL commit, a format number and the group index. No
-comparison happens; it is pure execution, and the snapshots persist in the
-server between runs. A run whose snapshots all exist skips the pass;
-`PG_ANALYZE_ORACLE_REBUILD=1` forces it.
+**Snapshots.** The first pass makes an empty cluster with the `oracle`
+superuser and the `regression` database, as pg_regress has it. It executes
+every file in `parallel_schedule` order on that one server, with a fresh
+session per file as pg_regress uses. After each schedule group it stops the
+server and copies the whole cluster into a snapshot. No comparison happens;
+it is pure execution. The snapshots are in the container under a directory
+named after the vendored PostgreSQL commit and a format number. A run whose
+snapshots are complete skips the pass; `PG_ANALYZE_ORACLE_REBUILD=1` forces
+it.
 
-**Replay.** The second pass gives each file its own database, copied from the
-snapshot before its group, executes the file's earlier siblings from the same
-group into that copy, then replays the file in a fresh session, asking the
-Oracle and the Subject about every statement. That is exactly the state the
-serial schedule gives the file, so files can run in any order on a worker
-pool, and one file can run alone in seconds with `PG_ANALYZE_ORACLE_FILES`.
+**Replay.** The second pass gives each file a server of its own: it copies
+the snapshot before the file's group, starts a server on the copy on the
+worker's own port, executes the file's earlier siblings from the same group
+on it, then replays the file in a fresh session, asking the Oracle and the
+Subject about every statement. When the file is done, the server is stopped
+and its cluster removed. That is exactly the state the serial schedule gives
+the file, so files can run in any order on a worker pool, and one file can
+run alone in seconds with `PG_ANALYZE_ORACLE_FILES`.
 
-**Cluster-wide objects** are the one thing a snapshot cannot hold: roles,
-tablespaces, databases and subscriptions are shared by the whole server, and
-the corpus reuses role names across groups. Files that create, alter or drop
-such objects run one at a time in schedule order, in a cluster lane, and no
-file of a later group starts until the lane has finished every earlier group.
-Inside one group pg_regress's own rule applies: files use disjoint names.
+**Isolation.** A snapshot is a whole cluster, so it holds the objects the
+whole server shares as well: roles, tablespaces, databases, subscriptions,
+settings and the cumulative statistics. Because every file has its own
+server, no file can see or change what another file does, whatever runs at
+the same time. This is true by construction: the workers share no server, no
+port and no data directory. Inside one group pg_regress's own rule applies:
+files use disjoint names.
 
 These details follow:
 
@@ -136,27 +143,26 @@ so message text and literal handling match the expected output files.
 ## Running it
 
 ```sh
-docker run -d --name pg-analyze-oracle-17 -e POSTGRES_USER=oracle \
-  -e POSTGRES_PASSWORD=oracle -e POSTGRES_DB=regression -p 54317:5432 \
-  postgres:17 -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
-  -c max_connections=200
-PG_ANALYZE_ORACLE_URL=postgres://oracle:oracle@localhost:54317/regression \
-  cargo test --test oracle -- --nocapture
+PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle -- --nocapture
 ```
 
-Durability is off because the server is disposable and database copies are
-I/O bound. `PG_ANALYZE_ORACLE_JOBS` sets the worker count, default the CPU
-count. `PG_ANALYZE_ORACLE_FILES=int4,join` replays only those files and
-checks only their counts; with `PG_ANALYZE_UPDATE_BASELINE=1` it re-pins
-only those entries.
+The harness makes a container named after the image, for example
+`pg-analyze-oracle-postgres-17`, if it does not exist. The container
+publishes ports 54400 to 54431 on 127.0.0.1, one for each worker, so a run
+has at most 32 workers. Each cluster has durability off, because it is
+disposable and the copies are I/O bound. `PG_ANALYZE_ORACLE_JOBS` sets the
+worker count, default the CPU count. `PG_ANALYZE_ORACLE_FILES=int4,join`
+replays only those files and checks only their counts; with
+`PG_ANALYZE_UPDATE_BASELINE=1` it re-pins only those entries.
 
-The server must be disposable. The corpus creates and drops roles, schemas
-and databases, and some statements terminate the session. Without the
-variable the test prints a message and passes.
+Only one run may use the container at a time: a run stops every server it
+finds in the container when it starts. Without the variable the test prints
+a message and passes.
 
 ## What is deferred
 
 - The tree-level Oracle, a `nodeToString` extension, is a later workspace
   member (design session Q15 and Q34).
-- Oracles for 14, 15 and 16 need only a container of that version and a
-  baseline file each; the harness reads the major from the Catalog.
+- Oracles for 14, 15 and 16 need only an image of that version and a
+  baseline file each; the harness reads the major from the image's
+  binaries.

@@ -93,13 +93,13 @@ The crate depends on the sibling checkouts `../pg-sql`, `../pg-catalog` and
 
 ## The Oracle harness
 
-`tests/oracle.rs` replays the vendored regression corpus against a live
-server and pins the per-file counts in `baselines/`. It needs a PostgreSQL 17
-with the `regression` database:
+`tests/oracle.rs` replays the vendored regression corpus against live
+PostgreSQL servers and pins the per-file counts in `baselines/`. It needs
+Docker and a PostgreSQL 17 image. The harness makes its own container from
+the image and starts one server in it for each file it replays:
 
 ```sh
-PG_ANALYZE_ORACLE_URL=postgres://oracle:oracle@localhost:54317/regression \
-cargo test --release --test oracle
+PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle
 ```
 
 `docs/oracle-harness.md` describes what is compared and the verdicts. The
