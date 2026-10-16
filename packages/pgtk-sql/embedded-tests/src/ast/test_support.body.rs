@@ -1,0 +1,115 @@
+// Shared test helpers for the relocated embedded test bodies.
+
+use recursa::{ArenaAstFamily, ArenaParse, ArenaParsed, Pretty, PrettyConfig};
+
+use crate::formatter::format_tokens_sql;
+
+/// Parses one complete statement as `T` through the generated public seam.
+pub fn parse_stmt<T>(src: &'static str) -> ArenaParsed<'static, T::Family>
+where
+    T: ArenaParse<
+            crate::Input<'static>,
+            Output = ArenaParsed<'static, <T as ArenaParse<crate::Input<'static>>>::Family>,
+        >,
+{
+    let lexed = crate::lex(src);
+    assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+    let mut input = lexed.input();
+    let stmt = T::parse_arena(&mut input).unwrap();
+    assert!(input.is_eof(), "unconsumed input after parsing {src:?}");
+    stmt
+}
+
+/// Asserts that generated parsing and formatting reach a fixed point.
+pub fn reparse_stable<T>(src: &'static str)
+where
+    T: ArenaParse<
+            crate::Input<'static>,
+            Output = ArenaParsed<'static, <T as ArenaParse<crate::Input<'static>>>::Family>,
+        >,
+    for<'arena> <T::Family as ArenaAstFamily>::Ast<'arena>: Pretty,
+{
+    let lexed = crate::lex(src);
+    assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+    let mut input = lexed.input();
+    let stmt = T::parse_arena(&mut input).unwrap();
+    assert!(input.is_eof(), "unconsumed input after parsing {src:?}");
+    let once = format_tokens_sql(stmt.ast(), PrettyConfig::default());
+    let leaked: &'static str = Box::leak(once.clone().into_boxed_str());
+    let relexed = crate::lex(leaked);
+    assert_eq!(relexed.errors().count(), 0, "lex errors in reinput");
+    let mut reinput = relexed.input();
+    let restmt = T::parse_arena(&mut reinput).unwrap();
+    assert!(
+        reinput.is_eof(),
+        "unconsumed input after re-parsing {once:?}"
+    );
+    let twice = format_tokens_sql(restmt.ast(), PrettyConfig::default());
+    assert_eq!(once, twice, "formatter output is not a fixed point");
+}
+
+/// Parses and formats one complete generated statement.
+pub fn roundtrip<T>(src: &'static str) -> String
+where
+    T: ArenaParse<
+            crate::Input<'static>,
+            Output = ArenaParsed<'static, <T as ArenaParse<crate::Input<'static>>>::Family>,
+        >,
+    for<'arena> <T::Family as ArenaAstFamily>::Ast<'arena>: Pretty,
+{
+    let lexed = crate::lex(src);
+    assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+    let mut input = lexed.input();
+    let stmt = T::parse_arena(&mut input).unwrap();
+    assert!(input.is_eof(), "unconsumed input after parsing {src:?}");
+    format_tokens_sql(stmt.ast(), PrettyConfig::default())
+}
+
+/// Whether pgtk-sql rejects `src` as one complete statement: a lexical error, a
+/// parse error, or input left after the statement.
+pub fn statement_rejected(src: &'static str) -> bool {
+    let lexed = crate::lex(src);
+    if lexed.errors().count() > 0 {
+        return true;
+    }
+    let mut input = lexed.input();
+    let parsed = crate::ast::Statement::parse_arena(&mut input);
+    parsed.is_err() || !input.is_eof()
+}
+
+/// Asserts that pgtk-sql parses every statement in `sources` completely.
+pub fn assert_statements_parse(sources: &[&'static str]) {
+    for &src in sources {
+        assert!(!statement_rejected(src), "pgtk-sql rejects {src:?}");
+    }
+}
+
+/// Asserts that pgtk-sql rejects every statement in `sources`.
+pub fn assert_statements_rejected(sources: &[&'static str]) {
+    for &src in sources {
+        assert!(statement_rejected(src), "pgtk-sql accepts {src:?}");
+    }
+}
+
+/// Whether `Statement` parses `src` to the end.
+pub fn statement_parses(src: &'static str) -> bool {
+    let lexed = crate::lex(src);
+    if lexed.errors().count() != 0 {
+        return false;
+    }
+    let mut input = lexed.input();
+    crate::ast::Statement::parse_arena(&mut input).is_ok() && input.is_eof()
+}
+
+/// Asserts that each accepted statement parses and formats to a fixed point,
+/// and that each rejected statement does not parse to the end. The version
+/// tests of the target versions use it.
+pub fn check_statement_forms(accepted: &[&'static str], rejected: &[&'static str]) {
+    for &src in accepted {
+        assert!(statement_parses(src), "{src:?} did not parse");
+        reparse_stable::<crate::ast::Statement>(src);
+    }
+    for &src in rejected {
+        assert!(!statement_parses(src), "{src:?} parsed completely");
+    }
+}
