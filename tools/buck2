@@ -26,7 +26,8 @@ toolchain_id() {
   uname -sm
   case "$(uname -s)" in
     Darwin) xcrun --show-sdk-version && xcrun --show-sdk-build-version ;;
-    Linux) ldd --version | head -1 ;;
+    # sed reads all of the output, so ldd does not get a broken pipe.
+    Linux) ldd --version | sed -n 1p ;;
   esac
 }
 

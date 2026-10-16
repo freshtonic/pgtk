@@ -253,6 +253,7 @@ cargo.rust_library(
     crate_root = "vendor/bitflags-2.13.2/src/lib.rs",
     edition = "2021",
     features = ["std"],
+    target_compatible_with = ["prelude//os:macos"],
     visibility = [],
 )
 
@@ -2826,6 +2827,7 @@ cargo.rust_library(
         "CFString",
         "bitflags",
     ],
+    target_compatible_with = ["prelude//os:macos"],
     visibility = [],
     deps = [":bitflags-2.13.2"],
 )
@@ -2857,6 +2859,7 @@ cargo.rust_library(
         "SCDynamicStore",
         "SCDynamicStoreCopySpecific",
     ],
+    target_compatible_with = ["prelude//os:macos"],
     visibility = [],
     deps = [":objc2-core-foundation-0.3.2"],
 )
