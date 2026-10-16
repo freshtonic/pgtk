@@ -109,6 +109,12 @@ start them from any directory.
 | `packages/pgtk-sql/scripts/release-gate [pgN...]` | Each Target Version (all six if you give none). Run it before a release, and for the oldest affected version when you change a version gate. |
 | `packages/pgtk-analyze/scripts/gate-versions [pgN...]` | clippy and the tests of pgtk-analyze for each Grammar Version. |
 
+The CI workflow `Release gate` (`.github/workflows/release-gate.yml`) runs `release-gate` and
+`gate-versions` for each version, one job for each script and version. It does not run on each
+pull request. Start it from the Actions tab before a release
+(`gh workflow run release-gate.yml --ref <branch>`). It also runs on a pull request that changes
+a gate script.
+
 In `packages/pgtk-sql`, `cargo loop` runs the merge gate configuration of pgtk-sql. Use it as the
 edit loop:
 

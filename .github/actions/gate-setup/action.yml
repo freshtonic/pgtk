@@ -1,0 +1,30 @@
+name: Gate setup
+description: Prepares a runner for a gate script of one Target Version.
+
+inputs:
+  version:
+    description: The version feature (pg14 ... pg19-beta).
+    required: true
+
+runs:
+  using: composite
+  steps:
+    # Each gate is a full build of the generated grammar. Remove the large SDKs of the runner
+    # image that the gates do not use, so that the build has sufficient disk space.
+    - shell: bash
+      run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+    # rustup reads rust-toolchain.toml and installs the pinned toolchain.
+    - shell: bash
+      run: rustup show active-toolchain || rustup toolchain install
+    - shell: bash
+      run: packages/pgtk-sql/scripts/fetch-postgres-pins
+    - shell: bash
+      run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev jq
+    # build-pg.sh builds each pinned release once into this cache. A version that the CI Cargo
+    # job does not build (pg18, pg19-beta) gets its own cache entry.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.cache/pgtk-sql/postgres
+        key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+        restore-keys: |
+          postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
