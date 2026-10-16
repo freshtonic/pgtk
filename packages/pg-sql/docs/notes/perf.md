@@ -1,0 +1,1896 @@
+# pg-sql perf journal
+
+This is the running performance journal for the parity effort (ADR 0006,
+`docs/plans/2026-09-01-performance-parity.md`). It follows the discipline of
+recursa-old's journal:
+
+- Every profile and every landed performance change gets a section here.
+- Every section names at least one **canonical workload** and gives its
+  numbers.
+- Diagnostic-result sections are append-only and read **newest last**.
+
+> **2026-09-16, declared precedence.** `Expr` no longer has a Pratt body.
+> `#[pratt]` and its roles are gone from the grammar; operator shape is decided
+> by the `precedence { ... }` block in `src/tokens.rs`, which mirrors
+> `gram.y:829-908`, and by `#[parse(prec = ...)]` overrides. Every figure in
+> this journal that names a Pratt hot path -- `ParseContext::select_pratt`,
+> `Expr::__recursa_parse_bpu`, `Expr::__recursa_parse_pratt_led_*`,
+> `__recursa_decode_pratt_*`, the Pratt ambiguity guard, the Pratt attachment
+> audit and Pratt value staging -- predates that change and describes code that
+> no longer exists. The `bool_chain` workload still stresses the same input; it
+> now exercises the LR loop over left-recursive `Expr` rules instead. Nothing
+> below has been re-measured.
+
+## Canonical workloads
+
+Three named workloads (CONTEXT.md). Every journal entry and every profile
+names one of them.
+
+| Name | Input | What it stresses |
+|---|---|---|
+| `corpus` | All 43,474 frozen corpus statements (the differential-baseline membership, `tests/support/baseline.rs`) | Real statement mix, small statements, error/expected-set paths for the 262 statements pg-sql rejects |
+| `select_list_10000` | `fixtures/stress/select_list_10000.sql` | One SELECT with a 10,000-item select list; repetition and value construction |
+| `bool_chain` | `fixtures/stress/bool_chain_1000.sql` | One WHERE clause with 1,000 `AND` terms; left-recursive `Expr` reduction (the Pratt loop, before 2026-09-16) |
+
+A fourth, document-level workload is tracked as issue #61; see the blind-spot
+subsection below for why it is not defined here.
+
+The stress fixtures are checked in and regenerable with
+`cargo run --bin gen-stress -p pg-sql`. The `corpus` workload is the
+statement set that `benches/parse.rs` calls the "corpus head-to-head"; the
+head-to-head engine comparison itself stays in that bench.
+
+### Known blind spot: all three workloads are the statement seam
+
+Every workload above, every new profile in this journal, and `benches/parse.rs`
+itself measure the same seam: `lex_statement_source` +
+`Statement::parse_without_spans`,
+one statement at a time. **Document framing (`pg_sql::document::parse_sql`)
+has never been measured here.** That is a gap in the discipline, not merely
+a missing number: a cost that lives only in the file-level path is
+structurally invisible to every measurement we take, however many workloads
+we add at the statement level.
+
+It has already hidden one: a peer session profiling the file-level seam on
+2026-09-04 measured `document::parse_sql` as **quadratic in statement
+count** (growth exponent 2.00 at 1,600 statements; 67 KB of SQL taking
+1.03 s where PostgreSQL's raw parser takes ~0.8 ms), attributed to
+`recursa-core/src/framing.rs`'s island loop re-lexing the remaining document
+once per island and `Input::input_bounded` validating and cloning the whole
+record vector per island. None of the statement-seam work recorded below
+would have surfaced it, and none of it is affected by it.
+
+**Fixed 2026-09-05** (recursa f134fad, f52e722, pinned here): framing lexes
+the document once and slices borrowed windows out of that single record
+array, instead of re-lexing the remainder per island and copying every
+record per candidate window. `input_bounded` and its whole-vector bounds
+scan are gone. Controlled A/B, same pg-sql commit and lockfile:
+
+| Measure | Before | After |
+|---|--:|--:|
+| 1,600 statements | 849.1 ms | 16.4 ms |
+| Growth exponent at 1,600 | 1.99 | 1.06 |
+| 113 corpus files | 2,517.4 ms | 129.2 ms |
+| Per file | 22.28 ms | 1.14 ms |
+
+The invariant the design turns on had nothing pinning it: framing still
+restarts its lex after a payload, because the grammar does not tokenize
+payload interiors, so an unbalanced quote, dollar tag or comment opener
+inside one would change how every later island lexes. f52e722 pins it with
+four leaking interiors, verified to fail when the post-payload re-lex is
+removed.
+
+A document-level canonical workload still belongs in this table and is
+tracked separately, so that neither the session that found the quadratic nor
+the one that fixed it shapes the workload around it.
+
+The analysis that produced this — what PostgreSQL's parser does to be fast,
+the phase split of the benchmark seam, and the attribution that reached
+`framing.rs` — is
+[`docs/research/postgres-parser-performance.md`](../research/postgres-parser-performance.md).
+Its section 7 is a ranked list of recursa work items; the quadratic above was
+item 7.7 and is the only one closed so far.
+
+## Running the flame harness
+
+The harness is `benches/flame.rs` (Track T port of recursa-old's
+`flame.rs`/`flame_target`). It parses one canonical workload with pg-sql in
+a tight loop for a fixed duration, through the exact statement seam that
+`benches/parse.rs` times (`lex_statement_source` +
+`Statement::parse_without_spans`). It
+prints its PID for attach-style profilers and a machine-readable
+`iters=... elapsed_ns=...` line on completion.
+
+```bash
+# Time one workload without a profiler (duration is in seconds, default 5):
+cargo bench -p pg-sql --features postgres-oracle --bench flame -- \
+    select_list_10000 --duration 5
+
+# List the workload names:
+cargo bench -p pg-sql --features postgres-oracle --bench flame -- --list
+```
+
+### One-command profile (macOS)
+
+`scripts/flame-profile` runs the harness, samples it with `/usr/bin/sample`,
+folds the stacks with the FlameGraph scripts, and writes an SVG:
+
+```bash
+# One-time: clone the FlameGraph scripts (or set FLAMEGRAPH_DIR).
+git clone https://github.com/brendangregg/FlameGraph ~/tools/FlameGraph
+
+scripts/flame-profile bool_chain 10        # workload, sample seconds
+scripts/flame-profile quick 10             # canonical three-workload gate
+scripts/flame-profile discovery 10         # broad, independently sampled suite
+scripts/flame-profile corpus_query 10 postgres # PostgreSQL generated parser
+```
+
+Output lands in `docs/perf/flamegraphs/<date>-<sha>[-dirty]/` (gitignored;
+runs are not committed — their summaries belong in this journal):
+
+- `<workload>.svg` — the flamegraph
+- `<workload>.folded` — folded stacks, for `awk` self-time queries
+- `<workload>.sample.txt` — the raw `sample` call tree
+- `<workload>.stats.txt` — the harness timing line
+
+`sample` needs no root for your own processes, and the bench profile keeps
+debug symbols (`[profile.bench] debug = true`), so parser frames resolve.
+recursa-old's `cargo flamegraph`/`cargo instruments` pipelines stay
+available, but on Apple Silicon both are broken or need manual steps (see
+the old journal); the `sample` pipeline replaces them.
+
+To get a top self-time table from a folded file:
+
+```bash
+awk -F';' '{n=split($0,a,";"); split(a[n],b," ");
+            self[b[1]]+=b[2]; tot+=b[2]}
+     END  {for (s in self) printf "%8.2f%% %s\n", 100*self[s]/tot, s}' \
+    docs/perf/flamegraphs/<run>/<workload>.folded | sort -rn | head -15
+```
+
+### Linux
+
+Run the same binary under `perf`:
+
+```bash
+cargo bench -p pg-sql --features postgres-oracle --bench flame --no-run
+perf record -g <printed executable> bool_chain --duration 10
+```
+
+## Baseline (2026-09-01)
+
+Interim statement-level benchmark (`cargo bench -p pg-sql --features
+postgres-oracle`, `benches/parse.rs`), summed per-bench medians over the
+33,168 statements that all three engines accept:
+
+| Engine | Total median time |
+|---|--:|
+| pg-sql | 50,881.7 ms |
+| sqlparser 0.52 | 216.1 ms |
+| PostgreSQL 17.9 raw parser | 40.8 ms |
+
+That is roughly **235x** sqlparser. The reference ceiling is recursa-old's
+final 0.525x geomean over 240 benchmarks; the parity gate is geomean
+pg-sql/sqlparser <= 1.0 (ADR 0006).
+
+## Diagnostic result (2026-09-01, flame harness port — first profiles)
+
+First profiles on the ported harness, base commit `c8ca209` (harness itself
+uncommitted, hence `-dirty`), Apple M-series, macOS 15.5, bench profile
+(opt 3 + debuginfo), 10 s `sample` at 1 ms per workload via
+`scripts/flame-profile <workload> 10`. Run directory:
+`docs/perf/flamegraphs/2026-09-01-c8ca209-dirty/`.
+
+Harness timings (15 s loops around the 10 s sampling window):
+
+| Workload | Statements parsed | Accepted | Per statement | Throughput |
+|---|--:|--:|--:|--:|
+| `corpus` | 11,752 (0 full passes of 43,474) | 11,490 | 1.28 ms | 0.057 MiB/s |
+| `select_list_10000` | 62 | 62 | 242.6 ms | 0.271 MiB/s |
+| `bool_chain` | 513 | 513 | 29.3 ms | 0.196 MiB/s |
+
+Top self-time frames (share of all samples; demangled and grouped):
+
+`bool_chain` — `bool_chain.svg`:
+
+| Self % | Frame |
+|--:|---|
+| 27.5% | `recursa_core::grammar::FollowSet::union` |
+| 17.2% | allocator (`nanov2_free` / `nanov2_malloc_type` / `_malloc_zone_malloc` / `_free`) |
+| 8.6% | `regex_automata` meta `Regex::search` + memmem prefilter |
+| 6.6% | generated `__recursa_decode_pratt_*` (Expr) |
+| 3.7% | generated `Expr::__recursa_parse_bpu` |
+| 3.5% | `recursa_core::lex::CompiledLexMatcher::matched` |
+| 3.3% | `_tlv_get_addr` (thread-local access) |
+
+`select_list_10000` — `select_list_10000.svg`:
+
+| Self % | Frame |
+|--:|---|
+| 39.8% | `recursa_core::grammar::FollowSet::union` |
+| 16.3% | allocator |
+| 6.0% | generated `__recursa_decode_pratt_*` (Expr) |
+| 5.8% | `regex_automata` meta `Regex::search` + memmem prefilter |
+| 3.0% | generated `Expr::__recursa_parse_bpu` |
+| 2.8% | `recursa_core::lex::CompiledLexMatcher::matched` |
+
+`corpus` — `corpus.svg`:
+
+| Self % | Frame |
+|--:|---|
+| ~33% | `regex_automata` lazy-DFA determinization (`determinize::next`, `epsilon_closure`, `add_nfa_states`, state interning, SipHash) |
+| ~8% | allocator |
+| 5.5% | `_platform_memmove` + `_platform_memcmp` |
+
+Observations (attribution proper is Track P; these are the harness
+shake-out headlines):
+
+- `FollowSet::union` alone is 27–40% of self time on both stress
+  workloads. It sits under the Pratt/dispatch machinery, which makes
+  dispatch/decision the leading Track P bucket to attribute first.
+- Allocator traffic is the second bucket everywhere (~8–17% self), before
+  any explicit value-construction frame shows up.
+- The `corpus` profile is qualitatively different: many small statements
+  make per-statement `regex_automata` lazy-DFA determinization dominate
+  (~33%), which points at lex-machinery construction cost that the
+  single-statement stress loops amortize away.
+
+Suites: library suite 1092 passed / 0 failed / 2 ignored, unchanged with
+the harness in the tree.
+
+## Diagnostic result (2026-09-02, Track P: full attribution of the parse-time gap)
+
+Track P of the parity plan (issue #32). Commit `2ec2847` (harness
+extensions committed first, so all artifacts carry a clean SHA), pinned
+recursa `c4e7f3f`, Apple M1 Max (MacBookPro18,2, 10 cores), macOS 15.5,
+bench profile (opt 3 + debuginfo). All artifacts referenced below live in
+`docs/perf/flamegraphs/2026-09-01-2ec2847/` (the run directory is stamped
+with the UTC date; the analysis is 2026-09-02 local). Instruments:
+
+- `scripts/flame-profile`-equivalent sampling (10 s `sample` at 1 ms per
+  workload; `<workload>.folded`, `.svg`, `.sample.txt`).
+- `scripts/flame-attribute` (new): buckets folded stacks into the Track P
+  cost categories by self time, carrying allocator samples to the nearest
+  classifiable caller.
+- `benches/flame.rs --count-allocs` (new): counting global allocator, one
+  pass per workload, split lex vs parse and accepted vs rejected
+  (`<workload>.allocs.txt`).
+- `benches/flame.rs --engine sqlparser` (new): sqlparser 0.52 timed over
+  the same statements in the same loop (`<workload>.sqlparser.txt`).
+
+### Canonical timings (clean loops, no profiler attached)
+
+`<workload>.clean.txt` / `<workload>.sqlparser.txt`:
+
+| Workload | pg-sql / stmt | sqlparser / stmt | Ratio | recursa-old final |
+|---|--:|--:|--:|--:|
+| `bool_chain` | 25.0 ms | 1.048 ms | 24x | 0.393 ms (64x ago) |
+| `select_list_10000` | 255.9 ms | 7.60 ms | 34x | 3.511 ms (73x ago) |
+| `corpus` (mean/stmt) | 1.396 ms | 0.0052 ms | 267x | — |
+
+recursa-old reference numbers are the final trend report
+(`../recursa-old/docs/benchmarks/REPORT.md`, run 2026-06-09, commit
+`1dd6b09`, geomean 0.525x sqlparser over 240 benchmarks). Old fixtures
+share the shape and name but not the byte-for-byte text, so the sqlparser
+column (same harness, same statements) is the like-for-like denominator.
+Corpus caveats: the 10 s pg-sql loop covers only the first ~7,200 frozen
+statements; sqlparser accepts 77.9% of the frozen statements and its
+rejects are cheap errors. The interim benchmark's 235x (2026-09-01
+baseline above) remains the corpus figure of record; 267x here is the
+same order.
+
+### Bucket attribution (self time; sampled 10 s per workload)
+
+`scripts/flame-attribute <run>/<workload>.folded`. The `alloc` share is
+allocator/memcpy self time attributed to the bucket whose frame allocated
+(it is included in the bucket's self%, not additional).
+
+| Bucket | bool_chain | select_list_10000 | corpus |
+|---|--:|--:|--:|
+| dispatch/decision | 69.8% (22.8% alloc) | 83.2% (26.0% alloc) | 5.9% (1.5% alloc) |
+| lex/classify | 29.1% (3.9% alloc) | 16.3% (1.8% alloc) | 93.8% (28.6% alloc) |
+| value construction (spans/occurrences/element metadata) | 0.2% | 0.4% | 0.2% |
+| error/expected paths | ~0% | ~0% | ~0% |
+| trivia handling | 0% (non-opting grammar; skip rules are inside lex arbitration) | 0% | 0% |
+| other | 0.9% | 0.0% | 0.2% |
+
+Dominant frames inside the two hot buckets:
+
+- dispatch/decision: `FollowSet::union` is 38.6% of bool_chain (27.6%
+  compute + 11.0% allocator) and 49.2% of select_list_10000 (37.6% +
+  11.6%). The generated Pratt body `Expr::__recursa_parse_bpu` carries
+  another 15.1% / 16.4%, two thirds of it allocator traffic from the
+  same FOLLOW composition; packed-table decoding
+  (`__recursa_decode_pratt_*`) adds ~6% / ~7%.
+- lex/classify splits into lexer *construction* vs *execution*
+  (inclusive samples under `CompiledLexMatcher::new`+`Regex::new` vs
+  `CompiledLexMatcher::matched`):
+
+| Workload | lexer construction | matcher execution |
+|---|--:|--:|
+| `corpus` | 86.7% | 3.6% |
+| `bool_chain` | 4.9% | 23.2% |
+| `select_list_10000` | 0.5% | 15.5% |
+
+### Allocation counts (`--count-allocs`, one pass)
+
+| Workload | Phase | Statements | Allocs/stmt | Bytes/stmt |
+|---|---|--:|--:|--:|
+| `bool_chain` (6.0 KB) | lex | 1 | 11,690 | 3.47 MB |
+| | parse | 1 | 312,370 | 38.9 MB |
+| `select_list_10000` (672 KB) | lex | 1 | 11,693 | 5.37 MB |
+| | parse | 1 | 3,170,143 | 526.9 MB |
+| `corpus` (3.76 MB total) | lex | 43,474 | 11,672 | 3.32 MB |
+| | parse (accepted) | 42,460 | 765 | 111 KB |
+| | parse (rejected) | 989 | 624 | 99 KB |
+
+One corpus pass allocates 540.5 million times (149.3 GB) to parse
+3.76 MB of SQL. Two structures explain nearly all of it:
+
+- **The lex phase costs ~11,700 allocations and ~3.3 MB per statement
+  regardless of statement size.** `recursa_core::lex::lex` compiles all
+  113 generated rules (106 `Regex::new`) on every call and rebuilds the
+  regex_automata NFAs/DFAs from scratch, then throws them away. That is
+  the fixed per-statement cost that dominates the corpus (86.7%
+  inclusive) and the reason the corpus profile is qualitatively
+  different from the stress profiles, which amortize one `lex` call over
+  one huge statement.
+- **The parse phase's allocations are FOLLOW-set composition, not value
+  construction.** `FollowSet::union` allocates three `Vec`s per call
+  (two 80-byte bitset word arrays at kind_count 595, plus the merged
+  expected list); `with_caller` allocates a fourth (it clones
+  `self.kinds` for the Pratt boundary). The generated grammar has 749
+  static `.union(` sites and 724 `.with_caller(` sites — one
+  `with_caller` per child-node descent, so every operand of every
+  expression re-derives its NUD FOLLOW by composition. `Expr` (node
+  1165, 68 NUD / 102 LED branches) additionally builds a Pratt guard
+  chain (one union per distinct binding-power level, ~8, gated by
+  `bp >= min_bp`) eagerly on every `Expr` entry, before any extender is
+  seen — the guard is only ever consulted on the rare `pratt_ambiguity`
+  error path. bool_chain parses one 6 KB statement with 312k
+  allocations; select_list_10000 with 3.17 M.
+
+Error/expected paths: rejected corpus statements cost slightly *less*
+than accepted ones (624 vs 765 allocs/stmt) — error construction copies
+one expected-atom list per failure and is invisible in the profiles.
+recursa-old's error-path pathology (a source `String` per speculative
+failure) does not exist in this runtime.
+
+### The empirical lever: provenance-free parse mode
+
+Authorized by ADR 0006 as a measurement instrument. Mechanism: the parse
+seam already runs with `CaptureRequest::Default` and every pg-sql node at
+`CapturePolicy::Optional`, so node spans are *already not retained*; what
+the provenance layer still does on this seam is (a) retain repetition-
+separator spans unconditionally (`parse_repetition_separator`), which
+forces the occurrence spine above every separated list, and (b) run the
+`ProvenanceCollector::finish*` walk per node. Element metadata is static
+(`&'static ElementMetadata`) and costs nothing at parse time.
+
+Measurement patch (scratch vendored copy of the pinned recursa under
+`scratch/recursa-provfree/`, wired in via a temporary uncommitted
+Cargo.toml path switch; runtime-only, env-gated, acceptance verified
+unchanged):
+
+- `RECURSA_PERF_PROVFREE=1` — `ProvenanceCollector::finish_repeated`
+  returns `Occurrence::absent()` immediately: no spans, no occurrences,
+  no separator retention, `Origin::Uncaptured` roots.
+- `RECURSA_PERF_LEXCACHE=1` — `lex()` reuses this thread's compiled
+  matcher table (pointer-keyed on the static rule slice), pricing the
+  per-statement lexer construction identified above.
+
+Like-for-like results (same binary, 10 s clean loops; per statement):
+
+Like-for-like, per statement (ms), gap = multiple of sqlparser on the same
+loop:
+
+| Workload | off | provfree (Δ) | lexcache (×) | provlex (×) | sqlparser | gap off→provlex |
+| --- | --: | --: | --: | --: | --: | --: |
+| bool_chain | 23.66 | 23.32 (−1.4%) | 22.09 (1.1×) | 22.44 (1.1×) | 1.05 | 23× → 21.4× |
+| select_list_10000 | 223.3 | 221.4 (−0.9%) | 223.8 (1.0×) | 220.7 (1.0×) | 7.60 | 29× → 29.0× |
+| corpus | 1.204 | 1.194 (−0.8%) | 0.0805 (15.0×) | 0.0807 (14.9×) | 0.0052 | 230× → 15.4× |
+
+Two facts settle ADR 0006's escalation question:
+
+1. **The provenance layer is not the floor.** Disabling span/occurrence/
+   separator retention (provfree) moves every workload by under 1.5%. The
+   provenance-bearing value model is *not* what separates pg-sql from
+   sqlparser; keeping it (ADR 0006) costs ~1%, nowhere near the parity gate.
+   No escalation is warranted.
+2. **Per-statement lexer construction is the dominant realistic-workload
+   cost.** Sharing the compiled matcher table (lexcache) makes the corpus
+   15× faster on its own — 230× → 15.4× vs sqlparser — because realistic SQL
+   is many short statements and every `lex()` today rebuilds 106 regexes.
+   On the two single-huge-statement workloads it is noise (they lex once),
+   where the residual gap is parse-bound FOLLOW allocation instead.
+
+### Ranked cost table
+
+By share of the parse-time gap, largest first. "Where" names the crate a
+fix must live in; every row cites a profile artifact.
+
+| Rank | Cost | bool_chain | select_list | corpus | Where | Artifact |
+|--:|---|--:|--:|--:|---|---|
+| 1 | FOLLOW-set composition (`FollowSet::union` + `with_caller`) | 38.6% | 49.2% | 1.9% | recursa-core | `*.folded` dispatch bucket |
+| 2 | Per-statement lexer construction (`Regex::new` x106, DFA rebuild) | 4.9% | 0.5% | 86.7% | recursa-core | lex-split table |
+| 3 | Generated Pratt body allocation (`__recursa_parse_bpu`, guard chain) | 15.1% | 16.4% | 0.7% | recursa-codegen | dispatch bucket frames |
+| 4 | Packed-table decode (`__recursa_decode_*`) | ~6% | ~7% | 0.4% | recursa-codegen | dispatch bucket frames |
+| 5 | Matcher execution (`CompiledLexMatcher::matched`, 113 rules/offset) | 23.2% | 15.5% | 3.6% | recursa-core | lex-split table |
+| 6 | Value construction (spans/occurrences/element metadata) | 0.2% | 0.4% | 0.2% | recursa-core | value bucket |
+| 7 | Error/expected-set paths | ~0% | ~0% | ~0% | — | error bucket, allocs.txt |
+| 8 | Trivia handling | 0% | 0% | 0% | — | trivia bucket |
+
+### Candidate-menu verdicts
+
+Each row is a candidate from the plan (Track R menu), with the fresh-profile
+verdict ADR 0006 requires.
+
+- **Classifier cache (peek/parse re-classify):** REJECT — not applicable.
+  This runtime has no classifier DFA in the parse path; identifier/keyword
+  resolution happens once in `lex()` and the parser dispatches on the u16
+  kind. `__recursa_classify_words` is 0.42% self on corpus. Nothing to cache.
+- **Kind-match dispatch everywhere:** ADOPT-as-done. Dispatch is already
+  table-driven (`__recursa_decode_dispatch_*`, packed base64 states); no
+  sequential peek cascade surfaces in any profile. The residual cost is the
+  FOLLOW allocation around the dispatch, not the branch selection (see #1).
+- **Single-pass ASCII trivia scan + bounds-check elision:** REJECT — spent.
+  Trivia skip rules are already inside the one `lex()` arbitration pass;
+  the trivia bucket is 0% everywhere. The old `consume_ignored`-per-Pratt
+  and byte-cursor `Input::remaining` do not exist here (Input is
+  token-record indexed).
+- **Error-path allocation removal (Arc source, Cow labels):** REJECT — not a
+  hot spot. Rejected corpus statements allocate fewer times than accepted
+  ones (624 vs 765 allocs/stmt); the error/expected bucket is ~0% self. The
+  recursa-old per-speculation source `String` pathology is absent.
+- **Peek+parse fusion for keyword-led optionals:** REJECT-for-now. Optional
+  groups dispatch through the same table machinery; no redundant
+  peek-then-parse frame is measurable.
+- **Fork/transaction cost reduction:** REJECT — no fork in the seam. The
+  strict statement seam checkpoints the cursor once at the root; there is no
+  per-branch `Input::fork` clone. No fork frame in any profile.
+- **Identifier fast path past the classifier DFA:** REJECT — moot (no parse
+  classifier DFA). The real lexer-DFA cost is construction, addressed by
+  lexer-matcher sharing, not an identifier gate.
+- **HashSet keyword membership / redundant-postcondition removal / byte-scan
+  hot leaf parsers:** REJECT — spent or moot. Keyword membership is resolved
+  in `lex`; no postcondition regex or `Vec<char>` leaf-scan frame appears
+  (those were recursa-old handwritten parsers; this runtime is fully
+  derived).
+
+Two levers the menu did not name, both surfaced by the profiles, are the
+ones worth adopting:
+
+- **ADOPT — FOLLOW-set allocation removal (rank 1/3/4).** Options, all
+  recursa-side: intern the 749 static union *results* at build time
+  (operands repeatedly compose the same constant pair); make the Pratt
+  guard chain lazy (build only when `next_is_pratt_boundary`, since the
+  guard is consulted only on the rare ambiguity error); return
+  borrow-or-static FOLLOW so `with_caller` of a constant caller allocates
+  nothing.
+- **ADOPT — per-statement lexer construction sharing (rank 2/5).**
+  recursa-core `lex()` should compile the `&'static` rule table (and its
+  regex_automata caches) once and reuse it, instead of rebuilding 106
+  regexes per call. Priced directly below.
+
+Priced against the matrix above and the profiles, largest expected win first:
+
+1. **Share the compiled lexer-matcher table across `lex()` calls**
+   (recursa-core). Measured 15.0× on corpus in isolation, collapsing the
+   headline realistic-SQL gap from 230× to 15.4×. This is the single largest
+   lever and touches only lexer construction, not parse semantics — compile
+   the `&'static` rule table and its regex_automata caches once and reuse.
+   Predicted: closes most of the parity gap on multi-statement input; the
+   parity gate is decided here.
+
+2. **Remove FOLLOW-set allocation on the hot dispatch path** (recursa-core +
+   recursa-codegen). Dominates the two single-statement, parse-bound
+   workloads (`FollowSet::union` 27–40% self in Track T's profiles; ranks
+   1/3/4 in the cost table). After lexcache lands, this is what moves
+   bool_chain/select_list from ~21–29× toward parity: intern the 749 static
+   union results at build time, make the Pratt guard chain lazy, and return
+   borrow-or-static FOLLOW so a constant caller allocates nothing.
+   Predicted: the primary remaining lever once lex construction is amortized.
+
+3. **Provenance layer — reject as a target.** ~1% across the matrix; it is a
+   measurement instrument, not an optimization target, and confirms ADR
+   0006's model decision holds. Do not spend Track R effort here.
+
+Handoff to Track R (#33): land lever 1 first (recursa-side lexer-matcher
+sharing, re-pin pg-sql, re-run the corpus workload — expect the parity gate
+to fall on realistic SQL), then lever 2. Every wave journals the
+canonical-workload delta per ADR 0006.
+
+## Track R wave 1 landed: lexer-matcher sharing (2026-09-02)
+
+recursa 870ddfe (pinned at pg-sql 5a8ac95). `lex()` reuses its compiled
+matcher table per thread instead of rebuilding ~106 regexes per call.
+
+Verified on the real pinned tree, `flame -- corpus --duration 10`:
+- Before: ~830 statements/s (1.204 ms/statement).
+- After: 12,655 statements/s (0.0790 ms/statement) — **15.2× faster**,
+  matching the isolated 15.0× prediction and the prototype's 15.1×.
+- Corpus gap vs sqlparser: 230× → ~15×.
+
+Lexing output byte-identical (full recursa workspace suite green; pg-sql
+library suite 1092/0/2). Single-statement workloads (bool_chain,
+select_list_10000) lex once and are unaffected, as measured — their
+residual gap is parse-bound FOLLOW allocation, which is wave 2.
+
+## Track R wave 2 REJECTED: FOLLOW inline-buffer (2026-09-02)
+
+Attempted FOLLOW-set allocation removal via an inline fixed buffer
+(`FollowWords::Inline { buffer: [u64; 16] }`, branch
+`perf/follow-set-allocation` at cec6e95, correctness verified — 52 recursa
+suites green, FOLLOW values byte-identical). Measured on the wave-1 pin
+before/after:
+
+| Workload | before | after | Δ |
+| --- | --: | --: | --: |
+| bool_chain | 21.24 ms | 25.30 ms | **−19.1% (slower)** |
+| select_list_10000 | 214.4 ms | 216.9 ms | −1.2% (noise) |
+| corpus | 0.0774 ms | 0.0774 ms | unchanged |
+
+**Rejected — net regression on the target workload.** The 128-byte inline
+buffer bloats every `FollowSet`; on the Pratt-heavy bool_chain path
+FollowSets are moved/cloned constantly, and copying 128 bytes costs more
+than the heap allocation it removes. Trading allocation for a large
+inline memcpy is the wrong shape here.
+
+Redesign direction for the next attempt (sub-lever 1, not tried): intern
+the ~749 static union RESULTS at build time in recursa-codegen — if the
+union of two constant FOLLOW operands is itself constant, emit it as a
+generated static so the runtime borrows it (zero alloc, zero copy) instead
+of composing per parse-site. Alternatively make composed sets `Rc`-shared
+(pointer-sized clone). The inline-buffer approach is preserved on the
+branch but must not land as-is. Reverted to wave-1 pin 870ddfe.
+
+## Keyword classifier: perfect hash replaces the linear if-chain (2026-09-04)
+
+The generated word-keyword classifier (`__recursa_classify_words`, called once
+per word-shaped token from `__recursa_classify`) was a flat, sharded chain of
+`if text.eq_ignore_ascii_case("...") { return Some(kind); }` comparisons —
+484 comparisons for pg-sql's 466 keywords, spread across `#[64]`-wide helper
+functions. Every non-keyword identifier (the common case in real SQL) paid a
+scan across the whole chain before falling through to `None`.
+
+recursa-codegen (`recursa-codegen/src/generation/generated_output.rs`) now
+emits a `phf::Map<&'static [u8], u16>` perfect-hash table instead. Lookup
+folds the candidate text into a fixed `[u8; MAX_KEYWORD_LEN]` stack buffer
+(lowercasing only ASCII bytes for `ascii_insensitive` grammars, leaving
+non-ASCII bytes untouched so multi-byte UTF-8 keywords still round-trip
+correctly), rejects immediately on an empty or over-length buffer without
+touching the map, and otherwise does one `phf` probe:
+
+```rust
+static __RECURSA_WORD_KEYWORDS: recursa::__private::phf::Map<&'static [u8], u16> = /* 466 entries */;
+
+fn __recursa_classify_words(text: &str) -> Option<u16> {
+    const MAX_KEYWORD_LEN: usize = 15usize;
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || bytes.len() > MAX_KEYWORD_LEN {
+        return None;
+    }
+    let mut folded = [0_u8; MAX_KEYWORD_LEN];
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        folded[index] = bytes[index].to_ascii_lowercase();
+        index += 1;
+    }
+    __RECURSA_WORD_KEYWORDS.get(&folded[..bytes.len()]).copied()
+}
+```
+
+`phf`/`phf_codegen` are pinned at 0.11.3 and stay an internal implementation
+detail: `recursa-core` re-exports `phf` under `__private`, `recursa`'s
+facade re-export carries it through, and the map's `phf_path` is generated
+as `<facade>::__private::phf` so no pg-sql-side `Cargo.toml` ever names
+`phf` directly. Generation protocol bumped 19 -> 20 (a new facade re-export
+used by generated code); `EMITTER_IDENTITY` v40 -> v41.
+
+Measured on `flame -- <workload> --duration 5`, before (main, recursa
+aac09ef / pg-sql 0ec8716) vs after (this change):
+
+| Workload | before | after | Δ |
+| --- | --: | --: | --: |
+| bool_chain | 82.5 stmt/s | ~83.9 stmt/s | +1.6% (noise; few keyword-shaped tokens on this path) |
+| corpus | 17,488.2 stmt/s | ~19,453.4 stmt/s | **+11.2%** |
+| select_list_10000 | 9.7 stmt/s | ~10.35 stmt/s | +6.7% |
+
+`corpus` is the workload this change targets (real statement mix, keyword-
+and identifier-heavy) and shows the clearest win, consistent with the
+1.8-3.3% of total parse time the profiles previously attributed to
+`__recursa_classify_words`'s linear scan — most of that self-time is now a
+single hashed probe or an immediate length/emptiness rejection.
+`select_list_10000`'s modest gain matches its large word-token volume
+(10,000 repeated identifiers/values); `bool_chain`'s near-zero delta is
+expected — its hot loop is Pratt/`AND`-dominated with few word-shaped
+lookups per pass.
+
+Verification: recursa `cargo test --workspace` green (all suites, including
+a new `recursa-codegen` fixture (`tests/fixtures/generation/lexing`)
+exercising case variants (`select`/`SELECT`/`SeLeCt`), a non-keyword, a
+keyword prefix, a keyword-plus-trailing-character, and an empty word-shaped
+record). pg-sql `--test embedded` 1092/0/2, `--test document` 27/0. The
+`--features postgres-oracle --test differential` suite reproduces the exact
+same 160-passed/74-failed file-level result as an unmodified `main` build in
+this sandbox (byte-identical pass/fail set) — a pre-existing environment
+baseline unrelated to this change, not a regression.
+
+## Track R wave 3 landed: per-site FOLLOW caches and a static Pratt guard (2026-09-04)
+
+recursa `perf/follow-site-cache` (protocol 20), pinned by
+`.recursa-revision`. Wave 2's interner (ca9e386) removed the allocation but
+kept a hashed memo lookup on every composition. Fresh profiles still showed
+9-16% of parse time in `LocalKey::with` for `compose` plus `FollowSet::union`.
+This wave removes those lookups.
+
+Three changes:
+
+1. **The composition memo is now process-global.** `recursa-core`
+   `grammar.rs` replaced the `thread_local! RefCell<Interner>` with a
+   `LazyLock<Mutex<Interner>>`. Interned sets are leaked and immutable and
+   `FollowSet` is `Send + Sync` (asserted at compile time), so one table
+   serves every thread. The lock is off the hot path because of change 3.
+
+2. **The Pratt ambiguity guard is composed at generation time.** The
+   generated `__recursa_parse_bp` body used to build a guard chain on EVERY
+   entry: about 100 blocks of `if bp >= min_bp { guard = guard.union(SET) }`
+   whose only consumer is the `pratt_ambiguity` error path. The guard content
+   depends only on which distinct left binding powers are at or above
+   `min_bp`, so `recursa-codegen` now composes one cumulative expectation per
+   distinct threshold and emits them in the expected-set pool. The entry path
+   composes nothing; the error path selects the right static with one
+   comparison chain. For pg-sql's `Expr` the chain fell from ~100 runtime
+   unions to 11 static arms.
+
+3. **Every remaining composition site has a one-entry inline cache.** New
+   `recursa-core` type `FollowSiteCache` holds an `AtomicPtr` to a leaked
+   `(nearer, caller, result)` record. Generated code declares one
+   block-scoped `static` per site and calls
+   `SITE.with_caller(&EXPECTED_SETS[k], context.follow())`. A repeat caller
+   costs one acquire load and one pointer comparison. A miss goes through the
+   global memo, which interns one record per distinct operand pair, so misses
+   reuse records instead of leaking. pg-sql generates 925 site caches
+   (724 `with_caller`, 201 `union`).
+
+### Canonical workloads (flame, 10 s, interleaved before/after)
+
+Both bench binaries were kept in one worktree and run alternately, so
+thermal drift affects both. Best of three to five runs; the machine throttles
+and the slow runs are noise.
+
+| Workload | before | after | Δ |
+| --- | --: | --: | --: |
+| `bool_chain` | 11.83 ms/stmt (84.5 stmt/s) | 10.10 ms/stmt (99.0 stmt/s) | **−14.6% time** |
+| `corpus` | 0.0529 ms/stmt (18,894 stmt/s) | 0.0491 ms/stmt (20,361 stmt/s) | **−7.2% time** |
+| `select_list_10000` | 97.1 ms/stmt (10.3 stmt/s) | 78.7 ms/stmt (12.7 stmt/s) | **−18.9% time** |
+
+### Allocations and interner size (`--count-allocs`, one pass)
+
+| Workload | parse allocs before | after | interned sets | memoized pairs |
+| --- | --: | --: | --: | --: |
+| `bool_chain` | 2,720 | 2,112 | 139 → 15 | 201 → 17 |
+| `select_list_10000` | 489 | 183 | 81 → 17 | 111 → 17 |
+| `corpus` | 758,402 | 759,832 | 1,951 → 1,733 | 2,632 → 2,321 |
+
+The interner shrinks because the guard cumulatives are now generated statics
+instead of runtime compositions. The corpus parse allocation count is flat:
+it is dominated by provenance, and the composition path there was already
+allocation-free after wave 2.
+
+### Suites
+
+- recursa `cargo test --workspace`: 56 suites, 0 failed.
+- pg-sql `cargo test -p pg-sql --test embedded`: 1092 passed, 0 failed,
+  2 ignored.
+- pg-sql `cargo test -p pg-sql --test document`: 27 passed, 0 failed.
+- pg-sql `cargo test -p pg-sql --features postgres-oracle --test differential`:
+  160 passed, 74 failed — byte-identical to the same command on `main`, so
+  the failures pre-date this change and are not caused by it.
+
+The diagnostic content is unchanged. The Pratt fixture
+(`recursa-codegen/tests/fixtures/generation/pratt`) now asserts the exact
+expected-atom list for both ambiguity cases: `Followed` at `min_bp` 0 (9
+atoms) and `NestedFollowed` at a raised `min_bp` (6 atoms). Both lists are
+identical before and after the change, checked by running the fixture with
+the codegen edit stashed.
+
+## Track R wave 3 landed: logos-backed lexer (2026-09-04)
+
+recursa `perf/logos-lexer` (pinned by pg-sql `perf/logos-lexer`). The runtime
+lexer no longer tries all 113 generated rules at every source offset. Codegen
+now emits a private `#[derive(Logos)]` enum per grammar — one variant per
+lexical rule — and the runtime drives that single DFA. `logos` stays an
+implementation detail: it is re-exported through `recursa::__private::logos`
+and generated code names it with `#[logos(crate = ...)]`, so pg-sql needs no
+`logos` dependency (the unused direct one was removed).
+
+Three mechanisms cannot be expressed by one longest-match DFA and stay in the
+driver: operator runs (their extent shrinks after the fact, at the first
+interior fence and under the trailing-character rule), operator-fence
+suppression (it needs a second lexical decision at the fence), and closed
+regions (they arbitrate on the extent their callback reaches, not on their
+opener, so they get a second small DFA consulted only at offsets whose first
+byte can open one).
+
+Measured with `flame -- <workload> --duration 5`, two runs each, against the
+same tree without the change (pg-sql 0ec8716 + recursa aac09ef):
+
+| Workload | before | after | Δ |
+| --- | --: | --: | --: |
+| bool_chain | 11.83 ms/statement (84.6/s) | 5.83 ms/statement (171.6/s) | **2.03× faster** |
+| corpus | 0.0509 ms/statement (19,655/s) | 0.0197 ms/statement (50,840/s) | **2.59× faster** |
+| select_list_10000 | 97.5 ms/statement (10.3/s) | 53.4 ms/statement (18.7/s) | **1.83× faster** |
+
+Lexing output is byte-identical. `tests/lex_identity.rs` dumps one line per
+lexical record — kind, span, text, and diagnostic code plus anchor — for the
+complete PostgreSQL regression corpus, every stress fixture, and 64
+adversarial inputs (`a+--b`, `x*/*c*/y`, `x||/*c*/y`, unterminated `$$` and
+`/*`, `1e+`, `1..2`, stray `?`, psql meta-commands, non-ASCII scalars). The
+dump is byte-identical before and after across 801,597 lines; the adversarial
+half is pinned as a checked-in expectation
+(`tests/fixtures/lex_edge_cases.txt`).
+
+Suites: recursa workspace green; pg-sql `--test embedded` 1092/0/2, `--test
+document` 27/0/0, `--test lex_identity` 2/0/0. `--features postgres-oracle
+--test differential` reports 160 passed / 74 failed both with and against the
+change, with the identical failure set — those 74 are a pre-existing local
+condition, not this change.
+
+The old matcher runtime is gone: `CompiledLexMatcher`, the thread-local
+compiled-table cache from wave 1, and recursa-core's `regex-automata`
+dependency were all removed (`regex-automata` stays a codegen-only
+dependency). The private generation protocol moved to 21.
+
+## Frozen dispatch: decode once, index edges by kind (2026-09-04)
+
+recursa `perf/dispatch-index` (pinned by pg-sql `perf/dispatch-index`). After
+the lexer, FOLLOW and keyword waves, the frozen dispatch walk was essentially
+the whole remaining parse cost: on the pre-change tree `flame-attribute` put
+bool_chain at 95.4% dispatch/decision with `ParseContext::select_pratt` alone
+at 87.6% **self** time (`DispatchTable::follow_edge` inlines into it), and
+corpus at 89.6% split `select_pratt` 36.9% / `select_predictive` 35.0%.
+
+The cost was mechanical, not semantic. Two things:
+
+1. **Every lookup re-decoded base64.** The frozen graph reaches the runtime as
+   fixed-width URL-safe base64 byte strings, and `state`, `follow_edge` and
+   the position test each decoded cells digit by digit — six cells per edge
+   tried, on every edge, on every lookup.
+2. **`follow_edge` scanned a state's edges linearly.** The Expr Pratt LED
+   table has 264 states and its root has on the order of 100 edges, so every
+   operator in a chain walked ~100 edges, each one a position decode plus a
+   FOLLOW-bitset test.
+
+`DispatchTable` now decodes itself exactly once, on first use, into `u32`
+cells held in a `OnceLock` on the table, and builds a per-state dense
+token-kind row for the states wide enough to pay for it. A table whose
+positions are all predicate mode 0 — every one of pg-sql's 532 tables —
+answers a lookup in a single array read: the row cell holds `next state + 1`.
+A table that carries spelling predicates (modes 1-7, which pg-sql does not
+use but other grammars may) uses the row to find the *earliest* edge admitting
+the kind and walks the predicate chain forward from there, so frozen order
+still decides which edge wins.
+
+| Workload | before | after | Δ |
+| --- | --: | --: | --: |
+| bool_chain | 3.928 ms/statement (254.6/s) | 0.406 ms/statement (2,462.9/s) | **9.68× faster** |
+| corpus | 0.01344 ms/statement (74,420/s) | 0.00378 ms/statement (264,671/s) | **3.56× faster** |
+| select_list_10000 | 33.00 ms/statement (30.3/s) | 3.705 ms/statement (269.9/s) | **8.91× faster** |
+
+Median of three interleaved 10 s runs per workload, the same `flame` bench
+binary alternated before/after on the same machine (pg-sql 34685f7 in both
+cases; only the recursa checkout under it changed, d23e105 → 52eaf18).
+
+**Why lazy decode and not typed static arrays.** Emitting `&[u32]` cells from
+codegen would remove the decode too, but the packed literal is chosen for the
+*generated source*: a byte string is one token to the compiler where a typed
+array is one token per cell, across hundreds of tables in a ~25 MB generated
+crate whose build loop we are already fighting. Decoding at first use keeps
+the compile-size win and pays a one-off cost per table actually reached. The
+price is runtime memory: peak RSS over the whole corpus workload — which
+touches essentially every table — moved 21.2 MB → 29.4 MB. Dense rows go to
+the widest states first (≥ 8 edges) under a per-table cell budget, so a
+pathological graph cannot allocate without bound; the budget is nowhere near
+binding for pg-sql.
+
+**No `match`-based Pratt emission.** The option was to emit a `match` on the
+token kind per Pratt state in generated code for the Expr LED root. Measured
+first, as required: after the indexed table, `select_pratt` is 9.4% self time
+on bool_chain (down from 87.6%) and 1.8% on corpus, so a second mechanism
+would buy little and cost generated code size. The table stays the only
+mechanism.
+
+`dispatch_table` now takes the state row shape (`state_cells`, `edge_field`)
+so the runtime can find a state's edge range itself, and `follow_edge` takes
+the state index rather than a pre-decoded `(edge start, edge count)`. The
+private generation protocol moved to 22. Nothing else moved: the
+caller-FOLLOW-conditioned terminal modes, the Pratt ambiguity check, depth
+accounting and the expected-set diagnostics are untouched.
+
+New top self-time frames, `scripts/flame-profile bool_chain 10` on the
+changed tree (bucket totals: dispatch/decision 69.7%, value construction
+13.8%, other 12.8%, lex/classify 2.2%):
+
+| self% | frame |
+| --: | --- |
+| 15.2% | `pg_sql::__recursa_lexical::__recursa_finalize` |
+| 9.4% | `recursa_core::parsed::ParseContext::select_pratt` |
+| 9.1% | `recursa_core::lex::lex::<__RecursaLexToken>` |
+| 8.2% + 5.6% alloc | `Expr::__recursa_parse_pratt_led_1166_81` |
+| 6.5% | `Expr::__recursa_parse_bp` |
+| 5.1% + 3.2% | `ProvenanceCollector::finish_repeated` (arity 1, arity 2) |
+| 2.9% | `recursa_core::parsed::ParseContext::select_predictive` |
+
+corpus is the same shape: `__recursa_finalize` 11.2%, `select_predictive`
+6.6%, `lex` 6.2% (+2.5% alloc), `LexBuilder::append` 1.9% alloc,
+`select_pratt` 1.8%, `FollowSet::compose_entry` 1.5%. So the next levers are
+the lexical **finalize** pass and record building (allocation-heavy), then
+provenance/occurrence construction — not dispatch.
+
+Suites: recursa workspace green (0 failed), including four new
+`recursa-core::dispatch` tests that check the decoded/indexed lookup against
+the pre-change linear walk, kept verbatim as an oracle, for every token kind
+and every spelling case over graphs with overlapping edges, predicate modes
+0-7 and multi-edge states (also re-run with the dense threshold forced to 1
+and to 9999, so both the dense and the scan path are proved against the
+oracle). pg-sql `--test embedded` 1092/0/2, `--test document` 27/0/0, `--test
+lex_identity` 2/0/0. `--features postgres-oracle --test differential` reports
+160 passed / 74 failed, and the normalised failure capture (74 files, 742
+statement mismatches, positions stripped, sorted) is byte-identical to the
+pre-change capture from main — those 74 are a pre-existing local condition,
+not this change.
+
+## Benchmark: 2026-09-04 `eb16f47` — parity gate met (geomean 0.687x sqlparser)
+
+Full statement-level head-to-head (`cargo bench -p pg-sql --features
+postgres-oracle --bench parse`) on local `main`: pg-sql `eb16f47`, recursa
+`52eaf18` (the pin in `.recursa-revision`). This is the first run that carries
+**both** of today's last two changes together — the decoded, kind-indexed
+frozen dispatch tables (recursa `52eaf18`, pinned by pg-sql `750bb7f`) and the
+bare-alias Pratt grammar fix (pg-sql `0c3005f`). The previous report,
+`34685f7` at 06:26:50Z, still pinned recursa `d23e105`, so it measured the
+tree **before** the dispatch change.
+
+| Metric | 2026-09-01 baseline | `34685f7` (06:26:50Z) | `eb16f47` (09:12:51Z) |
+|---|--:|--:|--:|
+| pg-sql total median time | 50,881.7 ms | 640.7 ms | **150.6 ms** |
+| sqlparser 0.52 total | 216.1 ms | 217.5 ms | 218.8 ms |
+| PostgreSQL 17.9 total | 40.8 ms | 40.0 ms | 40.8 ms |
+| total ratio pg-sql / sqlparser | 235.5x | 2.95x | **0.69x** |
+| total ratio pg-sql / postgres | 1,247x | 16.0x | **3.69x** |
+| geomean pg-sql / sqlparser | not recorded | 2.748x | **0.687x** |
+| geomean pg-sql / postgres | not recorded | 13.50x | **3.41x** |
+| groups above the 1.0x gate | — | 235 of 236 | **0 of 236** |
+| statements timed by all three | 33,168 | 33,168 | 33,382 |
+| rejections: pg-sql | 1,026 | 1,026 | **805** |
+| rejections: sqlparser | 9,613 | 9,613 | 9,613 |
+| rejections: postgres | 484 | 484 | 484 |
+
+**The parity gate of ADR 0006 is met.** The geomean over the 236 benchmarks
+that all three engines time is **0.687x** sqlparser, and **every** benchmark
+group is at or below 1.0x — the closest are `stress/nested_subquery_5` 0.993x,
+`stress/nested_subquery_10` 0.992x and `corpus/create_misc` 0.987x. The
+reference ceiling remains recursa-old's 0.525x, so there is still headroom;
+the gate itself (geomean <= 1.0x) no longer binds. Split by fixture family the
+geomean is 0.696x over the 221 `corpus/` groups and 0.568x over the 15
+`stress/` groups. Against PostgreSQL's raw parser pg-sql is 3.41x geomean,
+down from 13.50x.
+
+Canonical and stress workloads, `34685f7` -> `eb16f47` (pg-sql median per
+statement, and the ratio to sqlparser):
+
+| Workload | before | after | ratio before | ratio after |
+| --- | --: | --: | --: | --: |
+| `stress/bool_chain_1000` | 3.907 ms | 0.425 ms | 3.79x | **0.41x** |
+| `stress/select_list_10000` | 34.621 ms | 4.115 ms | 4.72x | **0.58x** |
+| `stress/in_list_10000` | 16.387 ms | 2.272 ms | 3.18x | **0.45x** |
+| `stress/insert_values_10000` | 86.039 ms | 12.897 ms | 3.29x | **0.47x** |
+| `stress/nested_subquery_15` | 0.068 ms | 0.030 ms | 2.17x | **0.97x** |
+
+These agree with the flame-harness numbers recorded for the dispatch change
+(bool_chain 0.406 ms, select_list_10000 3.705 ms per statement).
+
+**Rejections.** pg-sql now rejects **805** of the 43,489 frozen statements,
+down from 1,026 — the bare-alias Pratt fix (`0c3005f`) recovered 221
+statements, and the set timed by all three engines grew 33,168 -> 33,382. So
+the two total-time columns are not membership-identical; the geomean and the
+per-group ratios are the like-for-like comparison. PostgreSQL rejects 484 and
+sqlparser 9,613, both unchanged. The gap to postgres is still 321 statements.
+One workload, `corpus/oidjoins`, has no statement accepted by all three
+engines — its single frozen statement is rejected by at least one of them —
+and is reported separately, as it was in the previous two runs.
+
+**Wall time.** The bench ran in **206 s** (3 min 26 s), comfortably inside the
+ten-minute target of issue #31.
+
+**Load conditions.** Other agents were compiling in sibling worktrees
+throughout, and the machine never went quiet within a 20-minute bounded wait:
+a `cargo test -p pg-sql --test fmt` in `../pg-sql-wt-fmt` held rustc at ~200%
+for most of it, and macOS `XprotectService`, `mediaanalysisd` and
+`spotlightknowledged` were each taking tens of percent. No rustc or cargo
+process was running at the moment the bench started, but the one-minute load
+average was 8.03 before the run and 8.48 after (CPU idle 70% just after). The
+bench is single-threaded, so the direction of any contention error is toward
+**over**-stating pg-sql's time; the parity verdict is not at risk from it, but
+the absolute milliseconds should be treated as an upper bound.
+
+Report: `docs/benchmarks/2026-09-04T09-12-51Z-eb16f47/` (`report.md`,
+`data.json`, `time.svg`, `throughput.svg`). Run directories stay untracked
+(`.gitignore` line 5), so only this journal entry is committed.
+
+## Track T: the grammar restructuring for the table-driven parser style
+
+**Change.** pg-sql `effe2aa`, recursa pin `6d91867`. Issue #68's two passes:
+lookahead filters mirroring `parser.c`, a `precedence` block mirroring
+`gram.y`'s, node restructurings that mirror their `gram.y` nonterminals, the
+`ESCAPE` clause as an attached Pratt operand, a real custom-prefix Pratt
+variant, `DEFAULT` excluded from `b_expr` operands, and the optional-viability
+annotations active in that experiment. Every Pratt
+binding power was rescaled by ten to make room for `gram.y`'s keyword levels.
+
+**Question.** The work exists to make the grammar LALR-clean. Did it cost the
+recursive-descent parser anything? A restructuring that mirrors `gram.y` is
+not obviously free: it adds nonterminals, and the binding-power rescale
+touches every Pratt decision.
+
+**Run.** `2026-09-06T07-01-19Z-effe2aa`, machine otherwise idle. Compared with
+the two previous runs over the 236 benchmarks common to all three, so the
+membership is identical.
+
+| Run | pg-sql | sqlparser | PostgreSQL | geomean vs PostgreSQL | geomean vs sqlparser |
+| --- | --: | --: | --: | --: | --: |
+| `c972f92` | 144.5 ms | 208.8 ms | 39.1 ms | 3.419x | 0.685x |
+| `7522830` | 144.7 ms | 211.2 ms | 39.3 ms | 3.421x | 0.681x |
+| `effe2aa` | **140.8 ms** | 208.7 ms | 39.7 ms | **3.302x** | **0.671x** |
+
+**Result: the restructuring made recursive descent faster.** The geomean
+against PostgreSQL improves 3.5%, and the parity gate against sqlparser holds
+at 0.671x. Read the ratio, not the totals: the PostgreSQL control moved 1.0%
+between runs, just above the 0.88% same-commit spread this journal measured,
+so the machine was marginally slower, and the ratio is the figure that
+normalises it. pg-sql got faster while the control got slower, so the
+direction is not in doubt.
+
+Nesting, the shape section 8 of the parser research predicted would be
+architectural:
+
+| Run | pg-sql per level | PostgreSQL per level | Ratio |
+| --- | --: | --: | --: |
+| `7522830` | 1.754 us | 0.246 us | 7.13x |
+| `effe2aa` | 1.683 us | 0.242 us | 6.96x |
+
+4% cheaper per nesting level, still about 7x PostgreSQL. That number is a
+property of recursive descent and only the table-driven style will move it.
+
+**Why it got faster, most likely.** The restructurings replace enum
+alternatives that shared long prefixes with nonterminals that part earlier, so
+predictive dispatch decides on fewer tokens. Two changes remove work outright:
+the `ESCAPE` clause is now an attached Pratt operand rather than a separate
+node with a 74-name exclusion list, and `CustomPrefixOperand` is gone, folded
+into a real Pratt prefix variant. This is a plausible mechanism, not a
+measurement; a profile would settle it and none was taken.
+
+**Status of the table-driven style.** Not measured here, because it cannot be
+generated yet: 31 LR conflicts remain and recursa refuses to emit a parser
+with any conflict. Issue #70 times it once they are retired. (Corrected
+after the fact: recursa #128 landed and took 1; recursa #129 was rejected,
+so the 23 it was to take are ordinary pg-sql grammar work. `tests/two_parsers.rs`
+carries the current breakdown.)
+
+## Benchmark: 2026-09-07 — LR corpus membership audit and runtime profile
+
+The first LR-only run used the existing benchmark unchanged at pg-sql
+`54fde18` / recursa `a97b8c2`. The second run explicitly removed frozen
+`LegacyItemKind::ParseError` entries before any parser probe. It also made the
+flame harness use the same accepted-by-all corpus membership as the
+head-to-head benchmark; those membership probes run once during workload
+loading, outside the timed loop.
+
+| Metric | Existing membership | Parse-fail stripped | Change |
+| --- | --: | --: | --: |
+| pg-sql total median time | 344.029 ms | 343.321 ms | -0.206% |
+| sqlparser 0.52 total | 214.226 ms | 212.381 ms | -0.861% |
+| PostgreSQL 17.9 total | 39.873 ms | 39.647 ms | -0.567% |
+| pg-sql / sqlparser | 1.606x | 1.617x | +0.011x |
+| pg-sql / PostgreSQL | 8.628x | 8.659x | +0.031x |
+| timed statements, including 15 stress fixtures | 33,720 | 33,707 | -13 |
+
+The corrected corpus starts from 43,474 frozen items, strips 125 deliberate
+parse-fail items, and retains 33,692 statements accepted by pg-sql,
+sqlparser, and PostgreSQL. The 15 stress fixtures bring the head-to-head total
+to 33,707. The membership correction therefore removes the error path but
+does not explain the LR regression: pg-sql remains far beyond the 1.25x
+PostgreSQL profiling threshold.
+
+There is no hidden pg-psql cost. `cargo bench -p pg-sql --features
+postgres-oracle --bench parse` has no `pg-psql` dependency (`pg-psql` depends
+on `pg-sql`, not the reverse). The pg-sql timed closure performs one generated
+lex pass and one `Statement::parse`; the three-engine membership probes happen
+before measurement.
+
+The corrected `corpus` workload was sampled for ten seconds with macOS
+`sample` (7,938 samples). The largest leaf hot paths were:
+
+| Self samples | Self time | Frame |
+| --: | --: | --- |
+| 1,880 | 23.7% | generated root `__recursa_reduce` dispatcher |
+| 584 | 7.4% | `recursa_core::lr::run` |
+| 496 | 6.2% | `OccurrenceStack::reduce` |
+| 355 | 4.5% | `ParseContext::collect_occurrence` |
+| 313 | 3.9% | `provenance::fold_site` |
+| 138 | 1.7% | generated lexical finalization |
+| 126 | 1.6% | `DecodedTables::filtered_action` |
+| 122 | 1.5% | generated lexer |
+| 100 | 1.3% | `DecodedTables::action` |
+
+Allocator functions occupy many additional high-ranked leaf frames. A counted
+pass makes the scale concrete: lexing performs 225,051 allocations (6.7 per
+statement, 43.1 MB), while parsing performs 3,244,021 allocations (96.3 per
+statement, 359.1 MB). Parsing is 93.5% of allocation count and 89.3% of bytes.
+The first runtime optimization targets are therefore the generated root
+reducer dispatch and provenance/occurrence allocation, not the error path.
+
+Reports: `docs/benchmarks/2026-09-07T05-44-21Z-54fde18/` (before) and
+`docs/benchmarks/2026-09-07T05-50-40Z-54fde18/` (after). Profile:
+`docs/perf/flamegraphs/2026-09-07-54fde18-dirty/`. These run directories are
+ignored; this journal entry is the tracked record.
+
+## Benchmark: 2026-09-07 — Bison-shaped reduction dispatch
+
+The generated reducer was reshaped in five measured steps. Root semantic
+actions moved into cold leaf functions; the LR table gained a one-byte
+per-rule action flag so actionless rules bypass the reducer; global rule
+numbers now dispatch directly to coalesced semantic actions; the production
+grammar's rule population was audited; and the reducer became a monomorphized
+function item inside the LR loop. The tight corpus harness moved as follows
+(three runs per executable, median shown):
+
+| Stage | Statements/s | Change from previous | Change from baseline |
+| --- | --: | --: | --: |
+| Existing generated reducer | 110,688.8 | — | — |
+| Root actions split into leaves | 109,099.4 | -1.4% | -1.4% |
+| Actionless reductions bypass dispatch | 118,608.8 | +8.7% | +7.2% |
+| Global rule-to-action dispatch | 137,802.8 | +16.2% | +24.5% |
+| Reducer monomorphized into LR loop | 141,106.3 | +2.4% | +27.5% |
+
+The full 33,707-statement benchmark improved from 343.321 ms to 265.100 ms,
+a 22.8% reduction. PostgreSQL 17.9 took 39.488 ms and sqlparser 0.52 took
+213.699 ms, leaving pg-sql 6.714x PostgreSQL and 1.241x sqlparser. The result
+is a substantial dispatcher improvement, but it remains beyond the 1.25x
+PostgreSQL target.
+
+The rule audit found no helper-copy explosion. The grammar has 14,944 rules
+and 20,715 states: 10,745 type-origin rules, 1,504 start rules, 392 helper
+rules, two helper-copy rules, and 2,301 restriction rules. The 1,504 starts
+preserve the public parse-every-type contract; restrictions are already
+canonicalized by type, exclusion set, and minimum binding power. Collapsing
+those populations would therefore change the language or public contract.
+Coalescing equal semantic actions prevents this necessary grammar detail from
+becoming equal amounts of generated machine code. Of 621,493 table cells,
+65.9% of states act only by their default action.
+
+The post-change profile contains 8,238 main-thread samples. The standalone
+generated root dispatcher, formerly 1,880 samples (23.7%), is gone. Its work
+is now in the monomorphized LR loop (782 self samples, 9.5%) and a small
+generated reducer-call shim (267, 3.2%). The next dominant cluster is
+provenance and allocation: `OccurrenceStack::reduce` has 684 self samples
+(8.3%), `ParseContext::collect_occurrence` 508 (6.2%), `fold_site` 355
+(4.3%), and `nanov2_free` 638 (7.7%). This shifts the next optimization target
+from dispatch shape to occurrence/provenance ownership and allocation.
+
+Report: `docs/benchmarks/2026-09-07T07-07-51Z-048129c/`. Profile:
+`docs/perf/flamegraphs/2026-09-07-048129c/`. These run directories are ignored;
+this journal entry is the tracked record.
+
+## Benchmark: 2026-09-07 — arena-backed provenance
+
+Recursa's occurrence sidecar now allocates its recursive nodes, child vectors,
+separator vectors, and repetition accumulators in one `bumpalo::Bump` owned
+with the completed provenance by `self_cell`. The arena lifetime is confined to
+Recursa's hidden parser ABI: generated AST types and pg-sql's public `Parsed`
+surface are unchanged. Retained nodes take ownership of the arena vectors built
+during folding, avoiding a second copy whose abandoned capacity cannot be
+reclaimed until the arena is dropped.
+
+The comparison is pg-sql `b0362a6` / recursa `64be52b` before the change versus
+the same pg-sql tree and recursa `a59c23d` after it. Each final timing is a
+15-second clean flame-harness loop, run serially:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 130,900.5 | 175,134.4 | **+33.8%** |
+| `select_list_10000` | 123.8 | 149.1 | **+20.4%** |
+| `bool_chain` | 1,157.8 | 1,431.1 | **+23.6%** |
+
+One counted pass over the 33,692-statement corpus isolates the allocation
+change. Lexing is identical; the table reports parsing only:
+
+| Parse allocation measure | Before | After | Change |
+| --- | --: | --: | --: |
+| Allocations | 3,244,021 | 748,926 | **-76.9%** |
+| Allocations / statement | 96.3 | 22.2 | **-76.9%** |
+| Allocated bytes | 359,052,178 | 255,778,802 | **-28.8%** |
+| Bytes / statement | 10,657 | 7,592 | **-28.8%** |
+
+The first arena version copied temporary bump vectors into retained bump
+vectors. It improved `corpus` and `bool_chain`, but regressed
+`select_list_10000` by 8.6% and allocated 22.8 MiB while parsing that one
+statement. A profile put 35.8% of attributed self time in provenance folding.
+Letting retained nodes own the already-built occurrence and separator vectors
+reduced the wide statement to 6.56 MiB and turned the regression into the
+20.4% gain above. That discarded profile is in
+`docs/perf/flamegraphs/2026-09-07-b0362a6-dirty/` (ignored).
+
+Correctness evidence after the final representation: Recursa core 63/63,
+pg-sql's full feature-enabled test targets including the 234-file differential
+suite and 1,121 embedded tests, the complete Recursa code-generation test
+suite, fixture-lock policy, hidden-ABI documentation policy, and the canonical
+warnings/private-documentation Clippy gate all pass.
+
+## Benchmark: 2026-09-08 — provenance folding, LR lookup, and arena AST
+
+Three runtime changes were applied and measured in order against the clean
+15-second flame harness. First, provenance folding stopped scanning children
+when a reduction already carried a span, and stopped revalidating token spans
+that the lexer had already proved. This improved `corpus` by 6.3%,
+`select_list_10000` by 9.6%, and `bool_chain` by 9.1%.
+
+Second, decoded LR tables gained an index of filtered lookahead rows. The parse
+loop now asks for a second token only for source kinds that actually have a
+lookahead filter. The combined result after these first two changes was:
+
+| Canonical workload | Arena-provenance baseline | After provenance + LR lookup | Combined change |
+| --- | --: | --: | --: |
+| `corpus` | 175,134.4 stmt/s | 190,308.0 stmt/s | +8.7% |
+| `select_list_10000` | 149.1 stmt/s | 170.3 stmt/s | +14.2% |
+| `bool_chain` | 1,431.1 stmt/s | 1,642.4 stmt/s | +14.8% |
+
+Third, the authored pg-sql AST moved to `bumpalo` boxes and vectors behind a
+`self_cell` owner, so the arena lifetime does not escape the parsed wrapper.
+Recursa keeps this as an opt-in `arena_ast` grammar mode; ordinary generated
+grammars retain their existing owned representation. The first complete AST
+arena implementation measured:
+
+| Canonical workload | Before AST arena | AST arena | Change |
+| --- | --: | --: | --: |
+| `corpus` | 190,308.0 stmt/s | 184,239.1 stmt/s | -3.2% |
+| `select_list_10000` | 170.3 stmt/s | 136.3 stmt/s | -20.0% |
+| `bool_chain` | 1,642.4 stmt/s | 1,759.1 stmt/s | +7.1% |
+
+The AST arena reduces corpus parse allocation count from 22.2 to 14.7 per
+statement, but raises allocated parse bytes from 7,592 to 9,359 per statement.
+The wide select makes the cause especially visible: parsing allocates only 25
+global blocks, but requests 16,778,264 bytes, versus 6.56 MiB before the AST
+arena. A growing `bumpalo::collections::Vec` cannot reclaim its superseded
+buffers until the whole arena is dropped. Interleaved AST allocations prevent
+many grows from extending in place, so very wide semantic lists retain their
+geometric growth history. This representation is a win for deeply boxed trees
+and allocation count, but it does not yet meet the runtime objective for wide
+lists or the representative corpus.
+
+A follow-up staged repeated values in reclaimable standard vectors and moved
+them once into exactly-sized arena vectors. It removed the retained-growth
+mechanism but did not improve the wide case in the back-to-back run (140.9 to
+140.5 stmt/s), while corpus fell further to 179,663.0 stmt/s and `bool_chain`
+measured 1,765.4 stmt/s. The temporary allocation and final copy cost
+outweighed the saved arena bytes. That experiment was rejected; the table uses
+the retained final tree. Three final-tree wide runs had a 136.3 stmt/s median
+and a 136.3–137.7 stmt/s range, illustrating this single-statement workload's
+run-to-run sensitivity.
+
+The initial release benchmark rebuild took 3m04s; the final confirmation rebuild
+took 2m14s. Correctness evidence comprises the
+full pg-sql suite, Recursa's exhaustive workspace and downstream-generation
+suites, the hidden-ABI documentation policy, and all workspace doc tests. The
+Recursa workspace `-D warnings` gate passes. pg-sql's package gate passes; the
+workspace-wide command remains independently blocked by pg-psql's 21 existing
+LR conflicts.
+
+## Profile: 2026-09-08 — arena AST follow-up
+
+The committed arena-AST trees (`pg-sql` `dcab22e`, Recursa `ca2431f`) were
+profiled for 15 seconds on each canonical workload. Sampling throughput was
+169,090.3 stmt/s for `corpus`, 126.2 stmt/s for `select_list_10000`, and
+1,627.8 stmt/s for `bool_chain`; these figures include profiler overhead and
+are not benchmark baselines. Raw samples, folded stacks, statistics, and SVGs
+are under `docs/perf/flamegraphs/2026-09-07-dcab22e/` (the directory date is
+UTC).
+
+The next optimization candidates, in priority order, are:
+
+1. Provenance folding. `OccurrenceStack::reduce` accounts for 21.8–28.8% of
+   self samples, with `ProvenanceCollector::finish_repeated` adding 4.7–6.5%
+   and occurrence-vector destruction another 2.0–2.9%.
+2. The LR driver. `lr::run` accounts for 12.2–15.5% directly; corpus allocation
+   attributed to it adds 4.1%.
+3. Generated lexical finalization. `__recursa_finalize` accounts for
+   9.3–14.0%, while generated `lex` orchestration adds 4.5–7.0%. The finalizer
+   currently performs separate classification and diagnostic-normalization
+   passes over every record.
+4. Arena list growth. The generated `ArenaVec1::push` reduction for a wide
+   select list accounts for 15.8% (13.6% allocation); retained old bump-vector
+   buffers also surface as 7.8% in `madvise` when the parse arena is destroyed.
+5. Arena boxing in recursive expression reductions. The generated `Expr::And`
+   action, which performs two `ArenaBox::new_in` calls per operator, accounts
+   for 10.4% of the deep boolean workload. A simple `Expr::ColumnRef` move adds
+   another 3.6%, indicating that large enum movement/value-stack traffic also
+   deserves attention alongside allocation itself.
+
+## Benchmark: 2026-09-08 — compact provenance folding
+
+The provenance fold path now delays fixed-size child-vector allocation when a
+default-policy node captures neither a span nor a descendant. Spanned parses
+still retain every generated child ordinal. Retained occurrences are
+pointer-sized handles to nodes in the existing parse arena, rather than
+recursively move-owned nodes inside child vectors. Tiny policy, accumulation,
+and collection helpers are inlined into the fold dispatcher.
+
+Three three-second corpus runs establish each median; the shape workloads use
+one three-second confirmation run:
+
+| Canonical workload | Before | After | Change |
+| --- | --: | --: | --: |
+| `corpus` | 180,753.8 stmt/s | 211,630.8 stmt/s | **+17.1%** |
+| `select_list_10000` | 134.9 stmt/s | 158.1 stmt/s | **+17.2%** |
+| `bool_chain` | 1,754.2 stmt/s | 2,145.7 stmt/s | **+22.3%** |
+
+The final ten-second sample measured 204,257.3 corpus stmt/s under profiler
+overhead. Provenance helper frames (`finish_repeated`, occurrence accumulation,
+and recursive occurrence destruction) disappeared from the top attribution;
+`OccurrenceStack::reduce` remains at 19.3% direct plus 1.7% allocation. The LR
+driver is effectively tied at 15.8% direct plus 5.0% allocation and is the
+next non-provenance runtime candidate. Artifacts are under
+`docs/perf/flamegraphs/2026-09-07-a6dfe8d/` (directory date is UTC).
+
+Correctness evidence comprises Recursa's complete all-features workspace
+suite, pg-sql's PostgreSQL-oracle suite (including 234 differential files and
+1,121 passing embedded tests), and warnings-as-errors Clippy gates for both
+modified Recursa core and pg-sql.
+
+## Profile: 2026-09-08 — after compact provenance folding
+
+The committed compact-provenance trees (`pg-sql` `b7508a1`, Recursa
+`75e6563`) were profiled for 15 seconds on each canonical workload. Sampling
+throughput was 211,026.2 stmt/s for `corpus`, 166.1 stmt/s for
+`select_list_10000`, and 2,099.5 stmt/s for `bool_chain`; these figures include
+profiler overhead and are not benchmark baselines. Raw samples, folded stacks,
+statistics, and SVGs are under
+`docs/perf/flamegraphs/2026-09-07-b7508a1/` (the directory date is UTC).
+
+The next measured optimization candidates, in priority order, are:
+
+1. Remaining provenance folding. `OccurrenceStack::reduce` accounts for 21.4%
+   of corpus self samples, 21.0% of the wide select, and 25.1% of the boolean
+   chain. The earlier helper and destruction costs are gone, leaving the core
+   fold dispatcher and its corpus allocations.
+2. The LR driver. `lr::run` accounts for 20.4% of corpus self samples including
+   allocation, 16.8% of the wide select, and 18.2% of the boolean chain.
+3. Generated lexical bookkeeping. `__recursa_finalize` plus generated `lex`
+   orchestration account for 19.8% of corpus self samples, 18.8% of the wide
+   select, and 26.1% of the boolean chain. Actual Logos scanning is only
+   1.3–4.0%, so the cost is predominantly record finalization and parser-facing
+   bookkeeping.
+4. Arena list growth for very wide grammar lists. The generated select-target
+   `ArenaVec1::push` reduction accounts for 16.1% of the wide-select samples;
+   arena teardown surfaces separately as 4.7% in `madvise`.
+5. Recursive expression construction and movement. The generated `Expr::And`
+   action accounts for 12.0% of the boolean-chain samples, with simple
+   `Expr::ColumnRef` construction adding 4.3% and recursive `Expr` destruction
+   another 2.5%. The action allocates two arena boxes per boolean operator.
+
+## Benchmark: 2026-09-08 — LR current-state and stack allocation
+
+The LR driver now retains its current automaton state in a local, matching
+bison's `yystate` shape instead of reloading the frame it just pushed. Its
+ordinary-heap state stack starts with capacity for 32 frames, avoiding
+geometric growth without putting transient parser storage in the AST arena.
+
+Because repeated release builds caused substantial thermal drift, the final
+comparison froze distinct baseline and optimized binaries and alternated them
+directly. Two five-second corpus runs per binary measured 207,970.4 and
+208,817.6 stmt/s before, versus 215,253.9 and 215,634.6 stmt/s after: **+3.4%**
+by median. Five-second shape confirmations measured 148.4 to 155.8 stmt/s for
+`select_list_10000` (**+5.0%**) and 2,090.2 to 2,170.2 stmt/s for `bool_chain`
+(**+3.8%**). Corpus parse allocations fell from 14.4 to 12.1 per statement;
+requested bytes rose from 8,296 to 8,464 per statement because the state stack
+buys its final capacity up front.
+
+Three isolated experiments were rejected. Retaining lookahead across reductions
+reduced the warm corpus median by 6.6%; default reductions already avoid most
+reads, so the cache-state branch cost more than the repeated slice access.
+Replacing hot state, rule, action, and goto indexing with `get_unchecked` reduced
+the corpus median by 4.9%, confirmed by a five-second run; LLVM already removed
+useful checks and forced inlining bloated the loop. Packing the shift/goto marker
+and state into a four-byte frame reduced the median by 4.7%; marker masking cost
+more than the unused stack bandwidth.
+
+Correctness evidence comprises Recursa's exhaustive all-targets/all-features
+workspace suite and pg-sql's PostgreSQL-oracle suite, including all 234
+differential files and 1,121 passing embedded tests. Normal warnings-as-errors
+Clippy gates pass for Recursa core and pg-sql.
+
+## Profile: 2026-09-08 — after LR state-stack optimization
+
+The committed LR optimization (`pg-sql` `0058543`, Recursa `0d516c2`) was
+profiled for 15 seconds on each canonical workload. Sampling throughput was
+194,978.1 stmt/s for `corpus`, 137.1 stmt/s for `select_list_10000`, and
+1,936.2 stmt/s for `bool_chain`; profiler overhead and machine load make these
+diagnostic rates rather than benchmark baselines. Raw samples, folded stacks,
+statistics, and SVGs are under
+`docs/perf/flamegraphs/2026-09-08-0058543/`.
+
+The next measured optimization candidates, in priority order, are:
+
+1. Provenance folding. `OccurrenceStack::reduce` accounts for 21.2% of corpus
+   self samples including allocation, 18.2% of the wide select, and 23.5% of
+   the boolean chain. Corpus root finalization and its public-capture scan add
+   another 2.2%.
+2. Generated lexical copying and finalization. Generated `lex`,
+   `__recursa_finalize`, and `LexBuilder::append` together account for 21.8%
+   of corpus self samples, 18.8% of the wide select, and 27.2% of the boolean
+   chain. The public generated `lex` path copies the runtime records and trivia,
+   then finalization walks every record once for classification and again for
+   diagnostic normalization. Actual Logos scanning is only 1.1–3.9%.
+3. Residual LR driver interpretation. `lr::run` accounts for 19.3% of corpus
+   self samples including allocation, 14.1% of the wide select, and 16.7% of
+   the boolean chain. The state-local and capacity change reduced all three
+   shares, but the table/action/reduction loop remains a broad cost.
+4. Wide arena-list growth and release. The generated select-target
+   `ArenaVec1::push` reduction accounts for 18.2% of wide-select samples, while
+   arena release surfaces separately as 11.5% in `madvise`. The adjacent
+   `SelectExprItem` and `SelectItem` construction actions add 8.0%.
+5. Recursive expression boxing, movement, and destruction. The generated
+   `Expr::And` action accounts for 13.9% of boolean-chain samples, simple
+   `Expr::ColumnRef` construction adds 4.5%, and recursive `Expr` destruction
+   adds 2.9%. Each `AND` action moves two expression values into separate arena
+   boxes before pushing the parent enum.
+
+## Profile: 2026-09-08 — current-runtime repeat
+
+The current trees (`pg-sql` `98b3c11`, Recursa `0d516c2`) were re-profiled
+for 15 seconds on each canonical workload. The intervening pg-sql commit
+changes only psql grammar, CI, and documentation, so this is an independent
+repeat of the same PostgreSQL parser runtime. Each profile contains roughly
+12,200 main-thread samples. Sampling throughput was 193,614.1 stmt/s for
+`corpus`, 141.5 stmt/s for `select_list_10000`, and 2,047.6 stmt/s for
+`bool_chain`; these remain diagnostic rates rather than benchmark baselines.
+Artifacts are under
+`docs/perf/flamegraphs/2026-09-08-98b3c11-dirty/`.
+
+The next five measured hotspots are:
+
+1. Provenance folding. `OccurrenceStack::reduce`, including allocation
+   attributed to it, accounts for 21.9% of corpus self samples, 19.0% of the
+   wide select, and 25.7% of the boolean chain.
+2. Generated lexical copying and finalization. Generated `lex`,
+   `__recursa_finalize`, `LexBuilder::append`, token iteration, and consumed-
+   fence bookkeeping together account for 21.9% of corpus, 17.8% of the wide
+   select, and 26.5% of the boolean chain. Actual Logos scanning is only 4.2%,
+   0.9%, and 2.2%, respectively.
+3. Residual LR driver interpretation. `lr::run`, including allocation
+   attributed to it, accounts for 20.8% of corpus, 14.5% of the wide select,
+   and 18.0% of the boolean chain.
+4. Wide arena-list growth and release. The generated `Vec1<SelectItem>::push`
+   reduction accounts for 18.1% of wide-select samples, arena release costs
+   11.3% in `madvise`, and adjacent `SelectExprItem` and `SelectItem`
+   construction actions add 8.2%.
+5. Recursive expression boxing, movement, and destruction. The generated
+   `Expr::And` action accounts for 13.7% of boolean-chain samples, the
+   `Expr::ColumnRef` action adds 4.4%, and recursive `Expr` destruction adds
+   2.7%.
+
+## Benchmark: 2026-09-08 — provenance policy and stack-slot folding
+
+Recursa's occurrence reducer now resolves a grouped site's capture policy once
+and avoids constructing token occurrences when that policy cannot capture. A
+non-empty reduction writes its result into the first popped occurrence-stack
+slot and truncates only the remaining slots, instead of truncating every
+popped entry and pushing an 88-byte replacement.
+
+The final comparison froze the original and optimized release binaries and
+alternated two five-second runs per workload. The deliberately conservative
+direct result was:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 229,470.8 | 230,820.5 | **+0.6%** |
+| `select_list_10000` | 167.3 | 173.6 | **+3.8%** |
+| `bool_chain` | 2,285.5 | 2,345.6 | **+2.6%** |
+
+An isolated policy-versus-slot-reuse pairing measured an additional 2.1%,
+1.6%, and 2.6%, respectively, but the table retains the noisier end-to-end
+comparison rather than composing intermediate results. The diagnostic profile
+showed `item_occurrence` fall from 1.10% to 0.54% on corpus, 0.88% to 0.26% on
+the wide select, and 1.76% to 0.52% on the boolean chain. Inclusive
+`OccurrenceStack::reduce` attribution fell from 21.88% to 21.37% on corpus and
+25.74% to 24.14% on the boolean chain; fixed-duration sampling throughput makes
+the wide-select percentage unsuitable as a before/after rate.
+
+Correctness evidence is Recursa's stable exhaustive
+`cargo test --workspace --all-targets --all-features` suite and its matching
+warnings-as-errors Clippy gate. Two generated-fixture targets initially failed
+because both nightly and stable had populated the same persistent test target;
+after isolating those build-only directories, the mandated stable suite passed
+cleanly.
+
+## Profile: 2026-09-08 — after provenance folding optimization
+
+The committed trees (`pg-sql` `fc3588a`, Recursa `e8a2272`) were profiled for
+15 seconds on each canonical workload. Sampling throughput was 212,083.5
+stmt/s for `corpus`, 164.5 stmt/s for `select_list_10000`, and 2,174.9 stmt/s
+for `bool_chain`; these are diagnostic rates under profiler overhead rather
+than benchmark baselines. Raw samples, folded stacks, statistics, and SVGs are
+under `docs/perf/flamegraphs/2026-09-08-fc3588a/`.
+
+The next five measured hotspots, ranked by broad impact first and
+shape-specific impact second, are:
+
+1. Remaining provenance folding. Inclusive `OccurrenceStack::reduce`
+   attribution is 21.8% on corpus, 19.3% on the wide select, and 23.5% on the
+   boolean chain. The optimized `item_occurrence` component is now 0.68%,
+   0.24%, and 0.48%, respectively.
+2. Generated lexical copying and finalization. Generated `lex`,
+   `__recursa_finalize`, and `LexBuilder::append` remain roughly 18–24% across
+   the shapes, while actual Logos scanning is 4.4%, 1.1%, and 2.2%.
+3. Residual LR interpretation. `lr::run`, including allocation attributed to
+   it, is 20.3% on corpus, 14.6% on the wide select, and 17.3% on the boolean
+   chain.
+4. Wide arena-list growth and release. The select-target root reduction is
+   18.2% of the wide workload, adjacent item construction adds 8.5%, and arena
+   release costs another 8.8% in `madvise`.
+5. Recursive expression construction and destruction. The main boolean
+   expression action is 16.0% of the boolean workload, the adjacent column
+   reference action is 4.5%, and recursive expression destruction is 2.6%.
+
+## Profile: 2026-09-08 — provenance-folding follow-up repeat
+
+The current runtime (`pg-sql` `fc3588a`, Recursa `e8a2272`) was sampled again
+for 15 seconds per canonical workload. Sampling throughput was 222,961.7
+stmt/s for `corpus`, 177.3 stmt/s for `select_list_10000`, and 2,307.9 stmt/s
+for `bool_chain`. Artifacts are under
+`docs/perf/flamegraphs/2026-09-08-fc3588a-dirty/`.
+
+Ranked by broad cross-workload share first, then shape-specific severity, the
+next five hotspots are:
+
+1. Remaining provenance folding. Inclusive `OccurrenceStack::reduce` is
+   21.4% on corpus, 20.1% on the wide select, and 25.4% on the boolean chain.
+2. Generated lexical copying and finalization. `lex`,
+   `__recursa_finalize`, `LexBuilder::append`, and record iteration total
+   roughly 22.5%, 17%, and 25.8%, respectively; actual Logos scanning is only
+   4.0%, 1.1%, and 2.4%.
+3. Residual LR interpretation. `lr::run`, including attributed allocation,
+   is 20.3% on corpus, 15.6% on the wide select, and 17.4% on the boolean
+   chain.
+4. Wide arena-list growth and release. The select-target root reduction is
+   18.3% of the wide workload, adjacent item construction adds 8.6%, and arena
+   release is 6.8% in `madvise`.
+5. Recursive expression construction and destruction. The main boolean
+   expression action is 13.3%, the adjacent column-reference action is 4.8%,
+   and recursive expression destruction is 2.9%.
+
+## Profile: 2026-09-08 — provenance-folding second follow-up
+
+The unchanged committed runtime (`pg-sql` `fc3588a`, Recursa `e8a2272`) was
+sampled again for 15 seconds per canonical workload. Artifacts are under
+`docs/perf/flamegraphs/2026-09-08-fc3588a-dirty-2/`. This invocation of
+macOS `sample` was unusually intrusive: profiled throughput was 122,297.0
+stmt/s for `corpus`, 127.0 stmt/s for `select_list_10000`, and 897.8 stmt/s
+for `bool_chain`. An immediately following clean five-second run produced
+227,282.8, 169.8, and 2,385.0 stmt/s, respectively, reproducing the previous
+clean range. The ranking therefore uses sample shares, not the profiled rates.
+
+The next five hotspots, ranked by broad cross-workload impact first and
+shape-specific severity second, are:
+
+1. Remaining provenance folding. `OccurrenceStack::reduce`, including
+   allocator samples attributed to it, accounts for 20.7% of corpus, 18.0%
+   of the wide select, and 22.7% of the boolean chain.
+2. Generated lexical copying and finalization. Generated `lex`,
+   `__recursa_finalize`, `LexBuilder::append`, and token-record iteration
+   account for about 20.0%, 17.8%, and 26.4%, respectively. Actual Logos DFA
+   scanning is a separate 4.5%, 1.2%, and 2.6%.
+3. Residual LR interpretation. `lr::run`, including allocator samples
+   attributed directly to it, accounts for 21.2%, 13.8%, and 17.6%,
+   respectively; generated reducer dispatch remains adjacent rather than
+   included in those figures.
+4. Wide arena-list growth and release. The wide select-target root reduction
+   accounts for 20.0%, its adjacent `SelectItem` and `SelectExprItem`
+   construction contributes another 9.6%, and arena/allocator release leaves
+   10.5% directly in `madvise`.
+5. Recursive expression construction and destruction. On `bool_chain`, the
+   main expression reduction accounts for 14.5% including attributed
+   allocation, the adjacent expression reduction contributes 3.5%, and
+   recursive `Expr` destruction is 4.2%.
+
+## Benchmark: 2026-09-08 — lexical record ownership transfer
+
+The generated `lex` path now consumes the raw runtime `LexResult` and moves its
+owned token and trivia vectors into grammar-specific finalization. Previously
+it borrowed both vectors and cloned them before classification. The change
+removes one allocation per pg-sql statement; parse-phase allocation is
+unchanged.
+
+| Canonical workload | Lex allocations before | Lex allocations after | Lex bytes before | Lex bytes after |
+| --- | --: | --: | --: | --: |
+| `corpus` (33,692 statements) | 225,051 | 191,359 | 43,096,560 | 31,960,608 |
+| `select_list_10000` | 29 | 28 | 2,052,936 | 1,572,864 |
+| `bool_chain` | 21 | 20 | 146,376 | 98,304 |
+
+Three clean five-second runs produced median throughput of 238,288.8 stmt/s
+for `corpus`, 177.2 stmt/s for `select_list_10000`, and 2,414.0 stmt/s for
+`bool_chain`. Relative to the immediately preceding clean reference
+(227,282.8, 169.8, and 2,385.0 stmt/s), these are approximately +4.8%, +4.4%,
+and +1.2%; the allocation deltas are deterministic, while the timing deltas
+remain short-run measurements.
+
+## Profile: 2026-09-08 — after lexical record ownership transfer
+
+The committed trees (`pg-sql` `28af0bf`, Recursa `420c0fc`) were sampled for
+15 seconds on each canonical workload. Profiled throughput was 218,621.0
+stmt/s for `corpus`, 174.4 stmt/s for `select_list_10000`, and 2,251.6 stmt/s
+for `bool_chain`; preceding clean two-second runs produced 233,905.0, 176.4,
+and 2,391.7 stmt/s, respectively. Raw samples, folded stacks, statistics, and
+SVGs are under `docs/perf/flamegraphs/2026-09-08-28af0bf/`.
+
+Ranked by broad cross-workload share first, then shape-specific severity, the
+next five hotspots are:
+
+1. Remaining provenance folding. Inclusive `OccurrenceStack::reduce`
+   attribution, including allocator samples, is 21.7% on corpus, 19.6% on the
+   wide select, and 24.5% on the boolean chain.
+2. Generated lexical classification and finalization. Generated `lex`,
+   `__recursa_finalize`, `LexBuilder::append`, and token iteration together
+   account for about 21.7%, 17.4%, and 26.4%, respectively. Candidate-kind
+   `slice_contains` plus PHF lookup alone account for 6.6%, 8.1%, and 11.1%;
+   actual Logos DFA scanning is only 4.4%, 1.2%, and 2.1%.
+3. Residual LR interpretation. `lr::run`, including allocator samples
+   attributed directly to it, accounts for 20.6%, 16.0%, and 17.7%,
+   respectively; generated reducer bodies remain adjacent rather than
+   included in these figures.
+4. Wide-list growth, value movement, and release. The wide select-target root
+   reduction accounts for 18.8%, adjacent `SelectExprItem` and `SelectItem`
+   construction adds 11.0%, and arena release is 6.5% in `madvise`.
+   `_platform_memmove` is 20.9% of leaf samples and is predominantly
+   attributed back to these reduction/value-stack paths rather than counted
+   again.
+5. Recursive expression construction and destruction. On `bool_chain`, the
+   main expression reduction accounts for 15.3%, an adjacent expression
+   reduction contributes 4.8%, and recursive `Expr` destruction is 2.4%.
+   `_platform_memmove` is 14.2% of leaf samples and is chiefly carried back to
+   the expression reduction rather than counted separately.
+
+The ownership-transfer prediction held: allocator samples attributed to the
+generated `lex` function fell from 3.07% to 2.42% on corpus, 0.60% to 0.08%
+on the wide select, and 0.81% to 0.26% on the boolean chain. Total lexical
+share remains high because classification and finalization, not the removed
+record clone, now dominate that path.
+
+## Benchmark: 2026-09-08 — word-candidate match dispatch
+
+Generated word classification now dispatches candidate token kinds through a
+Rust `match` rather than calling slice `contains` over every grammar carrier
+kind for every lexical record. A code-generation regression test requires the
+match shape and rejects reintroduction of the slice scan.
+
+Three clean five-second runs before and after the change produced:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 238,288.8 | 244,497.1 | **+2.6%** |
+| `select_list_10000` | 177.2 | 189.1 | **+6.7%** |
+| `bool_chain` | 2,414.0 | 2,518.0 | **+4.3%** |
+
+Allocation counts and bytes were unchanged on all three workloads, as
+expected for dispatch-only work. Ten-second confirmation profiles contain no
+`SliceContains::slice_contains` samples; the old profiles attributed 3.8%,
+3.7%, and 5.8% to that frame. Inclusive generated-finalization attribution
+fell from 9.8% to 6.4% on corpus, 10.1% to 7.4% on the wide select, and 14.7%
+to 10.8% on the boolean chain. The confirmation artifacts are under
+`docs/perf/flamegraphs/2026-09-08-28af0bf-dirty-match-dispatch/`.
+
+PHF keyword lookup is now the largest isolated lexical-classification leaf at
+2.6%, 4.9%, and 6.8%, respectively.
+
+## Benchmark: 2026-09-08 — bucketed word classification
+
+The generated word classifier now partitions folded keyword keys by byte
+length and first byte. Buckets of at most eight keywords use direct byte
+comparisons; denser buckets retain the perfect-hash lookup as a bounded
+fallback. This preserves the earlier protection against grammar-sized linear
+scans while avoiding SipHash work for ordinary vocabulary shapes.
+
+Three clean five-second runs against the preceding match-only classifier
+produced:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 244,497.1 | 253,126.2 | **+3.5%** |
+| `select_list_10000` | 189.1 | 196.1 | **+3.7%** |
+| `bool_chain` | 2,518.0 | 2,753.0 | **+9.3%** |
+
+Ten-second confirmation profiles contain no PHF samples on the wide-list or
+boolean-chain workloads; the fallback appears in only two folded corpus
+stacks. The complete classifier leaf is 2.6% on corpus and 1.5% on the
+boolean chain, versus 2.6% and 6.8% for PHF alone before bucketing. Artifacts
+are under `docs/perf/flamegraphs/2026-09-08-28af0bf-dirty/`.
+
+A follow-up fused classification and diagnostic-normalization pass was
+rejected. Against the bucketed-classifier medians it was neutral on corpus
+(+0.5%) but regressed the wide list by 3.3% and the boolean chain by 2.3%.
+The two separately optimized loops are retained.
+
+## Benchmark: 2026-09-08 — co-located LR rule metadata
+
+The decoded LR tables now collocate the five fields read by every reduction
+in a 16-byte rule descriptor. The driver performs one rule-index lookup for
+left-hand side, state pops, semantic-value pops, reduce-action presence, and
+tail policy instead of independently indexing five vectors. The original
+decoded vectors remain available to lookahead correction and the public
+decoded-table representation; collocation affects only the successful parse
+hot path. A compile-time size assertion prevents padding from silently
+inflating the descriptor.
+
+Frozen baseline and candidate binaries were alternated for three five-second
+runs per canonical workload. Median throughput was:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 253,103.6 | 258,506.8 | **+2.1%** |
+| `select_list_10000` | 192.2 | 191.8 | -0.2% |
+| `bool_chain` | 2,758.1 | 2,768.2 | +0.4% |
+
+The wide-list delta is noise-level and no workload materially regressed.
+Per-pass allocation counts and requested bytes were identical before and
+after on all three workloads: the descriptor is populated during the tables'
+existing one-time lazy decode, before the measured parse pass.
+
+Three follow-up experiments were rejected:
+
+- Passing the already-read `pact` row base into ordinary action lookup changed
+  frozen A/B medians by -0.5% on corpus, -0.5% on the wide select, and +1.0%
+  on the boolean chain. The source-level duplicate load is not a useful
+  optimization once compiled.
+- Mutating list accumulators in place on the type-erased value stack was
+  neutral on corpus and the wide select and regressed the boolean chain by
+  1.1%. Moving the small `ArenaVec1` header off and back onto the stack is not
+  the source of the wide-list cost.
+- Growing `ArenaVec1` fourfold reduced the wide parse's allocation count from
+  23 to 19 and improved one diagnostic three-second run by 10.4%, but raised
+  requested parse bytes from 16.8 MB to 26.2 MB (+56%). Staging every arena
+  list in a standard `Vec` before one exact arena copy also failed the memory
+  gate: corpus parse allocations rose from 12.1 to 15.2 per statement and the
+  wide parse rose to 35 allocations and 19.1 MB.
+
+The wide-list evidence therefore points to a bounded chunked or threshold-
+switched staging representation: small lists must remain allocation-free in
+the AST arena, while very wide lists must avoid both retained geometric bump
+buffers and a second complete global-heap growth history.
+
+## Investigation: 2026-09-08 — bounded wide-list staging
+
+Four parser-only staging designs were prototyped against the committed
+co-located-rule baseline. All retained the public contiguous `ArenaVec1` AST
+representation, so a staged list had to be flattened once at completion.
+
+- Standard-heap chunks beginning near 256 KiB improved a diagnostic wide-list
+  run by 3.5%, but increased wide requested bytes by 7.5% and regressed quick
+  corpus and boolean runs by 1.7% and 2.4%.
+- A 4 MiB byte threshold selected the wrong lists: `SelectItem` remained below
+  the threshold at 10,000 elements, while 113 corpus lists of large enum types
+  crossed it. Wide allocations were unchanged and corpus gained unwanted
+  staging allocations.
+- A fixed 8,192-element threshold triggered only on the intended wide list,
+  but its final whole-list copy regressed the frozen wide median by 4.2% and
+  increased requested bytes by 4.7%.
+- Fixed 256 KiB chunks allocated inside the existing bump arena made wide
+  requested bytes effectively identical (16,778,320 to 16,778,872) and
+  improved the frozen wide median from 197.1 to 201.5 stmt/s (**+2.2%**).
+  However, the larger accumulator and general list branch regressed corpus
+  from 255,552.2 to 249,759.1 stmt/s (**-2.3%**) and the boolean chain from
+  2,783.9 to 2,753.4 stmt/s (**-1.1%**).
+
+All four implementations were rejected and Recursa was restored to its clean
+committed tree. The experiment establishes a representation constraint: a
+transparent chunked accumulator cannot beat the current contiguous arena
+vector broadly while it enlarges every list value and must copy the complete
+wide list at finalization. Further progress requires either an opt-in wide-list
+grammar policy, a non-contiguous public list representation, or a same-size
+tagged accumulator integrated below `bumpalo::collections::Vec`.
+
+## Benchmark: 2026-09-08 — direct stack-to-arena value transfer
+
+Generated reduction actions now move a value directly from the type-erased
+semantic stack into the allocation for its innermost arena-boxed field.
+Previously each action returned the complete value from `ValueStack::pop` and
+then passed it to `ArenaBox::new_in`, materializing an intermediate value on the
+expression-construction path. The public AST, allocation policy, and provenance
+behavior are unchanged.
+
+Frozen baseline and candidate binaries were alternated for three five-second
+runs per canonical workload. Median throughput was:
+
+| Canonical workload | Before statements/s | After statements/s | Change |
+| --- | --: | --: | --: |
+| `corpus` | 261,220.7 | 261,697.9 | +0.2% |
+| `select_list_10000` | 197.7 | 206.6 | **+4.5%** |
+| `bool_chain` | 2,775.3 | 2,916.6 | **+5.1%** |
+
+Allocation counts and requested bytes were identical before and after on all
+three workloads: corpus parse allocations remained 407,317 / 285,167,872
+bytes, the wide parse remained 23 / 16,778,320 bytes, and the boolean parse
+remained 20 / 1,050,448 bytes. A drop-counted runtime test pins the ownership
+transfer, and a code-generation test prevents arena-boxed stack values from
+returning to the intermediate `ArenaBox::new_in(pop())` shape.
+
+## Investigation: 2026-09-08 — paired recursive-child arena reservation
+
+A follow-up prototype reserved one contiguous `[Expr; 2]` arena region for
+the separately owned left and right `ArenaBox<Expr>` fields of generated Pratt
+binary reductions. The specialization applied only to two same-node recursive
+boxed fields; heterogeneous and non-recursive fields kept the existing path.
+
+After forcing the larger helper inline to match the retained single-value
+transfer path, alternating three five-second `bool_chain` runs produced median
+throughput of 2,882.7 statements/s for the frozen baseline and 2,880.8
+statements/s for the candidate (-0.1%). Parse allocation count and requested
+bytes remained identical at 20 and 1,050,448. Earlier measurements spanning a
+laptop suspend/resume cycle were discarded.
+
+The prototype was rejected and Recursa restored to its committed tree. Once
+the semantic value moves directly from the stack into its arena box, the
+second bump-pointer reservation is not a measurable expression-construction
+cost. Further expression work should target the large parent value's semantic
+stack round-trip or recursive destruction rather than box reservation count.
+
+## Investigation: 2026-09-08 — arena-backed Pratt value staging
+
+A prototype stored completed arena-AST Pratt values behind a pointer on the
+semantic stack. A recursive boxed consumer could adopt that allocation instead
+of copying the large parent enum from the semantic stack into a new arena box;
+ordinary consumers still popped the authored unboxed type. Drop-counted tests
+covered normal pop, allocation adoption, and failed-parse unwind.
+
+Blanket staging confirmed the copy is expensive: alternating three five-second
+`bool_chain` runs improved median throughput from 2,838.5 to 2,994.8
+statements/s (+5.5%), while corpus and wide throughput were neutral. It was not
+acceptable as implemented because unboxed atomic expressions retained their
+temporary arena allocation: `select_list_10000` parse allocation doubled from
+16,778,320 to 33,555,616 bytes, and corpus parse allocation rose from
+285,167,872 to 313,375,904 bytes.
+
+A second version used bumpalo's allocator interface to rewind an arena-backed
+value when an unboxed pop consumed the most recent allocation. This restored
+wide allocation to 16,778,416 bytes and reduced corpus allocation to
+278,039,472 bytes. After reducing the reclaim path to one slot inspection, the
+boolean median remained 3.9% faster and corpus was neutral, but the 10,000-item
+wide median regressed from 187.4 to 180.4 statements/s (-3.7%) because every
+atomic expression still paid an allocate/reclaim cycle.
+
+Restricting arena staging to Pratt variants containing `Self` removed that
+wide allocation cycle, but also removed the target benefit: stable
+`bool_chain` medians were 2,927.2 for baseline and 2,924.7 for the candidate
+(-0.1%). The prototype was therefore rejected and both codebases restored.
+Avoiding this copy without a memory or atomic-expression penalty needs a
+context-sensitive representation for boxed Pratt occurrences (for example a
+distinct lowered symbol), not a blanket node representation. The next bounded
+hypothesis remains recursive AST destruction.
+
+## Investigation: 2026-09-08 — discovery coverage and LR grammar size
+
+The three canonical flame workloads remain the quick suite. A separate
+discovery suite now adds the pg-sql/PostgreSQL-only aggregate corpus, eight
+top-level statement-family partitions, `insert_values_10000`,
+`in_list_10000`, `nested_subquery_15`, a 50,596-byte lexical/trivia mix, and
+105 real corpus parse-error items rejected by both parsers. The macOS driver
+accepts `quick` or `discovery` and samples each workload separately; the flame
+harness can now run PostgreSQL as an engine as well.
+
+Removing the unrelated sqlparser acceptance gate grows the corpus from 33,692
+statements / 2,884,213 bytes to 42,972 / 3,720,653. Temporary LR coverage
+counters showed unique-state coverage rising from 3,493 to 6,858 (+96.3%) and
+unique-rule coverage from 2,424 to 4,609 (+90.1%). The broader membership is
+therefore important for discovery even though earlier measurement showed that
+it barely changes the aggregate pg-sql/PostgreSQL timing ratio.
+
+The accepted discovery corpus partitions exactly as follows:
+
+| Family | Statements | Bytes |
+| --- | --: | --: |
+| Query | 15,643 | 1,423,215 |
+| DML | 6,402 | 680,728 |
+| DDL | 13,150 | 1,120,642 |
+| Transaction | 1,412 | 39,256 |
+| Session | 2,222 | 92,687 |
+| Access control | 433 | 27,007 |
+| Cursor | 372 | 12,528 |
+| Utility | 3,338 | 324,590 |
+| **Total** | **42,972** | **3,720,653** |
+
+One-second unprofiled discovery loops (diagnostic rates, not benchmark
+baselines) immediately demonstrate why the partitions matter:
+
+| Workload | pg-sql MiB/s | PostgreSQL MiB/s | pg-sql/PostgreSQL time |
+| --- | --: | --: | --: |
+| Aggregate corpus | 22.259 | 71.746 | 3.22x |
+| Query | 19.902 | 68.275 | 3.43x |
+| DML | 29.165 | 91.439 | 3.14x |
+| DDL | 26.500 | 75.082 | 2.83x |
+| Transaction | 47.654 | 57.314 | 1.20x |
+| Session | 42.186 | 70.247 | 1.67x |
+| Access control | 30.776 | 76.918 | 2.50x |
+| Cursor | 21.316 | 54.435 | 2.55x |
+| Utility | 19.361 | 66.520 | 3.44x |
+| Insert values | 25.149 | 97.849 | 3.89x |
+| IN list | 15.321 | 105.039 | 6.86x |
+| Nested subquery | 13.202 | 66.667 | 5.05x |
+| Lexical mix | 65.878 | 269.852 | 4.10x |
+| Rejected-input paths | 7.774 | 68.786 | 8.85x |
+
+The aggregate's 3.22x conceals a 1.20x-8.85x range. Longer alternating runs
+remain necessary before judging an optimization; these loops establish where
+to profile and which regressions an aggregate alone would hide.
+
+Generation-stage and kernel-origin instrumentation then accounted for the
+20,715 states, 14,944 rules, and 4,279 nonterminals. The dominant findings are:
+
+- 26 flattened content-token atom sets produce 5,469 rules; 6,578 states
+  (31.8%) have exclusively token-action kernels. PostgreSQL instead shares
+  keyword categories in 960 Bison rules.
+- Expr's 22 restricted languages copy 2,205 rules. With attachment
+  restrictions, this origin has 2,301 rules and 2,415 exclusive states
+  (11.7%). PostgreSQL's `a_expr`, `b_expr`, and `c_expr` have 104 rules.
+- 1,504 public parse roots produce 1,504 nonterminals/rules and 3,007 exclusive
+  start states. A Statement-only counterfactual reduced the machine to 16,245
+  states (-4,470, or -21.6%) before deliberately failing the normal generated
+  public-parser contract.
+- The 957 non-public sequence types are exactly 746 attachment units, 87
+  presence envelopes, and 124 fixed sequences. Helper conflict repair adds
+  only one nonterminal, two rules, and three states; it is not the cause.
+
+Temporary instrumentation was removed from Recursa after the counts were
+captured. The durable analysis is in
+[`docs/research/postgres-parser-performance.md`](../research/postgres-parser-performance.md#9-why-the-current-lr-machine-is-larger-than-bisons),
+and the implementation sequence is in
+[`docs/plans/2026-09-08-lr-grammar-footprint.md`](../plans/2026-09-08-lr-grammar-footprint.md).
+
+## Investigation: 2026-09-08 — LR footprint plan execution
+
+Recursa now retains a deterministic `LrAnalysis::statistics` report instead
+of the temporary counters used above. The checked-in pg-sql snapshot records
+4,279 nonterminals, 14,944 rules, 20,715 states, every origin/action family,
+per-table encoded and decoded sizes, all content-token memberships, all 117
+Pratt restrictions, and reachability for all 1,504 public starts.
+
+Three bounded implementations failed their runtime or size gates and were
+removed:
+
+| Prototype | Structural result | Alternating quick result | Decision |
+| --- | --- | --- | --- |
+| Shared multi-kind token categories | 11,986 rules (-19.8%), 16,651 states (-19.6%), encoded tables +2.3% | Corpus/boolean about 1-3% slower | Reject: added reductions dominate |
+| Separate Statement table | 16,245 reachable states, 1,742,380 encoded bytes | Not timed after size gate failed | Reject: duplicate is 94.9% of full table |
+| Narrow action/check cells | Half-sized decoded action/check storage, wide fallback preserved | Corpus -0.4%, boolean -0.9%, wide list -2.5% | Reject: lookup dispatch dominates |
+
+The narrow-table comparison used two frozen release binaries and three-second
+runs. Baseline/candidate corpus pairs were 269,608.7/268,542.3 and
+270,353.8/269,407.6 statements/s. The shape runs measured 212.0/206.8 for
+`select_list_10000` and 2,924.8/2,898.8 for `bool_chain`.
+
+A follow-up selected the narrow or wide representation once at parse entry
+and monomorphized the LR loop, removing width dispatch from individual
+lookups. Its flame binary grew from 13,530,296 to 13,548,328 bytes (+0.13%).
+Corpus pairs crossed (257,356.7/261,665.5 then 262,482.7/259,322.8), and the
+wide pair was effectively flat at 191.4/191.1 statements/s. Boolean chains
+still regressed in both pairs: 2,885.2/2,806.3 (-2.7%) and
+2,894.9/2,846.5 (-1.7%). This variant was also removed; specializing the full
+loop changes code layout enough to erase the reduced data-cache footprint.
+
+The bounded Pratt-attachment audit also closed off the proposed first step:
+96 restricted attachment rules have 93 distinct right-hand-side shapes. The
+only duplicate shape is `DEFAULT` followed by the same restricted Expr (four
+instances), so exact identity sharing can remove at most three rules. The
+2,205-rule opportunity lies in the 22 full Expr restriction languages and
+needs restriction-aware LR-core/action overlays; ordinary helper interning
+cannot reach it. Existing discovery profiles do not identify a hot transparent
+attachment or envelope family for Phase 5 factoring.

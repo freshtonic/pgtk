@@ -1,0 +1,254 @@
+#[cfg(test)]
+mod tests {
+    use recursa::Parse;
+
+    use super::*;
+    use crate::ast::test_support::*;
+
+    /// `CREATE AGGREGATE name(args) ( ... SFUNC = balkifnull(int8, int4) ... )`
+    /// — the aggregates.sql corpus exercises a `def_arg` whose value is a
+    /// function-style name with type-name arguments. PG's `def_arg` accepts
+    /// this via `func_type → Typename → GenericType → name opt_type_modifiers`
+    /// (`opt_type_modifiers` is `'(' expr_list ')'`), but pg-sql's
+    /// `TypePrecision` is restricted to signed-integer modifiers, so the
+    /// function-style form needs a dedicated `DefArg::FuncWithArgs` variant.
+    #[test]
+    fn parse_create_aggregate_funcname_def_arg() {
+        for src in [
+            "CREATE AGGREGATE balk(int4) ( SFUNC = balkifnull(int8, int4), STYPE = int8 )",
+            "CREATE AGGREGATE balk(int4) ( SFUNC = balkifnull(int8, int4), STYPE = int8, PARALLEL = SAFE, INITCOND = '0' )",
+            "CREATE AGGREGATE balk(int4) ( SFUNC = int4_sum(int8, int4), STYPE = int8, COMBINEFUNC = balkifnull(int8, int8), PARALLEL = SAFE, INITCOND = '0' )",
+        ] {
+            let lexed = crate::lex(src);
+            assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+            let mut input = lexed.input();
+            let _stmt_parsed = crate::ast::Statement::parse(&mut input)
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
+                ;
+            let _stmt = _stmt_parsed.ast();
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
+        }
+    }
+
+    #[test]
+    fn parse_drop_aggregate_typed() {
+        let lexed = crate::lex("DROP AGGREGATE myavg(numeric)");
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = DropAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert_eq!(stmt.targets.len(), 1);
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_drop_aggregate_star() {
+        let lexed = crate::lex("DROP AGGREGATE IF EXISTS test_agg(*)");
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = DropAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.if_exists.is_some());
+        assert!(matches!(
+            stmt.targets.first().unwrap().args,
+            AggregateArgs::Star
+        ));
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_create_aggregate_modern() {
+        let lexed = crate::lex(
+            "CREATE AGGREGATE sumdouble (float8) (sfunc = float8pl, stype = float8)",
+        );
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.signature.definition.is_some());
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_create_aggregate_old_style() {
+        let lexed = crate::lex(
+            "CREATE AGGREGATE newavg (sfunc = int4_avg_accum, basetype = int4, stype = _int8)",
+        );
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.signature.definition.is_none());
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_create_aggregate_zero_args() {
+        let lexed = crate::lex("CREATE AGGREGATE newcnt (*) (sfunc = int8inc, stype = int8)");
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.signature.definition.is_some());
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_create_aggregate_ordered_set() {
+        let lexed = crate::lex(
+            "CREATE AGGREGATE my_percentile_disc(float8 ORDER BY anyelement) \
+             (stype = internal, sfunc = ordered_set_transition)",
+        );
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.signature.definition.is_some());
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn parse_create_aggregate_or_replace() {
+        let lexed = crate::lex(
+            "CREATE OR REPLACE AGGREGATE myavg (numeric) (stype = numeric, sfunc = numeric_add)",
+        );
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        assert!(stmt.or_replace);
+        assert!(input.is_eof());
+    }
+
+    #[test]
+    fn alter_aggregate_rename() {
+        let stmt = parse_stmt::<AlterAggregateStmt>("ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg2");
+        let stmt = stmt.ast();
+        assert_eq!(stmt.name.object(), "alt_agg1");
+        assert!(matches!(stmt.action, AlterAggregateAction::Rename(_)));
+        reparse_stable::<AlterAggregateStmt>("ALTER AGGREGATE alt_agg1(int) RENAME TO alt_agg2");
+    }
+
+    #[test]
+    fn alter_aggregate_owner() {
+        reparse_stable::<AlterAggregateStmt>(
+            "ALTER AGGREGATE alt_agg2(int) OWNER TO regress_alter_generic_user3",
+        );
+    }
+
+    #[test]
+    fn alter_aggregate_set_schema() {
+        reparse_stable::<AlterAggregateStmt>("ALTER AGGREGATE alt_agg2(int) SET SCHEMA alt_nsp2");
+    }
+
+    #[test]
+    fn alter_aggregate_star_args() {
+        reparse_stable::<AlterAggregateStmt>("ALTER AGGREGATE my_count(*) RENAME TO new_count");
+    }
+
+    #[test]
+    fn alter_aggregate_order_by_args() {
+        // Ordered-set aggregate signature with `ORDER BY`.
+        reparse_stable::<AlterAggregateStmt>(
+            "ALTER AGGREGATE my_percentile_disc(float8 ORDER BY anyelement) RENAME TO test_percentile_disc",
+        );
+    }
+
+    #[test]
+    fn alter_aggregate_variadic_order_by() {
+        reparse_stable::<AlterAggregateStmt>(
+            "ALTER AGGREGATE my_rank(VARIADIC \"any\" ORDER BY VARIADIC \"any\") RENAME TO test_rank",
+        );
+    }
+    /// `CREATE AGGREGATE name (BASETYPE = ..., STYPE = int[], ...)` — the
+    /// old-style single-group definition list (gram.y
+    /// `DefineStmt: CREATE AGGREGATE func_name old_aggr_definition`).
+    /// `def_arg` is `func_type`, which carries `opt_array_bounds`, so an
+    /// array type is a legal option value.
+    #[test]
+    fn parse_create_aggregate_old_style_array_stype() {
+        for src in [
+            "CREATE AGGREGATE myaggp05a(BASETYPE = int, SFUNC = tfnp, STYPE = int[], FINALFUNC = ffp, INITCOND = '{}')",
+            "CREATE AGGREGATE myaggp07a(BASETYPE = anyelement, SFUNC = tfnp, STYPE = int[], FINALFUNC = ffp, INITCOND = '{}')",
+            "CREATE AGGREGATE myaggp09b(BASETYPE = int, SFUNC = tf1p, STYPE = int[], INITCOND = '{}')",
+            "CREATE AGGREGATE myaggn05a(BASETYPE = int, SFUNC = tfnp, STYPE = anyarray, FINALFUNC = ffnp, INITCOND = '{}')",
+        ] {
+            let lexed = crate::lex(src);
+            assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+            let mut input = lexed.input();
+            let _stmt_parsed = crate::ast::Statement::parse(&mut input)
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
+                ;
+            let _stmt = _stmt_parsed.ast();
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
+        }
+    }
+
+    /// The old-style group is gram.y's `old_aggr_definition`, a list of
+    /// `IDENT '=' def_arg`, not a parameter list: `aggr_arg` is gram.y's
+    /// `func_arg`, which has no default.
+    #[test]
+    fn parse_create_aggregate_old_style_shape() {
+        let lexed = crate::lex("CREATE AGGREGATE a(BASETYPE = int, STYPE = int[])");
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        let CreateAggregateArgs::Old(definition) = &stmt.signature.args else {
+            panic!("expected an old-style definition");
+        };
+        assert_eq!(definition.elems.len(), 2);
+        assert_eq!(definition.elems[0].name.text(), "BASETYPE");
+        assert_eq!(definition.elems[1].name.text(), "STYPE");
+        assert!(stmt.signature.definition.is_none());
+        assert!(input.is_eof());
+    }
+
+    /// The modern `(arg_types) (def_list)` form keeps parsing as arguments.
+    #[test]
+    fn parse_create_aggregate_modern_args_unchanged() {
+        let lexed = crate::lex("CREATE AGGREGATE sum2(int8, int8) (SFUNC = sum3, STYPE = int8)");
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        let CreateAggregateArgs::Args(lists) = &stmt.signature.args else {
+            panic!("expected a plain argument group");
+        };
+        assert_eq!(lists.direct.len(), 2);
+        assert!(stmt.signature.definition.is_some());
+        assert!(input.is_eof());
+    }
+
+    // `path` and `nested` are keywords from 17 on: research, PostgreSQL 17,
+    // "Keywords" (REL_17_11 kwlist.h; not in REL_16_15 kwlist.h). Before 17
+    // they are identifiers, so they are valid `old_aggr_elem: IDENT '='
+    // def_arg` names (REL_16_15 gram.y 6324).
+    #[cfg(not(feature = "since-pg17"))]
+    #[test]
+    fn old_style_aggregate_takes_path_and_nested_before_17() {
+        assert_statements_parse(&[
+            "CREATE AGGREGATE a (basetype = int, sfunc = f, stype = int, path = 1)",
+            "CREATE AGGREGATE a (basetype = int, sfunc = f, stype = int, nested = 1)",
+        ]);
+    }
+
+    // From 17, `path` and `nested` are keywords and no `IDENT`: see
+    // `old_style_aggregate_takes_path_and_nested_before_17`.
+    #[cfg(feature = "since-pg17")]
+    #[test]
+    fn old_style_aggregate_rejects_path_and_nested_from_17() {
+        assert_statements_rejected(&[
+            "CREATE AGGREGATE a (basetype = int, sfunc = f, stype = int, path = 1)",
+            "CREATE AGGREGATE a (basetype = int, sfunc = f, stype = int, nested = 1)",
+        ]);
+    }
+}

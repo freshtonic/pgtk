@@ -1,0 +1,328 @@
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::test_support::*;
+
+    #[test]
+    fn copy_table_from_stdin_bare() {
+        let stmt = parse_stmt::<CopyStmt>("COPY t FROM STDIN");
+        let stmt = stmt.ast();
+        let CopyBody::Table(table) = &stmt.body else {
+            panic!("expected table body");
+        };
+        assert!(matches!(table.direction, CopyDirection::From));
+        assert!(matches!(table.target, CopyTarget::Stdin));
+        assert!(table.columns.is_none());
+        assert!(!table.program);
+        assert!(table.delimiter.is_none());
+        assert!(!table.with);
+        assert!(table.options.is_none());
+        assert!(table.where_clause.is_none());
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN");
+    }
+
+    #[test]
+    fn copy_table_to_stdout() {
+        let stmt = parse_stmt::<CopyStmt>("COPY t TO STDOUT");
+        let stmt = stmt.ast();
+        let CopyBody::Table(table) = &stmt.body else {
+            panic!("expected table body");
+        };
+        assert!(matches!(table.direction, CopyDirection::To));
+        assert!(matches!(table.target, CopyTarget::Stdout));
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT");
+    }
+
+    #[test]
+    fn copy_table_with_columns_from_stdin() {
+        let stmt = parse_stmt::<CopyStmt>("COPY t (a, b, c) FROM STDIN");
+        let stmt = stmt.ast();
+        let CopyBody::Table(table) = &stmt.body else {
+            panic!("expected table body");
+        };
+        assert!(table.columns.is_some());
+        reparse_stable::<CopyStmt>("COPY t (a, b, c) FROM STDIN");
+    }
+
+    #[test]
+    fn copy_table_to_file() {
+        reparse_stable::<CopyStmt>("COPY t TO 'foo.csv'");
+    }
+
+    #[test]
+    fn copy_table_from_file() {
+        let stmt = parse_stmt::<CopyStmt>("COPY t FROM 'foo.csv'");
+        let stmt = stmt.ast();
+        let CopyBody::Table(table) = &stmt.body else {
+            panic!("expected table body");
+        };
+        assert!(matches!(table.target, CopyTarget::File(_)));
+    }
+
+    #[test]
+    fn copy_table_to_stdout_csv_legacy() {
+        // Legacy `csv` option without WITH or parens.
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT CSV");
+    }
+
+    #[test]
+    fn copy_table_from_stdin_csv_header_legacy() {
+        // Two consecutive legacy options.
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN CSV HEADER");
+    }
+
+    #[test]
+    fn copy_table_to_file_csv_quote_escape_legacy() {
+        // Legacy options that carry string arguments.
+        reparse_stable::<CopyStmt>("COPY t TO 'f.csv' CSV QUOTE '|' ESCAPE '\\'");
+    }
+
+    #[test]
+    fn copy_table_with_legacy_delimiter_null_as() {
+        // `WITH` followed by legacy form.
+        reparse_stable::<CopyStmt>("COPY x FROM STDIN WITH DELIMITER AS ';' NULL AS ''");
+    }
+
+    #[test]
+    fn copy_table_using_delimiters_legacy() {
+        // `USING DELIMITERS 'c'` precedes the option list.
+        reparse_stable::<CopyStmt>("COPY t FROM 'f' USING DELIMITERS '|'");
+    }
+
+    #[test]
+    fn copy_table_binary_legacy() {
+        // `COPY BINARY t TO file` legacy binary option — `CopyBody::BinaryTable`.
+        let stmt = parse_stmt::<CopyStmt>("COPY BINARY t TO 'f'");
+        let stmt = stmt.ast();
+        let CopyBody::BinaryTable(body) = &stmt.body else {
+            panic!("expected binary-table body");
+        };
+        assert!(matches!(body.inner.direction, CopyDirection::To));
+        reparse_stable::<CopyStmt>("COPY BINARY t TO 'f'");
+    }
+
+    #[test]
+    fn copy_table_from_program() {
+        reparse_stable::<CopyStmt>("COPY t FROM PROGRAM 'cat foo.csv'");
+    }
+
+    #[test]
+    fn copy_table_generic_options_single() {
+        // `(freeze)` — a single generic option with no value.
+        reparse_stable::<CopyStmt>("COPY t FROM 'f' (FREEZE)");
+    }
+
+    #[test]
+    fn copy_table_with_generic_options() {
+        // `WITH (header match, format csv)` — generic options after WITH.
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN WITH (HEADER MATCH, FORMAT CSV)");
+    }
+
+    #[test]
+    fn copy_table_generic_option_star() {
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN (FORCE_QUOTE *)");
+    }
+
+    // `COPY ... (FORMAT json)`: issue #87. `base_yylex` reads `FORMAT`
+    // immediately before `JSON` as `FORMAT_LA` from 16 on (REL_16_15
+    // `parser.c`, case `FORMAT`), and `copy_generic_opt_elem` is
+    // `ColLabel copy_generic_opt_arg` and nothing else through 18 (REL_18_6
+    // gram.y 3572-3577), which holds no `_LA` token. So 16, 17 and 18 reject
+    // the option. 14 and 15 have no such merged kind, read `FORMAT` as an
+    // ordinary unreserved word and accept it (REL_15_19 `parser.c` has no
+    // `FORMAT` case). 19 adds `copy_generic_opt_elem: ... | FORMAT_LA
+    // copy_generic_opt_arg` (b73d13c:3653-3657) and accepts it again.
+    #[cfg(not(feature = "since-pg16"))]
+    #[test]
+    fn copy_generic_format_json_parses_before_16() {
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT (FORMAT json)");
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN (FORMAT json)");
+    }
+
+    // See `copy_generic_format_json_parses_before_16`.
+    #[cfg(all(feature = "since-pg16", not(feature = "since-pg19")))]
+    #[test]
+    fn copy_generic_format_json_is_rejected_from_16_to_18() {
+        assert_statements_rejected(&[
+            "COPY t TO STDOUT (FORMAT json)",
+            "COPY t FROM STDIN (FORMAT json)",
+        ]);
+    }
+
+    // See `copy_generic_format_json_parses_before_16`.
+    #[cfg(feature = "since-pg19")]
+    #[test]
+    fn copy_generic_format_json_parses_from_19() {
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT (FORMAT json)");
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN (FORMAT json)");
+    }
+
+    // The option name that no merged kind touches: `csv` and `text` are not
+    // `JSON`, so `FORMAT` stays `FORMAT` and `ColLabel` admits it in every
+    // version. This is the other half of issue #87: the rejection above must
+    // not cost the ordinary spellings.
+    #[test]
+    fn copy_generic_format_csv_and_text_parse_in_every_version() {
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT (FORMAT csv)");
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT (FORMAT text)");
+    }
+
+    #[test]
+    fn copy_table_generic_option_paren_list() {
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN (FORCE_QUOTE (a, b))");
+    }
+
+    #[test]
+    fn copy_table_from_where_expr() {
+        // `WHERE expr` after the option list (FROM-only).
+        reparse_stable::<CopyStmt>("COPY x FROM STDIN WHERE a = 1");
+    }
+
+    #[test]
+    fn copy_query_to_stdout() {
+        let stmt = parse_stmt::<CopyStmt>("COPY (SELECT * FROM t) TO STDOUT");
+        let stmt = stmt.ast();
+        assert!(matches!(stmt.body, CopyBody::Query(_)));
+        reparse_stable::<CopyStmt>("COPY (SELECT * FROM t) TO STDOUT");
+    }
+
+    #[test]
+    fn copy_query_to_file() {
+        reparse_stable::<CopyStmt>("COPY (SELECT 1) TO 'f'");
+    }
+
+    #[test]
+    fn copy_query_with_generic_options() {
+        reparse_stable::<CopyStmt>("COPY (SELECT 1) TO STDOUT WITH (DEFAULT '\\D')");
+    }
+
+    #[test]
+    fn copy_query_insert_returning() {
+        // Query body must accept INSERT ... RETURNING (PreparableStmt).
+        reparse_stable::<CopyStmt>("COPY (INSERT INTO t (a) VALUES (1) RETURNING id) TO STDOUT");
+    }
+
+    #[test]
+    fn copy_table_with_encoding_legacy() {
+        reparse_stable::<CopyStmt>("COPY t FROM STDIN WITH ENCODING 'sql_ascii'");
+    }
+
+    #[test]
+    fn copy_table_legacy_force_quote_star() {
+        // Three-keyword legacy item.
+        reparse_stable::<CopyStmt>("COPY t TO 'f' CSV FORCE QUOTE *");
+    }
+
+    #[test]
+    fn copy_table_legacy_force_not_null_list() {
+        reparse_stable::<CopyStmt>("COPY t FROM 'f' CSV FORCE NOT NULL a, b");
+    }
+
+    // `FORCE NOT NULL` and `FORCE NULL` hold their own target node, which is
+    // not the one `FORCE QUOTE` holds. gram.y writes one `copy_opt_item` arm
+    // per spelling and shares no nonterminal, so the `*` that 17 adds to these
+    // two options carries its own version gate, while the `*` of `FORCE QUOTE`
+    // stays ungated (issue #93; REL_17_11 gram.y 3463-3484).
+    #[test]
+    fn force_null_options_hold_their_own_target() {
+        let stmt = parse_stmt::<CopyStmt>("COPY t FROM 'f' CSV FORCE NOT NULL a, b");
+        let stmt = stmt.ast();
+        let CopyBody::Table(body) = &stmt.body else {
+            panic!("expected the table form, got {:?}", stmt.body);
+        };
+        let Some(CopyOptions::Legacy(options)) = &body.options else {
+            panic!("expected the legacy option list, got {:?}", body.options);
+        };
+        let CopyLegacyOptionItem::ForceNotNull(force) = options.items.last() else {
+            panic!("expected FORCE NOT NULL, got {:?}", options.items.last());
+        };
+        let target: &CopyForceNullTarget = &force.target;
+        assert!(matches!(target, CopyForceNullTarget::Columns(_)));
+
+        let stmt = parse_stmt::<CopyStmt>("COPY t TO 'f' CSV FORCE QUOTE *");
+        let stmt = stmt.ast();
+        let CopyBody::Table(body) = &stmt.body else {
+            panic!("expected the table form, got {:?}", stmt.body);
+        };
+        let Some(CopyOptions::Legacy(options)) = &body.options else {
+            panic!("expected the legacy option list, got {:?}", body.options);
+        };
+        let CopyLegacyOptionItem::ForceQuote(force) = options.items.last() else {
+            panic!("expected FORCE QUOTE, got {:?}", options.items.last());
+        };
+        let target: &CopyForceTarget = &force.target;
+        assert!(matches!(target, CopyForceTarget::Star));
+    }
+
+    #[test]
+    fn copy_table_legacy_with_null_as() {
+        // Corpus regression case: `WITH ... NULL AS '...'` chained options.
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT WITH NULL AS E'\\0'");
+    }
+
+    #[test]
+    fn copy_table_legacy_chained_delimiter_null_encoding() {
+        // Three chained legacy options after WITH.
+        reparse_stable::<CopyStmt>(
+            "COPY x FROM STDIN WITH DELIMITER AS ':' NULL AS E'\\X' ENCODING 'sql_ascii'",
+        );
+    }
+
+    // Added in 17: research, PostgreSQL 17, "Changes to existing statements"
+    // (REL_17_11 gram.y 3475, 3483, 3539).
+    #[cfg(feature = "since-pg17")]
+    #[test]
+    fn copy_17_option_forms() {
+        assert_statements_parse(&[
+            "COPY t FROM STDIN CSV FORCE NOT NULL *",
+            "COPY t FROM STDIN CSV FORCE NULL *",
+            "COPY t FROM STDIN (ON_ERROR ignore, LOG_VERBOSITY default)",
+        ]);
+    }
+
+    // Added in 17, so rejected before 17: research, PostgreSQL 17, "Changes to existing statements".
+    #[cfg(not(feature = "since-pg17"))]
+    #[test]
+    fn copy_17_option_forms_are_rejected_before_17() {
+        assert_statements_rejected(&[
+            "COPY t FROM STDIN CSV FORCE NOT NULL *",
+            "COPY t FROM STDIN CSV FORCE NULL *",
+            "COPY t FROM STDIN (ON_ERROR ignore, LOG_VERBOSITY default)",
+            "COPY t FROM STDIN (null default)",
+        ]);
+        assert_statements_parse(&[
+            "COPY t FROM STDIN CSV FORCE NOT NULL a, b",
+            "COPY t FROM STDIN CSV FORCE NULL a",
+            "COPY t TO STDOUT CSV FORCE QUOTE *",
+            "COPY t FROM STDIN (force_not_null *)",
+        ]);
+    }
+
+    /// Added in 19: the legacy `copy_opt_item: JSON` (gram.y b73d13c:3567;
+    /// research PostgreSQL 19, "Changes to existing statements", commit
+    /// 7dadd38cd).
+    #[cfg(feature = "since-pg19")]
+    #[test]
+    fn legacy_json_copy_option_from_19() {
+        crate::ast::test_support::check_statement_forms(
+            &[
+                "COPY t TO STDOUT JSON",
+                "COPY t TO STDOUT WITH JSON",
+                "COPY t FROM STDIN JSON",
+                "COPY (SELECT 1) TO STDOUT JSON HEADER",
+                "COPY t TO STDOUT (FORMAT json)",
+            ],
+            &["COPY t TO STDOUT JSON 'x'"],
+        );
+    }
+
+    /// Before 19, `JSON` is no legacy COPY option (the same research entry).
+    #[cfg(not(feature = "since-pg19"))]
+    #[test]
+    fn reject_legacy_json_copy_option_before_19() {
+        crate::ast::test_support::check_statement_forms(
+            &["COPY t TO STDOUT CSV"],
+            &["COPY t TO STDOUT JSON", "COPY t TO STDOUT WITH JSON"],
+        );
+    }
+}

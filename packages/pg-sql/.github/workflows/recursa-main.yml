@@ -1,0 +1,35 @@
+name: Recursa main downstream check
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 16 * * 1"
+
+jobs:
+  downstream:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pg-sql
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pg-sql
+      - uses: actions/checkout@v4
+        with:
+          repository: freshtonic/recursa
+          # recursa is private: the default GITHUB_TOKEN cannot read it. The secret is a
+          # fine-grained personal access token with contents:read on freshtonic/recursa.
+          token: ${{ secrets.RECURSA_READ_TOKEN }}
+          ref: main
+          path: recursa
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
+      - name: Resolve the pg-sql workspace against Recursa main
+        run: cargo metadata --locked --no-deps --format-version 1
+      - name: Check the Recursa packages consumed by pg-sql
+        run: cargo check --manifest-path ../recursa/Cargo.toml --package recursa --package recursa-codegen
+      - name: Check the pg-sql PostgreSQL statement grammar against Recursa main
+        run: cargo check --locked --package pg-sql
+      - name: Check the psql client grammar against Recursa main
+        run: cargo check --locked --package pg-psql

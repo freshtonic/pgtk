@@ -1,0 +1,2207 @@
+#![allow(non_camel_case_types)]
+
+// Single-declaration token site.
+//
+// The `tokens!` proc macro is logos-backed. It generates:
+//   - one `pub struct` per `keywords` / `soft_keywords` / `punctuation` /
+//     `literals` token (e.g. `pub struct SELECT;`, `pub struct LParen;`,
+//     `pub struct DollarStringLit<'input>(...)`),
+//   - the combined `Keyword` / `SoftKeyword` / `Punctuation` / `Literal`
+//     enums,
+//   - a flat `#[repr(u16)] #[derive(Logos)] pub enum TokenKind` covering
+//     every declared token (including `lexer_tokens` entries, which get a
+//     `TokenKind` variant but no struct),
+//   - `pub fn lex(&str) -> LexResult` — the logos lexing pass.
+//
+// All token types live at this module's top level; the `keyword`, `punct`,
+// and `literal` sub-modules below re-export them under the legacy paths so
+// the rest of the crate continues to use `keyword::SELECT`, `punct::LParen`,
+// `literal::DollarStringLit`, etc.
+
+recursa::tokens! {
+    // Ignored content: ASCII whitespace and `-- line comments`. Both are
+    // regular, so the generated lexer handles them directly. Nested `/* block
+    // comments */` use the closed matcher declared with the trivia kinds below.
+    ignore = r"[ \t\r\n\f]+",
+    // Postgres keyword categories, mirroring `kwlist.h`'s four-way
+    // partition. Every `keywords` / `soft_keywords` entry carries an
+    // `in <CATEGORY>` clause; classifications come from PG 17 kwlist.h
+    // via docs/plans/2026-06-04-pg-keyword-audit.md.
+    categories { UNRESERVED, COL_NAME, TYPE_FUNC_NAME, RESERVED }
+    // Orthogonal per-keyword booleans. `bare_label` marks keywords that
+    // PG admits as bare-form column labels (no `AS` required); composes
+    // with the category to derive `BareColLabel`'s admit set.
+    flags { bare_label }
+    keywords {
+        SELECT       => r"SELECT" in RESERVED + bare_label,
+        FROM         => r"FROM" in RESERVED,
+        WHERE        => r"WHERE" in RESERVED,
+        // `AS` always renders with a space on both sides. Without this the
+        // Auto word policy leaves the following `(` tight (`AS(SELECT 1)`),
+        // because an opening delimiter does not consume a pending word
+        // separator.
+        AS           => r"AS" in RESERVED, spacing = around,
+        AND          => r"AND" in RESERVED + bare_label,
+        OR           => r"OR" in RESERVED + bare_label,
+        NOT          => r"NOT" in RESERVED + bare_label,
+        TRUE         => r"TRUE" in RESERVED + bare_label,
+        FALSE        => r"FALSE" in RESERVED + bare_label,
+        NULL         => r"NULL" in RESERVED + bare_label,
+        IS           => r"IS" in TYPE_FUNC_NAME + bare_label,
+        CREATE       => r"CREATE" in RESERVED,
+        TABLE        => r"TABLE" in RESERVED + bare_label,
+        INTO         => r"INTO" in RESERVED,
+        VALUES       => r"VALUES" in COL_NAME + bare_label,
+        ORDER        => r"ORDER" in RESERVED,
+        PRIMARY      => r"PRIMARY" in RESERVED + bare_label,
+        ASC          => r"ASC" in RESERVED + bare_label,
+        DESC         => r"DESC" in RESERVED + bare_label,
+        NULLS        => r"NULLS" in UNRESERVED + bare_label,
+        USING        => r"USING" in RESERVED + bare_label,
+        OFFSET       => r"OFFSET" in RESERVED,
+        LIMIT        => r"LIMIT" in RESERVED,
+        ANALYZE      => r"ANALYZE" in RESERVED + bare_label,
+        SET          => r"SET" in UNRESERVED + bare_label,
+        TO           => r"TO" in RESERVED,
+        ON           => r"ON" in RESERVED,
+        FOR          => r"FOR" in RESERVED,
+        UNION        => r"UNION" in RESERVED,
+        ALL          => r"ALL" in RESERVED + bare_label,
+        IN           => r"IN" in RESERVED + bare_label,
+        DEFAULT      => r"DEFAULT" in RESERVED + bare_label,
+        LATERAL      => r"LATERAL" in RESERVED + bare_label,
+        PARTITION    => r"PARTITION" in UNRESERVED + bare_label,
+        WITH         => r"WITH" in RESERVED,
+        EXCEPT       => r"EXCEPT" in RESERVED,
+        INTERSECT    => r"INTERSECT" in RESERVED,
+        DISTINCT     => r"DISTINCT" in RESERVED + bare_label,
+        JOIN         => r"JOIN" in TYPE_FUNC_NAME + bare_label,
+        LEFT         => r"LEFT" in TYPE_FUNC_NAME + bare_label,
+        RIGHT        => r"RIGHT" in TYPE_FUNC_NAME + bare_label,
+        FULL         => r"FULL" in TYPE_FUNC_NAME + bare_label,
+        INNER        => r"INNER" in TYPE_FUNC_NAME + bare_label,
+        CROSS        => r"CROSS" in TYPE_FUNC_NAME + bare_label,
+        GROUP        => r"GROUP" in RESERVED,
+        HAVING       => r"HAVING" in RESERVED,
+        RETURNING    => r"RETURNING" in RESERVED,
+        WHEN         => r"WHEN" in RESERVED + bare_label,
+        THEN         => r"THEN" in RESERVED + bare_label,
+        DO           => r"DO" in RESERVED + bare_label,
+        ARRAY        => r"ARRAY" in RESERVED,
+        UNIQUE       => r"UNIQUE" in RESERVED + bare_label,
+        REFERENCES   => r"REFERENCES" in RESERVED + bare_label,
+        ANY          => r"ANY" in RESERVED + bare_label,
+        SOME         => r"SOME" in RESERVED + bare_label,
+        LIKE         => r"LIKE" in TYPE_FUNC_NAME + bare_label,
+        ILIKE        => r"ILIKE" in TYPE_FUNC_NAME + bare_label,
+        COLLATE      => r"COLLATE" in RESERVED + bare_label,
+        // `COLUMN` is a `reserved_keyword` in Postgres' `gram.y` — never an
+        // identifier — so it is a hard keyword.
+        COLUMN       => r"COLUMN" in RESERVED + bare_label,
+        CASE         => r"CASE" in RESERVED + bare_label,
+        ELSE         => r"ELSE" in RESERVED + bare_label,
+        END          => r"END" in RESERVED + bare_label,
+        VERBOSE      => r"VERBOSE" in TYPE_FUNC_NAME + bare_label,
+        ONLY         => r"ONLY" in RESERVED + bare_label,
+        GRANT        => r"GRANT" in RESERVED,
+        FETCH        => r"FETCH" in RESERVED,
+        USER         => r"USER" in RESERVED + bare_label,
+        // The reserved half of the `SQLValueFunction` keyword family of
+        // gram.y `func_expr_common_subexpr` (REL_17_11 15654-15720). Every
+        // word is `RESERVED_KEYWORD, BARE_LABEL` in kwlist.h at every pin
+        // from REL_14_24 to `b73d13c`, and every word but `system_user` is
+        // already there at REL_14_24.
+        //
+        // `current_schema` is absent on purpose: kwlist.h makes it a
+        // `TYPE_FUNC_NAME_KEYWORD`, which `table_function_name` admits, and
+        // `ast::dml::select::NamedTableRef` reads a relation name and a
+        // function-table name through that one admission. A bare
+        // `CURRENT_SCHEMA` in `table_ref` would then reduce either to that
+        // name or to `SqlValueFunction`, which is an RCA0401 reduce/reduce
+        // conflict. Modelling it needs `NamedTableRef` split into gram.y's
+        // `qualified_name` (`ColId`) and `func_application` routes.
+        CURRENT_CATALOG   => r"CURRENT_CATALOG" in RESERVED + bare_label,
+        CURRENT_DATE      => r"CURRENT_DATE" in RESERVED + bare_label,
+        CURRENT_ROLE      => r"CURRENT_ROLE" in RESERVED + bare_label,
+        CURRENT_TIME      => r"CURRENT_TIME" in RESERVED + bare_label,
+        CURRENT_TIMESTAMP => r"CURRENT_TIMESTAMP" in RESERVED + bare_label,
+        CURRENT_USER      => r"CURRENT_USER" in RESERVED + bare_label,
+        LOCALTIME         => r"LOCALTIME" in RESERVED + bare_label,
+        LOCALTIMESTAMP    => r"LOCALTIMESTAMP" in RESERVED + bare_label,
+        SESSION_USER      => r"SESSION_USER" in RESERVED + bare_label,
+        // Added in 16 as a reserved keyword: research, PostgreSQL 16,
+        // "Keywords" (REL_16_15 kwlist.h `system_user`, commit 0823d061b).
+        // REL_15_19 kwlist.h has no `system_user`, so 15 lexes the word as an
+        // identifier.
+        #[config(since = pg16)]
+        SYSTEM_USER       => r"SYSTEM_USER" in RESERVED + bare_label,
+        CAST         => r"CAST" in RESERVED + bare_label,
+        COLLATION    => r"COLLATION" in TYPE_FUNC_NAME + bare_label,
+        FOREIGN      => r"FOREIGN" in RESERVED + bare_label,
+        CONCURRENTLY => r"CONCURRENTLY" in TYPE_FUNC_NAME + bare_label,
+        CONSTRAINT   => r"CONSTRAINT" in RESERVED + bare_label,
+        CHECK        => r"CHECK" in RESERVED + bare_label,
+        DEFERRABLE   => r"DEFERRABLE" in RESERVED + bare_label,
+        INITIALLY    => r"INITIALLY" in RESERVED + bare_label,
+        VARIADIC     => r"VARIADIC" in RESERVED + bare_label,
+        WINDOW       => r"WINDOW" in RESERVED,
+        NATURAL      => r"NATURAL" in TYPE_FUNC_NAME + bare_label,
+        OUTER        => r"OUTER" in TYPE_FUNC_NAME + bare_label,
+        NOTNULL      => r"NOTNULL" in TYPE_FUNC_NAME,
+        ISNULL       => r"ISNULL" in TYPE_FUNC_NAME,
+        LEADING      => r"LEADING" in RESERVED + bare_label,
+        TRAILING     => r"TRAILING" in RESERVED + bare_label,
+        BOTH         => r"BOTH" in RESERVED + bare_label,
+        SIMILAR      => r"SIMILAR" in TYPE_FUNC_NAME + bare_label,
+        PLACING      => r"PLACING" in RESERVED + bare_label,
+        TABLESAMPLE  => r"TABLESAMPLE" in TYPE_FUNC_NAME + bare_label,
+    // Soft (non-reserved) keywords: recognised as keywords only where the
+    // grammar asks for them; otherwise reclaimable as ordinary identifiers
+    // (see `UnquotedIdent`'s `token_kind_is_soft` check). Covers Postgres
+    // non-reserved / col-name / type-name keywords plus the SQL/JSON
+    // function family — all common identifiers, so none may be reserved.
+    //
+    // Version gates (ADR 0009): "research" in a gate comment is
+    // docs/research/postgres-14-19-sql-syntax-changes.md. A keyword that 17
+    // added is absent before 17, so PostgreSQL 16 lexes the word as an
+    // identifier (REL_16_15 kwlist.h). The same applies to a keyword that 16
+    // added: PostgreSQL 15 lexes the word as an identifier (REL_15_19
+    // kwlist.h).
+        // `json` changes category in 17 from UNRESERVED to COL_NAME: research,
+        // PostgreSQL 17, "Keywords"; REL_16_15 kwlist.h line 233.
+        #[config(since = pg17)]
+        JSON            => r"JSON" in COL_NAME + bare_label,
+        // Added in 16 as an unreserved keyword: research, PostgreSQL 16,
+        // "Keywords". REL_15_19 kwlist.h has no `json`. The `FORMAT_LA`
+        // lookahead entry names it under the same predicate.
+        #[config(since = pg16, before = pg17)]
+        JSON            => r"JSON" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_VALUE      => r"JSON_VALUE" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_QUERY      => r"JSON_QUERY" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_EXISTS     => r"JSON_EXISTS" in COL_NAME + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        JSON_OBJECT     => r"JSON_OBJECT" in COL_NAME + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        JSON_ARRAY      => r"JSON_ARRAY" in COL_NAME + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        JSON_OBJECTAGG  => r"JSON_OBJECTAGG" in COL_NAME + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        JSON_ARRAYAGG   => r"JSON_ARRAYAGG" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_SERIALIZE  => r"JSON_SERIALIZE" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_SCALAR     => r"JSON_SCALAR" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        JSON_TABLE      => r"JSON_TABLE" in COL_NAME + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords" (`merge_action`,
+        // COL_NAME, commit c649fa24a). Before 17, the word is an identifier.
+        #[config(since = pg17)]
+        MERGE_ACTION    => r"MERGE_ACTION" in COL_NAME + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords". The `FORMAT_LA`
+        // lookahead entry names it under the same predicate.
+        #[config(since = pg16)]
+        FORMAT          => r"FORMAT" in UNRESERVED + bare_label,
+        ENCODING        => r"ENCODING" in UNRESERVED + bare_label,
+        PASSING         => r"PASSING" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords". The `precedence`
+        // block names it under the same predicate.
+        #[config(since = pg17)]
+        PATH            => r"PATH" in UNRESERVED + bare_label,
+        COLUMNS         => r"COLUMNS" in UNRESERVED + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords". The `precedence`
+        // block names it under the same predicate.
+        #[config(since = pg16)]
+        KEYS            => r"KEYS" in UNRESERVED + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords". The `precedence`
+        // block names it under the same predicate.
+        #[config(since = pg16)]
+        SCALAR          => r"SCALAR" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        QUOTES          => r"QUOTES" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords". The `precedence`
+        // block names it under the same predicate.
+        #[config(since = pg17)]
+        NESTED          => r"NESTED" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        OMIT            => r"OMIT" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        KEEP            => r"KEEP" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        CONDITIONAL     => r"CONDITIONAL" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        UNCONDITIONAL   => r"UNCONDITIONAL" in UNRESERVED + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        ABSENT          => r"ABSENT" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        ERROR           => r"ERROR" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        EMPTY           => r"EMPTY" in UNRESERVED + bare_label,
+        OBJECT          => r"OBJECT" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        STRING          => r"STRING" in UNRESERVED + bare_label,
+        UNKNOWN         => r"UNKNOWN" in UNRESERVED + bare_label,
+        INSERT          => r"INSERT" in UNRESERVED + bare_label,
+        DROP            => r"DROP" in UNRESERVED + bare_label,
+        DELETE          => r"DELETE" in UNRESERVED + bare_label,
+        BY              => r"BY" in UNRESERVED + bare_label,
+        BOOL            => r"BOOL" in UNRESERVED + bare_label,
+        BOOLEAN         => r"BOOLEAN" in COL_NAME + bare_label,
+        TEXT            => r"TEXT" in UNRESERVED + bare_label,
+        INT             => r"INT" in COL_NAME + bare_label,
+        SERIAL          => r"SERIAL" in UNRESERVED + bare_label,
+        KEY             => r"KEY" in UNRESERVED + bare_label,
+        FIRST           => r"FIRST" in UNRESERVED + bare_label,
+        LAST            => r"LAST" in UNRESERVED + bare_label,
+        RESET           => r"RESET" in UNRESERVED + bare_label,
+        OFF             => r"OFF" in UNRESERVED + bare_label,
+        TEMP            => r"TEMP" in UNRESERVED + bare_label,
+        INDEX           => r"INDEX" in UNRESERVED + bare_label,
+        EXPLAIN         => r"EXPLAIN" in UNRESERVED + bare_label,
+        UPDATE          => r"UPDATE" in UNRESERVED + bare_label,
+        FUNCTION        => r"FUNCTION" in UNRESERVED + bare_label,
+        RETURNS         => r"RETURNS" in UNRESERVED + bare_label,
+        SETOF           => r"SETOF" in COL_NAME + bare_label,
+        LANGUAGE        => r"LANGUAGE" in UNRESERVED + bare_label,
+        IMMUTABLE       => r"IMMUTABLE" in UNRESERVED + bare_label,
+        OF              => r"OF" in UNRESERVED + bare_label,
+        COSTS           => r"COSTS" in UNRESERVED + bare_label,
+        TIMING          => r"TIMING" in UNRESERVED + bare_label,
+        SUMMARY         => r"SUMMARY" in UNRESERVED + bare_label,
+        RECURSIVE       => r"RECURSIVE" in UNRESERVED + bare_label,
+        MATERIALIZED    => r"MATERIALIZED" in UNRESERVED + bare_label,
+        // Added in 15: research, PostgreSQL 15, "Keywords". REL_14_24
+        // kwlist.h has no `merge`, `matched` or `parameter`.
+        #[config(since = pg15)]
+        MERGE           => r"MERGE" in UNRESERVED + bare_label,
+        // Added in 15: research, PostgreSQL 15, "Keywords".
+        #[config(since = pg15)]
+        MATCHED         => r"MATCHED" in UNRESERVED + bare_label,
+        // Added in 15: research, PostgreSQL 15, "Keywords" (gram.y
+        // `privilege_target: PARAMETER parameter_name_list`).
+        #[config(since = pg15)]
+        PARAMETER       => r"PARAMETER" in UNRESERVED + bare_label,
+        CONFLICT        => r"CONFLICT" in UNRESERVED + bare_label,
+        NOTHING         => r"NOTHING" in UNRESERVED + bare_label,
+        EXCLUDED        => r"EXCLUDED" in UNRESERVED + bare_label,
+        VIEW            => r"VIEW" in UNRESERVED + bare_label,
+        REPLACE         => r"REPLACE" in UNRESERVED + bare_label,
+        TEMPORARY       => r"TEMPORARY" in UNRESERVED + bare_label,
+        EXISTS          => r"EXISTS" in COL_NAME + bare_label,
+        SEARCH          => r"SEARCH" in UNRESERVED + bare_label,
+        DEPTH           => r"DEPTH" in UNRESERVED + bare_label,
+        BREADTH         => r"BREADTH" in UNRESERVED + bare_label,
+        CYCLE           => r"CYCLE" in UNRESERVED + bare_label,
+        ROW             => r"ROW" in COL_NAME + bare_label,
+        OVER            => r"OVER" in UNRESERVED,
+        INTEGER         => r"INTEGER" in COL_NAME + bare_label,
+        NUMERIC         => r"NUMERIC" in COL_NAME + bare_label,
+        VARCHAR         => r"VARCHAR" in COL_NAME + bare_label,
+        ALTER           => r"ALTER" in UNRESERVED + bare_label,
+        ADD             => r"ADD" in UNRESERVED + bare_label,
+        RULE            => r"RULE" in UNRESERVED + bare_label,
+        TRIGGER         => r"TRIGGER" in UNRESERVED + bare_label,
+        BEFORE          => r"BEFORE" in UNRESERVED + bare_label,
+        AFTER           => r"AFTER" in UNRESERVED + bare_label,
+        EACH            => r"EACH" in UNRESERVED + bare_label,
+        STATEMENT       => r"STATEMENT" in UNRESERVED + bare_label,
+        EXECUTE         => r"EXECUTE" in UNRESERVED + bare_label,
+        PROCEDURE       => r"PROCEDURE" in UNRESERVED + bare_label,
+        ROUTINE         => r"ROUTINE" in UNRESERVED + bare_label,
+        INSTEAD         => r"INSTEAD" in UNRESERVED + bare_label,
+        ALSO            => r"ALSO" in UNRESERVED + bare_label,
+        NEW             => r"NEW" in UNRESERVED + bare_label,
+        OLD             => r"OLD" in UNRESERVED + bare_label,
+        BEGIN           => r"BEGIN" in UNRESERVED + bare_label,
+        COMMIT          => r"COMMIT" in UNRESERVED + bare_label,
+        TRUNCATE        => r"TRUNCATE" in UNRESERVED + bare_label,
+        NOTIFY          => r"NOTIFY" in UNRESERVED + bare_label,
+        INHERITS        => r"INHERITS" in UNRESERVED + bare_label,
+        GENERATED       => r"GENERATED" in UNRESERVED + bare_label,
+        ALWAYS          => r"ALWAYS" in UNRESERVED + bare_label,
+        IDENTITY        => r"IDENTITY" in UNRESERVED + bare_label,
+        LOCAL           => r"LOCAL" in UNRESERVED + bare_label,
+        BETWEEN         => r"BETWEEN" in COL_NAME + bare_label,
+        UNLOGGED        => r"UNLOGGED" in UNRESERVED + bare_label,
+        DATABASE        => r"DATABASE" in UNRESERVED + bare_label,
+        PRIVILEGES      => r"PRIVILEGES" in UNRESERVED + bare_label,
+        CHECKPOINT      => r"CHECKPOINT" in UNRESERVED + bare_label,
+        MODULUS         => r"MODULUS" in UNRESERVED + bare_label,
+        REMAINDER       => r"REMAINDER" in UNRESERVED + bare_label,
+        IF              => r"IF" in UNRESERVED + bare_label,
+        NO              => r"NO" in UNRESERVED + bare_label,
+        DATA            => r"DATA" in UNRESERVED + bare_label,
+        ROLLBACK        => r"ROLLBACK" in UNRESERVED + bare_label,
+        SAVEPOINT       => r"SAVEPOINT" in UNRESERVED + bare_label,
+        RELEASE         => r"RELEASE" in UNRESERVED + bare_label,
+        PREPARE         => r"PREPARE" in UNRESERVED + bare_label,
+        DEALLOCATE      => r"DEALLOCATE" in UNRESERVED + bare_label,
+        REVOKE          => r"REVOKE" in UNRESERVED + bare_label,
+        COMMENT         => r"COMMENT" in UNRESERVED + bare_label,
+        COPY            => r"COPY" in UNRESERVED + bare_label,
+        LOCK            => r"LOCK" in UNRESERVED + bare_label,
+        DECLARE         => r"DECLARE" in UNRESERVED + bare_label,
+        CLOSE           => r"CLOSE" in UNRESERVED + bare_label,
+        MOVE            => r"MOVE" in UNRESERVED + bare_label,
+        CURSOR          => r"CURSOR" in UNRESERVED + bare_label,
+        REINDEX         => r"REINDEX" in UNRESERVED + bare_label,
+        REFRESH         => r"REFRESH" in UNRESERVED + bare_label,
+        LISTEN          => r"LISTEN" in UNRESERVED + bare_label,
+        UNLISTEN        => r"UNLISTEN" in UNRESERVED + bare_label,
+        DISCARD         => r"DISCARD" in UNRESERVED + bare_label,
+        REASSIGN        => r"REASSIGN" in UNRESERVED + bare_label,
+        SECURITY        => r"SECURITY" in UNRESERVED + bare_label,
+        LABEL           => r"LABEL" in UNRESERVED + bare_label,
+        CLUSTER         => r"CLUSTER" in UNRESERVED + bare_label,
+        VACUUM          => r"VACUUM" in UNRESERVED + bare_label,
+        ROLE            => r"ROLE" in UNRESERVED + bare_label,
+        SCHEMA          => r"SCHEMA" in UNRESERVED + bare_label,
+        // `SET NAMES opt_encoding` needs the word. `kwlist.h` gives it the
+        // same two categories in every target version, so `names` stays a
+        // `ColId` and a bare label.
+        NAMES           => r"NAMES" in UNRESERVED + bare_label,
+        SEQUENCE        => r"SEQUENCE" in UNRESERVED + bare_label,
+        TYPE            => r"TYPE" in UNRESERVED + bare_label,
+        DOMAIN          => r"DOMAIN" in UNRESERVED + bare_label,
+        AGGREGATE       => r"AGGREGATE" in UNRESERVED + bare_label,
+        OPERATOR        => r"OPERATOR" in UNRESERVED + bare_label,
+        EXTENSION       => r"EXTENSION" in UNRESERVED + bare_label,
+        POLICY          => r"POLICY" in UNRESERVED + bare_label,
+        STATISTICS      => r"STATISTICS" in UNRESERVED + bare_label,
+        PUBLICATION     => r"PUBLICATION" in UNRESERVED + bare_label,
+        SUBSCRIPTION    => r"SUBSCRIPTION" in UNRESERVED + bare_label,
+        OWNED           => r"OWNED" in UNRESERVED + bare_label,
+        ACCESS          => r"ACCESS" in UNRESERVED + bare_label,
+        METHOD          => r"METHOD" in UNRESERVED + bare_label,
+        CONVERSION      => r"CONVERSION" in UNRESERVED + bare_label,
+        SERVER          => r"SERVER" in UNRESERVED + bare_label,
+        WRAPPER         => r"WRAPPER" in UNRESERVED + bare_label,
+        MAPPING         => r"MAPPING" in UNRESERVED + bare_label,
+        EVENT           => r"EVENT" in UNRESERVED + bare_label,
+        MATCH           => r"MATCH" in UNRESERVED + bare_label,
+        PARTIAL         => r"PARTIAL" in UNRESERVED + bare_label,
+        SIMPLE          => r"SIMPLE" in UNRESERVED + bare_label,
+        RESTRICT        => r"RESTRICT" in UNRESERVED + bare_label,
+        ACTION          => r"ACTION" in UNRESERVED + bare_label,
+        DEFERRED        => r"DEFERRED" in UNRESERVED + bare_label,
+        IMMEDIATE       => r"IMMEDIATE" in UNRESERVED + bare_label,
+        INHERIT         => r"INHERIT" in UNRESERVED + bare_label,
+        CASCADE         => r"CASCADE" in UNRESERVED + bare_label,
+        INCLUDE         => r"INCLUDE" in UNRESERVED + bare_label,
+        BTREE           => r"BTREE" in UNRESERVED + bare_label,
+        GIN             => r"GIN" in UNRESERVED + bare_label,
+        GIST            => r"GIST" in UNRESERVED + bare_label,
+        HASH            => r"HASH" in UNRESERVED + bare_label,
+        SPGIST          => r"SPGIST" in UNRESERVED + bare_label,
+        BRIN            => r"BRIN" in UNRESERVED + bare_label,
+        SHOW            => r"SHOW" in UNRESERVED + bare_label,
+        TRANSACTION     => r"TRANSACTION" in UNRESERVED + bare_label,
+        ISOLATION       => r"ISOLATION" in UNRESERVED + bare_label,
+        LEVEL           => r"LEVEL" in UNRESERVED + bare_label,
+        SERIALIZABLE    => r"SERIALIZABLE" in UNRESERVED + bare_label,
+        REPEATABLE      => r"REPEATABLE" in UNRESERVED + bare_label,
+        READ            => r"READ" in UNRESERVED + bare_label,
+        WRITE           => r"WRITE" in UNRESERVED + bare_label,
+        COMMITTED       => r"COMMITTED" in UNRESERVED + bare_label,
+        UNCOMMITTED     => r"UNCOMMITTED" in UNRESERVED + bare_label,
+        CONSTRAINTS     => r"CONSTRAINTS" in UNRESERVED + bare_label,
+        START           => r"START" in UNRESERVED + bare_label,
+        WORK            => r"WORK" in UNRESERVED + bare_label,
+        ABORT           => r"ABORT" in UNRESERVED + bare_label,
+        CHARACTERISTICS => r"CHARACTERISTICS" in UNRESERVED + bare_label,
+        WITHOUT         => r"WITHOUT" in UNRESERVED,
+        TIMESTAMP       => r"TIMESTAMP" in COL_NAME + bare_label,
+        SESSION         => r"SESSION" in UNRESERVED + bare_label,
+        AUTHORIZATION   => r"AUTHORIZATION" in TYPE_FUNC_NAME + bare_label,
+        TIME            => r"TIME" in COL_NAME + bare_label,
+        ZONE            => r"ZONE" in UNRESERVED + bare_label,
+        NONE            => r"NONE" in COL_NAME + bare_label,
+        UNBOUNDED       => r"UNBOUNDED" in UNRESERVED + bare_label,
+        PRECEDING       => r"PRECEDING" in UNRESERVED + bare_label,
+        FOLLOWING       => r"FOLLOWING" in UNRESERVED + bare_label,
+        CURRENT         => r"CURRENT" in UNRESERVED + bare_label,
+        EXCLUDE         => r"EXCLUDE" in UNRESERVED + bare_label,
+        OTHERS          => r"OTHERS" in UNRESERVED + bare_label,
+        TIES            => r"TIES" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        SOURCE          => r"SOURCE" in UNRESERVED + bare_label,
+        // Added in 17: research, PostgreSQL 17, "Keywords".
+        #[config(since = pg17)]
+        TARGET          => r"TARGET" in UNRESERVED + bare_label,
+        STRICT          => r"STRICT" in UNRESERVED + bare_label,
+        STABLE          => r"STABLE" in UNRESERVED + bare_label,
+        VOLATILE        => r"VOLATILE" in UNRESERVED + bare_label,
+        CALLED          => r"CALLED" in UNRESERVED + bare_label,
+        INPUT           => r"INPUT" in UNRESERVED + bare_label,
+        ORDINALITY      => r"ORDINALITY" in UNRESERVED + bare_label,
+        XMLELEMENT      => r"XMLELEMENT" in COL_NAME + bare_label,
+        XMLATTRIBUTES   => r"XMLATTRIBUTES" in COL_NAME + bare_label,
+        XMLFOREST       => r"XMLFOREST" in COL_NAME + bare_label,
+        XMLPI           => r"XMLPI" in COL_NAME + bare_label,
+        NAME            => r"NAME" in UNRESERVED + bare_label,
+        OUT             => r"OUT" in COL_NAME + bare_label,
+        INOUT           => r"INOUT" in COL_NAME + bare_label,
+        CALL            => r"CALL" in UNRESERVED + bare_label,
+        LOAD            => r"LOAD" in UNRESERVED + bare_label,
+        TABLESPACE      => r"TABLESPACE" in UNRESERVED + bare_label,
+        OWNER           => r"OWNER" in UNRESERVED + bare_label,
+        LOCATION        => r"LOCATION" in UNRESERVED + bare_label,
+        STORED          => r"STORED" in UNRESERVED + bare_label,
+        UESCAPE         => r"UESCAPE" in UNRESERVED + bare_label,
+        WITHIN          => r"WITHIN" in UNRESERVED,
+        FILTER          => r"FILTER" in UNRESERVED,
+        TRIM            => r"TRIM" in COL_NAME + bare_label,
+        SUBSTRING       => r"SUBSTRING" in COL_NAME + bare_label,
+        POSITION        => r"POSITION" in COL_NAME + bare_label,
+        OVERLAY         => r"OVERLAY" in COL_NAME + bare_label,
+        EXTRACT         => r"EXTRACT" in COL_NAME + bare_label,
+        // gram.y `func_expr_common_subexpr` heads (gram.y:15844-15865): all four
+        // are `col_name_keyword` (gram.y:17875, 17881, 17898, 17904) and
+        // `bare_label_keyword` (gram.y:18120, 18220, 18278, 18323).
+        COALESCE        => r"COALESCE" in COL_NAME + bare_label,
+        GREATEST        => r"GREATEST" in COL_NAME + bare_label,
+        LEAST           => r"LEAST" in COL_NAME + bare_label,
+        NULLIF          => r"NULLIF" in COL_NAME + bare_label,
+        // gram.y `func_expr_common_subexpr` heads (gram.y:15730, 15874):
+        // `col_name_keyword` (gram.y:17903, 17922) and `bare_label_keyword`
+        // (gram.y:18316, 18507).
+        // gram.y `opt_asymmetric` and the `BETWEEN SYMMETRIC` rules
+        // (gram.y:15092, 15100, 16827): both are `reserved_keyword`
+        // (gram.y:17985, 18039) and `bare_label_keyword` (gram.y:18088, 18446).
+        ASYMMETRIC      => r"ASYMMETRIC" in RESERVED + bare_label,
+        SYMMETRIC       => r"SYMMETRIC" in RESERVED + bare_label,
+        NORMALIZE       => r"NORMALIZE" in COL_NAME + bare_label,
+        TREAT           => r"TREAT" in COL_NAME + bare_label,
+        XMLCONCAT       => r"XMLCONCAT" in COL_NAME + bare_label,
+        PRESERVE        => r"PRESERVE" in UNRESERVED + bare_label,
+        INCREMENT       => r"INCREMENT" in UNRESERVED + bare_label,
+        MINVALUE        => r"MINVALUE" in UNRESERVED + bare_label,
+        MAXVALUE        => r"MAXVALUE" in UNRESERVED + bare_label,
+        CACHE           => r"CACHE" in UNRESERVED + bare_label,
+        ESCAPE          => r"ESCAPE" in UNRESERVED + bare_label,
+        SNAPSHOT        => r"SNAPSHOT" in UNRESERVED + bare_label,
+        AT              => r"AT" in UNRESERVED + bare_label,
+        GROUPING        => r"GROUPING" in COL_NAME + bare_label,
+        SETS            => r"SETS" in UNRESERVED + bare_label,
+        ROLLUP          => r"ROLLUP" in UNRESERVED + bare_label,
+        CUBE            => r"CUBE" in UNRESERVED + bare_label,
+        INTERVAL        => r"INTERVAL" in COL_NAME + bare_label,
+        YEAR            => r"YEAR" in UNRESERVED,
+        MONTH           => r"MONTH" in UNRESERVED,
+        DAY             => r"DAY" in UNRESERVED,
+        HOUR            => r"HOUR" in UNRESERVED,
+        MINUTE          => r"MINUTE" in UNRESERVED,
+        SECOND          => r"SECOND" in UNRESERVED,
+        INCLUDING       => r"INCLUDING" in UNRESERVED + bare_label,
+        EXCLUDING       => r"EXCLUDING" in UNRESERVED + bare_label,
+        DEFAULTS        => r"DEFAULTS" in UNRESERVED + bare_label,
+        INDEXES         => r"INDEXES" in UNRESERVED + bare_label,
+        STORAGE         => r"STORAGE" in UNRESERVED + bare_label,
+        COMMENTS        => r"COMMENTS" in UNRESERVED + bare_label,
+        COMPRESSION     => r"COMPRESSION" in UNRESERVED + bare_label,
+        RETURN          => r"RETURN" in UNRESERVED + bare_label,
+        OIDS            => r"OIDS" in UNRESERVED + bare_label,
+        OPTIONS         => r"OPTIONS" in UNRESERVED + bare_label,
+        OVERRIDING      => r"OVERRIDING" in UNRESERVED + bare_label,
+        SYSTEM          => r"SYSTEM" in UNRESERVED + bare_label,
+        VALUE           => r"VALUE" in UNRESERVED + bare_label,
+        CASCADED        => r"CASCADED" in UNRESERVED + bare_label,
+        OPTION          => r"OPTION" in UNRESERVED + bare_label,
+        // PG kwlist.h: `xml` UNRESERVED_KEYWORD. Needed at least for
+        // `SET XML OPTION { DOCUMENT | CONTENT }` parsing.
+        XML             => r"XML" in UNRESERVED + bare_label,
+        // PG kwlist.h: `atomic` UNRESERVED_KEYWORD. Used by
+        // CREATE FUNCTION/PROCEDURE `BEGIN ATOMIC ... END` body.
+        ATOMIC          => r"ATOMIC" in UNRESERVED + bare_label,
+        VALID           => r"VALID" in UNRESERVED + bare_label,
+        PARALLEL        => r"PARALLEL" in UNRESERVED + bare_label,
+        RENAME          => r"RENAME" in UNRESERVED + bare_label,
+        TRUSTED         => r"TRUSTED" in UNRESERVED + bare_label,
+        PROCEDURAL      => r"PROCEDURAL" in UNRESERVED + bare_label,
+        HANDLER         => r"HANDLER" in UNRESERVED + bare_label,
+        VALIDATOR       => r"VALIDATOR" in UNRESERVED + bare_label,
+        INLINE          => r"INLINE" in UNRESERVED + bare_label,
+        NEXT            => r"NEXT" in UNRESERVED + bare_label,
+        PRIOR           => r"PRIOR" in UNRESERVED + bare_label,
+        FORWARD         => r"FORWARD" in UNRESERVED + bare_label,
+        BACKWARD        => r"BACKWARD" in UNRESERVED + bare_label,
+        ABSOLUTE        => r"ABSOLUTE" in UNRESERVED + bare_label,
+        RELATIVE        => r"RELATIVE" in UNRESERVED + bare_label,
+        DOUBLE          => r"DOUBLE" in UNRESERVED + bare_label,
+        PRECISION       => r"PRECISION" in COL_NAME,
+        SAFE            => r"SAFE" in UNRESERVED + bare_label,
+        UNSAFE          => r"UNSAFE" in UNRESERVED + bare_label,
+        RESTRICTED      => r"RESTRICTED" in UNRESERVED + bare_label,
+        BIT             => r"BIT" in COL_NAME + bare_label,
+        VARYING         => r"VARYING" in UNRESERVED,
+        CHARACTER       => r"CHARACTER" in COL_NAME,
+        // gram.y `Numeric` and `character` spell these type names as
+        // COL_NAME keywords in every target version (REL_14_24 and REL_17_11
+        // kwlist.h), so they never reach `GenericType`'s `opt_type_modifiers`
+        // (issue #88).
+        SMALLINT        => r"SMALLINT" in COL_NAME + bare_label,
+        BIGINT          => r"BIGINT" in COL_NAME + bare_label,
+        REAL            => r"REAL" in COL_NAME + bare_label,
+        FLOAT           => r"FLOAT" in COL_NAME + bare_label,
+        DECIMAL         => r"DECIMAL" in COL_NAME + bare_label,
+        DEC             => r"DEC" in COL_NAME + bare_label,
+        CHAR            => r"CHAR" in COL_NAME,
+        NCHAR           => r"NCHAR" in COL_NAME + bare_label,
+        NATIONAL        => r"NATIONAL" in COL_NAME + bare_label,
+        SHARE          => r"SHARE" in UNRESERVED + bare_label,
+        IMPORT          => r"IMPORT" in UNRESERVED + bare_label,
+        DEFINER         => r"DEFINER" in UNRESERVED + bare_label,
+        INVOKER         => r"INVOKER" in UNRESERVED + bare_label,
+        LEAKPROOF       => r"LEAKPROOF" in UNRESERVED + bare_label,
+        COST            => r"COST" in UNRESERVED + bare_label,
+        SUPPORT         => r"SUPPORT" in UNRESERVED + bare_label,
+        TRANSFORM       => r"TRANSFORM" in UNRESERVED + bare_label,
+        // `SQL` — `unreserved_keyword` in `kwlist.h` (`SQL_P`). Used by
+        // `CREATE TRANSFORM` / `DROP TRANSFORM` (`FROM SQL WITH FUNCTION ...`)
+        // and `CREATE FUNCTION ... LANGUAGE SQL`. Soft here so it remains
+        // reclaimable as an identifier outside those grammar positions.
+        SQL             => r"SQL" in UNRESERVED + bare_label,
+        // Unicode normalisation forms — `unreserved_keyword` in kwlist.h.
+        // Used by `a_expr IS [NOT] [NFC|NFD|NFKC|NFKD] NORMALIZED` and
+        // `NORMALIZE(expr, NFx)`. Soft so they remain reclaimable as
+        // identifiers outside those predicate positions.
+        NORMALIZED      => r"NORMALIZED" in UNRESERVED + bare_label,
+        // NF-prefixed names: list longer matches before shorter (`NFKC`
+        // shares the `NF` prefix with `NFC` — the longest-match-wins lexer
+        // handles this purely via regex priorities, but order is explicit
+        // for readability).
+        NFKC            => r"NFKC" in UNRESERVED + bare_label,
+        NFKD            => r"NFKD" in UNRESERVED + bare_label,
+        NFC             => r"NFC" in UNRESERVED + bare_label,
+        NFD             => r"NFD" in UNRESERVED + bare_label,
+        EXTERNAL        => r"EXTERNAL" in UNRESERVED + bare_label,
+        PLAIN           => r"PLAIN" in UNRESERVED + bare_label,
+        EXTENDED        => r"EXTENDED" in UNRESERVED + bare_label,
+        MAIN            => r"MAIN" in UNRESERVED + bare_label,
+        NOWAIT          => r"NOWAIT" in UNRESERVED + bare_label,
+        SKIP            => r"SKIP" in UNRESERVED + bare_label,
+        LOCKED          => r"LOCKED" in UNRESERVED + bare_label,
+        LARGE           => r"LARGE" in UNRESERVED + bare_label,
+        XMLSERIALIZE    => r"XMLSERIALIZE" in COL_NAME + bare_label,
+        XMLROOT         => r"XMLROOT" in COL_NAME + bare_label,
+        XMLEXISTS       => r"XMLEXISTS" in COL_NAME + bare_label,
+        XMLTABLE        => r"XMLTABLE" in COL_NAME + bare_label,
+        XMLPARSE        => r"XMLPARSE" in COL_NAME + bare_label,
+        XMLNAMESPACES   => r"XMLNAMESPACES" in COL_NAME + bare_label,
+        DOCUMENT        => r"DOCUMENT" in UNRESERVED + bare_label,
+        CONTENT         => r"CONTENT" in UNRESERVED + bare_label,
+        VERSION         => r"VERSION" in UNRESERVED + bare_label,
+        STANDALONE      => r"STANDALONE" in UNRESERVED + bare_label,
+        // Added in 16: research, PostgreSQL 16, "Keywords".
+        #[config(since = pg16)]
+        INDENT          => r"INDENT" in UNRESERVED + bare_label,
+        REF             => r"REF" in UNRESERVED + bare_label,
+        YES             => r"YES" in UNRESERVED + bare_label,
+        OVERLAPS        => r"OVERLAPS" in TYPE_FUNC_NAME,
+        // Window frame units — safe to soften: the window `ref_name` slot
+        // that would otherwise eat them is guarded by the `not_frame_unit`
+        // postcondition. `PARTITION` is NOT in that guard, so it stays hard.
+        ROWS            => r"ROWS" in UNRESERVED + bare_label,
+        RANGE           => r"RANGE" in UNRESERVED + bare_label,
+        GROUPS          => r"GROUPS" in UNRESERVED + bare_label,
+        // Transaction-control non-reserved keywords. Soft so they remain
+        // reclaimable as identifiers outside transaction-control positions
+        // (all four are `unreserved_keyword` in Postgres' `gram.y`).
+        CHAIN           => r"CHAIN" in UNRESERVED + bare_label,
+        PREPARED        => r"PREPARED" in UNRESERVED + bare_label,
+        PLANS           => r"PLANS" in UNRESERVED + bare_label,
+        SEQUENCES       => r"SEQUENCES" in UNRESERVED + bare_label,
+        // DROP-family object-kind non-reserved keywords. Soft so they remain
+        // reclaimable as identifiers outside DROP positions (all six are
+        // `unreserved_keyword` in Postgres' `gram.y` / `kwlist.h`).
+        CLASS           => r"CLASS" in UNRESERVED + bare_label,
+        FAMILY          => r"FAMILY" in UNRESERVED + bare_label,
+        CONFIGURATION   => r"CONFIGURATION" in UNRESERVED + bare_label,
+        DICTIONARY      => r"DICTIONARY" in UNRESERVED + bare_label,
+        TEMPLATE        => r"TEMPLATE" in UNRESERVED + bare_label,
+        PARSER          => r"PARSER" in UNRESERVED + bare_label,
+        // `FORCE` is the only `DROP DATABASE ... (FORCE)` option keyword;
+        // `unreserved_keyword` in Postgres' `gram.y` / `kwlist.h`.
+        FORCE           => r"FORCE" in UNRESERVED + bare_label,
+        // Cursor-declaration option keywords (`DECLARE ... CURSOR`). `HOLD`,
+        // `SCROLL`, `ASENSITIVE`, `INSENSITIVE` are `unreserved_keyword` and
+        // `BINARY` is `type_func_name_keyword` in Postgres' `gram.y` /
+        // `kwlist.h`. Hard keywords here (like the FETCH/MOVE direction
+        // keywords `NEXT`/`FORWARD`/…) since they only appear in fixed
+        // cursor-grammar positions.
+        HOLD            => r"HOLD" in UNRESERVED + bare_label,
+        SCROLL          => r"SCROLL" in UNRESERVED + bare_label,
+        BINARY          => r"BINARY" in TYPE_FUNC_NAME + bare_label,
+        ASENSITIVE      => r"ASENSITIVE" in UNRESERVED + bare_label,
+        INSENSITIVE     => r"INSENSITIVE" in UNRESERVED + bare_label,
+        // `LOCK ... IN <lock_type> MODE` keywords. `MODE` and `EXCLUSIVE` are
+        // `unreserved_keyword` in Postgres' `gram.y`, but kept hard here
+        // (matching the sibling lock-mode keywords `ACCESS` / `SHARE` / `ROW`,
+        // which are also hard) since they only appear in fixed lock-grammar
+        // positions.
+        EXCLUSIVE       => r"EXCLUSIVE" in UNRESERVED + bare_label,
+        MODE            => r"MODE" in UNRESERVED + bare_label,
+        // Maintenance-statement option keywords: `VACUUM FREEZE`,
+        // `TRUNCATE { RESTART | CONTINUE } IDENTITY`. `FREEZE` is
+        // `type_func_name_keyword` in Postgres' `gram.y` / `kwlist.h`;
+        // `RESTART` and `CONTINUE` are `unreserved_keyword`. Soft here so
+        // they remain reclaimable as identifiers outside maintenance
+        // statements.
+        FREEZE          => r"FREEZE" in TYPE_FUNC_NAME + bare_label,
+        RESTART         => r"RESTART" in UNRESERVED + bare_label,
+        CONTINUE        => r"CONTINUE" in UNRESERVED + bare_label,
+        // GRANT/REVOKE/ALTER DEFAULT PRIVILEGES keywords. All are
+        // `unreserved_keyword` in Postgres' `gram.y` / `kwlist.h`. Soft here so
+        // they remain reclaimable as identifiers outside privilege grammar
+        // positions. `SEQUENCES` is shared with the transaction-control block
+        // above.
+        ADMIN           => r"ADMIN" in UNRESERVED + bare_label,
+        GRANTED         => r"GRANTED" in UNRESERVED + bare_label,
+        TABLES          => r"TABLES" in UNRESERVED + bare_label,
+        FUNCTIONS       => r"FUNCTIONS" in UNRESERVED + bare_label,
+        PROCEDURES      => r"PROCEDURES" in UNRESERVED + bare_label,
+        ROUTINES        => r"ROUTINES" in UNRESERVED + bare_label,
+        SCHEMAS         => r"SCHEMAS" in UNRESERVED + bare_label,
+        TYPES           => r"TYPES" in UNRESERVED + bare_label,
+        // COPY-statement keywords. All `unreserved_keyword` in Postgres'
+        // `gram.y` / `kwlist.h`. Soft here so they remain reclaimable as
+        // identifiers outside COPY grammar positions. `DELIMITERS` (the
+        // legacy `USING DELIMITERS 'c'` form) must precede `DELIMITER` so
+        // longest-match-wins picks the longer spelling first.
+        DELIMITERS      => r"DELIMITERS" in UNRESERVED + bare_label,
+        DELIMITER       => r"DELIMITER" in UNRESERVED + bare_label,
+        STDIN           => r"STDIN" in UNRESERVED + bare_label,
+        STDOUT          => r"STDOUT" in UNRESERVED + bare_label,
+        PROGRAM         => r"PROGRAM" in UNRESERVED + bare_label,
+        QUOTE           => r"QUOTE" in UNRESERVED + bare_label,
+        HEADER          => r"HEADER" in UNRESERVED + bare_label,
+        CSV             => r"CSV" in UNRESERVED + bare_label,
+        // CREATE/ALTER ROLE/USER/GROUP attribute keywords. None of these are
+        // PG keywords — in `gram.y` they're parsed as `IDENT` and discriminated
+        // by `strcmp` inside `AlterOptRoleElem`. We model each as a distinct
+        // soft keyword so the AST has a unique type per attribute. Each must
+        // remain reclaimable as an identifier outside role grammar positions
+        // (e.g. as a role name like `regress_test_superuser`).
+        //
+        // `NO*` variants must precede their bare counterparts so longest-
+        // match-wins picks the longer spelling first (otherwise `NOSUPERUSER`
+        // would lex as `NO` followed by `SUPERUSER`).
+        NOSUPERUSER     => r"NOSUPERUSER" in UNRESERVED + bare_label,
+        SUPERUSER       => r"SUPERUSER" in UNRESERVED + bare_label,
+        NOCREATEDB      => r"NOCREATEDB" in UNRESERVED + bare_label,
+        CREATEDB        => r"CREATEDB" in UNRESERVED + bare_label,
+        NOCREATEROLE    => r"NOCREATEROLE" in UNRESERVED + bare_label,
+        CREATEROLE      => r"CREATEROLE" in UNRESERVED + bare_label,
+        NOINHERIT       => r"NOINHERIT" in UNRESERVED + bare_label,
+        NOLOGIN         => r"NOLOGIN" in UNRESERVED + bare_label,
+        LOGIN           => r"LOGIN" in UNRESERVED + bare_label,
+        NOREPLICATION   => r"NOREPLICATION" in UNRESERVED + bare_label,
+        REPLICATION     => r"REPLICATION" in UNRESERVED + bare_label,
+        NOBYPASSRLS     => r"NOBYPASSRLS" in UNRESERVED + bare_label,
+        BYPASSRLS       => r"BYPASSRLS" in UNRESERVED + bare_label,
+        // Role-attribute keywords that ARE Postgres `unreserved_keyword`s in
+        // `kwlist.h` (CONNECTION, ENCRYPTED, PASSWORD, SYSID, UNTIL,
+        // UNENCRYPTED). Soft here so they remain reclaimable as identifiers
+        // outside role-attribute positions.
+        CONNECTION      => r"CONNECTION" in UNRESERVED + bare_label,
+        ENCRYPTED       => r"ENCRYPTED" in UNRESERVED + bare_label,
+        UNENCRYPTED     => r"UNENCRYPTED" in UNRESERVED + bare_label,
+        PASSWORD        => r"PASSWORD" in UNRESERVED + bare_label,
+        SYSID           => r"SYSID" in UNRESERVED + bare_label,
+        UNTIL           => r"UNTIL" in UNRESERVED + bare_label,
+        // CREATE OBJECT keywords for CAST/TYPE forms. All `unreserved_keyword`
+        // in Postgres' `gram.y` / `kwlist.h`. Soft so they remain reclaimable
+        // as identifiers outside their grammar positions.
+        // `ENUM` is `enum_P` in gram.y; appears in `CREATE TYPE name AS ENUM (...)`.
+        // `IMPLICIT` and `ASSIGNMENT` are the two `cast_context` words after
+        // `AS` in `CREATE CAST (...) WITH/WITHOUT FUNCTION AS {IMPLICIT|ASSIGNMENT}`.
+        ENUM            => r"ENUM" in UNRESERVED + bare_label,
+        IMPLICIT        => r"IMPLICIT" in UNRESERVED + bare_label,
+        ASSIGNMENT      => r"ASSIGNMENT" in UNRESERVED + bare_label,
+        // CREATE TRIGGER's transition-table clause: `REFERENCING {OLD|NEW}
+        // TABLE [AS] name ...`. Postgres' `kwlist.h` marks REFERENCING as
+        // `unreserved_keyword`, so it is soft here and remains reclaimable
+        // as an identifier outside the trigger grammar.
+        REFERENCING     => r"REFERENCING" in UNRESERVED + bare_label,
+        // `ENABLE` / `DISABLE` — subscription on/off toggles in
+        // `ALTER SUBSCRIPTION name { ENABLE | DISABLE }`. Both are
+        // `unreserved_keyword` in `kwlist.h` (`ENABLE_P` / `DISABLE_P`).
+        // Soft so they stay reclaimable as identifiers elsewhere.
+        ENABLE          => r"ENABLE" in UNRESERVED + bare_label,
+        DISABLE         => r"DISABLE" in UNRESERVED + bare_label,
+        // `ATTRIBUTE` — used in ALTER TYPE name { ADD | DROP | ALTER | RENAME }
+        // ATTRIBUTE column. `unreserved_keyword` in `kwlist.h`, so soft here
+        // and remains reclaimable as an identifier elsewhere.
+        ATTRIBUTE       => r"ATTRIBUTE" in UNRESERVED + bare_label,
+        // ALTER {INDEX,VIEW,MATERIALIZED VIEW,SEQUENCE,TRIGGER,EVENT TRIGGER,
+        // DOMAIN,DATABASE} object-level action keywords. All five are
+        // `unreserved_keyword` in `kwlist.h`: `ATTACH PARTITION`,
+        // `[NO] DEPENDS ON EXTENSION`, `SET LOGGED`/`SET UNLOGGED` (paired
+        // with the existing hard `UNLOGGED`), `ENABLE REPLICA`, `VALIDATE
+        // CONSTRAINT`. Soft so they stay reclaimable as identifiers outside
+        // ALTER positions.
+        ATTACH          => r"ATTACH" in UNRESERVED + bare_label,
+        DEPENDS         => r"DEPENDS" in UNRESERVED + bare_label,
+        LOGGED          => r"LOGGED" in UNRESERVED + bare_label,
+        REPLICA         => r"REPLICA" in UNRESERVED + bare_label,
+        VALIDATE        => r"VALIDATE" in UNRESERVED + bare_label,
+        // ALTER TABLE-specific action keywords. All `unreserved_keyword` in
+        // `kwlist.h`: `DETACH PARTITION` (+ optional FINALIZE), `SET EXPRESSION
+        // AS` / `DROP EXPRESSION`. Soft so they remain reclaimable as
+        // identifiers outside ALTER TABLE positions.
+        DETACH          => r"DETACH" in UNRESERVED + bare_label,
+        FINALIZE        => r"FINALIZE" in UNRESERVED + bare_label,
+        EXPRESSION      => r"EXPRESSION" in UNRESERVED + bare_label,
+        // `RECHECK` — accepted by `CREATE OPERATOR CLASS` opclass items
+        // (`OPERATOR n any_op opclass_purpose [RECHECK]`). `unreserved_keyword`
+        // in `kwlist.h`; deprecated but still parsed for legacy-dump
+        // compatibility. Soft so it stays reclaimable as an identifier outside
+        // opclass-item positions.
+        //
+        // Removed in 18: `opt_recheck` and the `recheck` keyword are gone
+        // (docs/research/postgres-14-19-sql-syntax-changes.md, PostgreSQL 18,
+        // "Keywords" and "Removed or changed syntax"; commit 7da1bdc2c2f).
+        #[config(before = pg18)]
+        RECHECK         => r"RECHECK" in UNRESERVED + bare_label,
+        // Added in 19: `kwlist.h` at `b73d13c` (docs/research/
+        // postgres-14-19-sql-syntax-changes.md, PostgreSQL 19, "Keywords").
+        // Before 19 each word is no keyword at all, so it lexes as an
+        // identifier. `IGNORE` and `RESPECT` are AS_LABEL: no `bare_label`.
+        #[config(since = pg19)]
+        IGNORE          => r"IGNORE" in UNRESERVED,
+        #[config(since = pg19)]
+        RESPECT         => r"RESPECT" in UNRESERVED,
+        #[config(since = pg19)]
+        LSN             => r"LSN" in UNRESERVED + bare_label,
+        #[config(since = pg19)]
+        REPACK          => r"REPACK" in UNRESERVED + bare_label,
+        #[config(since = pg19)]
+        WAIT            => r"WAIT" in UNRESERVED + bare_label,
+        // Added in 18: four new unreserved, bare-label keywords
+        // (docs/research/postgres-14-19-sql-syntax-changes.md, PostgreSQL 18,
+        // "Keywords"; REL_18_6 kwlist.h). `ENFORCED` is the constraint
+        // attribute, `OBJECTS` ends `ON LARGE OBJECTS` in default privileges,
+        // `PERIOD` marks a temporal foreign-key column, and `VIRTUAL` is the
+        // generated-column kind.
+        #[config(since = pg18)]
+        ENFORCED        => r"ENFORCED" in UNRESERVED + bare_label,
+        #[config(since = pg18)]
+        OBJECTS         => r"OBJECTS" in UNRESERVED + bare_label,
+        #[config(since = pg18)]
+        PERIOD          => r"PERIOD" in UNRESERVED + bare_label,
+        #[config(since = pg18)]
+        VIRTUAL         => r"VIRTUAL" in UNRESERVED + bare_label,
+    },
+    punctuation {
+        SEMI      => ";",
+        COMMA     => ",",
+        LPAREN    => "(",
+        RPAREN    => ")",
+        // Record comparison operators (`*=` etc.) — longest-match first so
+        // they win over bare `Star`. Used only as infix operators.
+        STARLTE   => "*<=",
+        STARGTE   => "*>=",
+        STARNEQ   => "*<>",
+        STARLT    => "*<",
+        STARGT    => "*>",
+        STAREQ    => "*=",
+        STAR      => "*",
+        DOT       => ".", spacing = tight,
+        // 3-char `===` before 2-char `=>` and single-char `=`.
+        TRIPLEEQ   => "===",
+        EQ        => "=", spacing = around,
+        FATARROW  => "=>",
+        COLONEQUALS => ":=",
+        // 3-char `!==` and `!=-` before 2-char `!=`.
+        BANGEQEQ   => "!==",
+        BANGEQMINUS => "!=-",
+        BANGEQ    => "!=", spacing = around,
+        NEQ       => "<>", spacing = around,
+        // 3-char `<`-prefixed operators must come before 2-char `<=`/`<>`/`<<`
+        // and before the single-char `<`.
+        // 3-char `<<<` before 2-char `<<`.
+        LTLTLT     => "<<<",
+        LTLTEQ     => "<<=",
+        LTLTPIPE   => "<<|",
+        LTMINUSGT  => "<->",
+        LTLT       => "<<",
+        LTE       => "<=", spacing = around,
+        // Geometric "below" `<^` before single-char `<`.
+        LTCARET    => "<^",
+        // 3-char `>>=` before `>>`, then `>=`, `>`.
+        // 3-char `>>>` before 2-char `>>`.
+        GTGTGT     => ">>>",
+        GTGTEQ     => ">>=",
+        GTGT       => ">>",
+        GTE       => ">=", spacing = around,
+        // Geometric "above" `>^` before single-char `>`.
+        GTCARET    => ">^",
+        LT        => "<", spacing = around,
+        GT        => ">", spacing = around,
+        COLONCOLON => "::",
+        COLON      => ":",
+        // A backslash is not PostgreSQL SQL outside a string literal. The
+        // token exists only so that one lexes instead of failing, which lets
+        // the parser reject a psql script with a strict diagnostic naming the
+        // statement. psql's own spellings -- the send commands and `\;` --
+        // belong to the `pg-psql` crate's grammar, not to this one.
+        BACKSLASH  => "\\",
+        PLUS       => "+",
+        // 3-char `-|-` before 2-char `->>`/`->` before single-char `-`.
+        MINUSPIPEMINUS => "-|-",
+        MINUS      => "-",
+        // 3-char `|>>` and `|&>` before 2-char `||`.
+        PIPEGTGT       => "|>>",
+        PIPEAMPGT      => "|&>",
+        // Cube-root `||/` (prefix operator). Must come before `||`.
+        PIPEPIPESLASH  => "||/",
+        CONCAT     => "||",
+        // Square-root `|/` (prefix operator). Must come after `||/`/`||`
+        // and before bare `|`.
+        PIPESLASH      => "|/",
+        // Single-char `|` (bitwise OR). Must be declared after `||` and
+        // other `|`-prefixed operators so longest-match picks the longer form.
+        PIPE       => "|",
+        SLASH      => "/",
+        PERCENT    => "%",
+        LBRACKET   => "[",
+        RBRACKET   => "]",
+        // JSON/JSONB operators. Longer before shorter (longest-match-wins).
+        HASHARROWARROW => "#>>",
+        HASHARROW      => "#>",
+        // 2-char `##` (geometric closest-point / path intersection). After
+        // `#>>` and `#>` but before single-char `#`.
+        HASHHASH       => "##",
+        // jsonb delete-path operator `#-`. Must precede single-char `Pound`
+        // so longest-match-wins picks the 2-char form. Without this entry the
+        // classifier splits `#-` into `Pound` + `Minus`, which the formatter
+        // then re-emits as `# -` — re-parsed by PostgreSQL as two operators.
+        HASHMINUS      => "#-",
+        // Single-char `#` (bitwise XOR). Must come after all longer `#`-prefixed
+        // tokens so longest-match-wins.
+        POUND          => "#",
+        ARROWARROW     => "->>",
+        ARROW          => "->",
+        // 3-char `?||` and `?-|` before 2-char `?|`/`?-` (longest-match-wins).
+        QUESTIONPIPEPIPE => "?||",
+        QUESTIONDASHPIPE => "?-|",
+        QUESTIONPIPE   => "?|",
+        QUESTIONAMP    => "?&",
+        QUESTIONHASH   => "?#",
+        QUESTIONDASH   => "?-",
+        // `@@@` before 3-char `@-@`/`@#@`/`@+@` before `@@` before `@?` / `@>`.
+        ATATAT         => "@@@",
+        // User-defined / geometric 3-char `@`-prefixed operators.
+        ATMINUSAT      => "@-@",
+        ATHASHAT       => "@#@",
+        ATPLUSAT       => "@+@",
+        ATAT           => "@@",
+        ATQUESTION     => "@?",
+        ATGT           => "@>",
+        // Single-char `@` (prefix absolute-value operator). Declared after
+        // all longer `@`-prefixed operators so longest-match-wins.
+        ATSIGN         => "@",
+        LTAT           => "<@",
+        QUESTION       => "?",
+        // `&`-prefixed range/geometric operators. 3-char `&<|` before 2-char.
+        AMPLTPIPE      => "&<|",
+        AMPAMP         => "&&",
+        AMPLT          => "&<",
+        AMPGT          => "&>",
+        // Single-char `&` (bitwise AND). Must follow all longer `&`-prefixed
+        // operators so longest-match-wins.
+        AMP            => "&",
+        // Locale-aware text comparison operators. 4-char before 3-char,
+        // all before POSIX regex `~*`/`!~*`/`!~`/`~=`/`~`.
+        TILDELEQTILDE  => "~<=~",
+        TILDEGEQTILDE  => "~>=~",
+        TILDELTTILDE   => "~<~",
+        TILDEGTTILDE   => "~>~",
+        // LIKE/ILIKE family operators. PG uses `~~`/`!~~`/`~~*`/`!~~*` as
+        // the implementation operators for LIKE/NOT LIKE/ILIKE/NOT ILIKE.
+        // Longer forms must precede shorter forms (and precede the POSIX
+        // `~*`/`!~*`/`~`/`!~` family) so longest-match wins.
+        BANGTILDETILDESTAR => "!~~*",
+        TILDETILDESTAR => "~~*",
+        BANGTILDETILDE => "!~~",
+        TILDETILDE     => "~~",
+        // POSIX regex match operators. Longest-first.
+        BANGTILDESTAR  => "!~*",
+        TILDESTAR      => "~*",
+        BANGTILDE      => "!~",
+        // Geometric "same as" operator. Must precede bare `~`.
+        TILDEEQ        => "~=",
+        TILDE          => "~",
+        // Text "starts-with" operator `^@`. Must precede single-char `Caret`
+        // so longest-match-wins picks the 2-char form. Without this entry the
+        // classifier splits `^@` into `Caret` + `At`, which the formatter then
+        // re-emits as `^ @` — re-parsed by PostgreSQL as two operators.
+        CARETAT        => "^@",
+        // Exponentiation operator (Postgres).
+        CARET          => "^",
+    },
+    matchers {
+        // A hand-written `Arbitrary` impl below produces realistic dollar-quoted strings; the
+        // auto-generated "echo the fixed spelling" impl would conflict with it (E0119), so it's
+        // omitted here.
+        #[node(omit(Arbitrary))]
+        DollarStringLit => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
+        // The numeric literals of scan.l. A literal that an identifier
+        // character follows directly is a lexical error from 15 (`excluded`,
+        // research, PostgreSQL 15, "Lexical and literal syntax"):
+        // scan.l `integer_junk`, `numeric_junk` (`decimal_junk` before 16),
+        // `real_junk` and `realfail`.
+        //
+        // An integer is an `ICONST` only when its value fits in `int32`; a
+        // larger one is an `FCONST`, so it lexes as `NumericLit` here
+        // (scan.l `process_integer_literal`: REL_17_11 scan.l 1370 with
+        // `pg_strtoint32_safe`, REL_14_24 scan.l 1305 with `strtoint`). The
+        // last alternative of each `NumericLit` pattern takes the integers
+        // above 2147483647, with any leading zeros and, from 16, any radix and
+        // `_` separators. `IntegerLit` also matches such an integer, to the
+        // same extent, and `priority = 1` makes `NumericLit` win that tie
+        // (issue #88). Bounding the `IntegerLit` pattern instead is exact too,
+        // but its automaton is too large for recursa's Pretty boundary proof
+        // after `[`, which then fails closed (RCA3211).
+        //
+        // REL_16_15 scan.l 395-437: `decinteger {decdigit}(_?{decdigit})*`,
+        // the `0x`/`0o`/`0b` integers, and `_` separators in `numeric` and
+        // `real`.
+        #[config(since = pg16)]
+        NumericLit => next_exclusion(pattern = r"(?:(?:[0-9](?:_?[0-9])*\.[0-9](?:_?[0-9])*|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*\.[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\.|(?:0[xX](?:(?:_?0)*_?(?:[123456789aAbBcCdDeEfF](?:_?[0-9a-fA-F]){8,}|[89aAbBcCdDeEfF](?:_?[0-9a-fA-F]){7}))|0[oO](?:(?:_?0)*_?(?:[1-7](?:_?[0-7]){11,}|[2-7](?:_?[0-7]){10}))|0[bB](?:(?:_?0)*_?(?:1(?:_?[01]){31,}))|(?:0_?)*(?:[1-9](?:_?[0-9]){10,}|[3-9](?:_?[0-9]){9}|2_?[2-9](?:_?[0-9]){8}|2_?1_?[5-9](?:_?[0-9]){7}|2_?1_?4_?[8-9](?:_?[0-9]){6}|2_?1_?4_?7_?[5-9](?:_?[0-9]){5}|2_?1_?4_?7_?4_?9(?:_?[0-9]){4}|2_?1_?4_?7_?4_?8_?[4-9](?:_?[0-9]){3}|2_?1_?4_?7_?4_?8_?3_?[7-9](?:_?[0-9]){2}|2_?1_?4_?7_?4_?8_?3_?6_?[5-9](?:_?[0-9])|2_?1_?4_?7_?4_?8_?3_?6_?4_?[8-9])))", excluded = r"[A-Za-z0-9_]", priority = 1),
+        #[config(since = pg16)]
+        IntegerLit => next_exclusion(pattern = r"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|[0-9](?:_?[0-9])*)", excluded = r"[A-Za-z0-9_]"),
+        // Before 16 there are no non-decimal integers and no `_` separators:
+        // research, PostgreSQL 16, "Lexical and literal syntax" (commits
+        // 6fcda9aba, faff8f8e4). REL_15_19 scan.l 395-403: `integer
+        // {digit}+`, `decimal (({digit}*\.{digit}+)|({digit}+\.{digit}*))`,
+        // `real ({integer}|{decimal})[Ee][-+]?{digit}+`. So `0x1F` and `1_000`
+        // are `integer_junk`, `1.5_0` is `decimal_junk` and `1e1_0` is
+        // `real_junk`, and each is an error.
+        #[config(since = pg15, before = pg16)]
+        NumericLit => next_exclusion(pattern = r"(?:[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*)[eE][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*|(?:0*(?:[1-9][0-9]{10,}|[3-9][0-9]{9}|2[2-9][0-9]{8}|21[5-9][0-9]{7}|214[8-9][0-9]{6}|2147[5-9][0-9]{5}|214749[0-9]{4}|214748[4-9][0-9]{3}|2147483[7-9][0-9]{2}|21474836[5-9][0-9]|214748364[8-9]))", excluded = r"[A-Za-z0-9_]", priority = 1),
+        #[config(since = pg15, before = pg16)]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        // Before 15 there is no trailing-junk check: research, PostgreSQL 15,
+        // "Lexical and literal syntax" (commit 2549f0661). REL_14_24 scan.l
+        // 392-399 has the 15 patterns, but no `*_junk` rule, and `realfail1`
+        // and `realfail2` give back the `[Ee]` and `[Ee][-+]`. So a number
+        // ends where its pattern ends, whatever follows: `123abc` is `123`
+        // then `abc`, `0x1F` is `0` then `x1F`, and `1e+` is `1`, `e`, `+`.
+        #[config(before = pg15)]
+        NumericLit => next_exclusion(pattern = r"(?:[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*)[eE][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*|(?:0*(?:[1-9][0-9]{10,}|[3-9][0-9]{9}|2[2-9][0-9]{8}|21[5-9][0-9]{7}|214[8-9][0-9]{6}|2147[5-9][0-9]{5}|214749[0-9]{4}|214748[4-9][0-9]{3}|2147483[7-9][0-9]{2}|21474836[5-9][0-9]|214748364[8-9]))", priority = 1),
+        #[config(before = pg15)]
+        IntegerLit => next_exclusion(pattern = r"[0-9]+"),
+        // A parameter that an identifier character follows directly is a
+        // lexical error from 15 (scan.l `param_junk`).
+        #[config(since = pg15, before = pg18)]
+        DollarNum => next_exclusion(pattern = r"\$[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        // Added in 18: a parameter number that does not fit in `int32` is a
+        // lexer error, "parameter number too large"
+        // (docs/research/postgres-14-19-sql-syntax-changes.md, PostgreSQL 18,
+        // item 13; REL_18_6 scan.l `{param}`, commit d35cd061998). The
+        // pattern accepts only the values 0 to 2147483647, with any leading
+        // zeros. A longer number matches only an in-range prefix, and the
+        // next digit is excluded, so the lexer reports an error.
+        #[config(since = pg18)]
+        DollarNum => next_exclusion(pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])", excluded = r"[A-Za-z0-9_]"),
+        // Before 15 there is no `param_junk`: `$1abc` is `$1` then `abc`
+        // (REL_14_24 scan.l 399 `param \${integer}`; research, PostgreSQL
+        // 15, "Lexical and literal syntax").
+        #[config(before = pg15)]
+        DollarNum => next_exclusion(pattern = r"\$[0-9]+"),
+        CustomOp => operator_run(
+            characters = "-+*/<>=~!@#%^&|?",
+            fences = ["/*", "--"],
+            trailing = "+-",
+            qualifying = "~!@#%^&|?",
+            priority = 1
+        ),
+    }
+    ignore {
+        // A physical-line matcher avoids making the global regular-pattern
+        // ambiguity DFA carry an unbounded `--[^\n]*` search state while
+        // preserving PostgreSQL's line-comment extent through the newline.
+        LineComment => physical_line(prefix = r"--", priority = 2),
+        // Nested comments remain non-emitting until classified trivia lands in #93.
+        BlockComment => nested(opener = "/*", closer = "*/", priority = 2),
+    }
+    admissions {
+        AllWordKinds = keywords,
+        ColId = UNRESERVED + COL_NAME,
+        type_function_name = UNRESERVED + TYPE_FUNC_NAME,
+        // gram.y `GenericType: type_function_name ...`, less the legacy
+        // built-ins that `TypeName` keeps as fixed variants. From 17, `json`
+        // is a COL_NAME keyword and reaches a type name only through
+        // `JsonType`, which has its own variants.
+        TypeNameIdent = type_function_name - { BOOL, TEXT, SERIAL, UNKNOWN },
+        NonReservedWord = UNRESERVED + COL_NAME + TYPE_FUNC_NAME,
+        ColLabel = UNRESERVED + COL_NAME + TYPE_FUNC_NAME + RESERVED,
+        BareColLabel = bare_label,
+        WindowRefName = ColId - { PARTITION, ORDER, ROWS, RANGE, GROUPS },
+        TableFunctionName = type_function_name - { COLLATION },
+        RelationAliasName = ColId - { SET },
+        // gram.y `RevokeRoleStmt: REVOKE ColId OPTION FOR …` (REL_16_15 7805).
+        // `ADMIN` is the one spelling REL_15_19 gram.y 7738 accepts, so it is
+        // its own variant of `RevokeRoleOptionName` and this set holds the rest
+        // of `ColId`. The two together are gram.y's `ColId`, which is what
+        // principle 9 asks for; the split only lets the gate name the spelling
+        // that 16 adds.
+        RoleRevokeOptionWord = ColId - { ADMIN },
+        // gram.y `grant_role_opt: ColLabel grant_role_opt_value` (REL_16_15
+        // 7827), split the same way against REL_15_19 gram.y 7752
+        // `opt_grant_admin_option: WITH ADMIN OPTION`. The two together are
+        // gram.y's `ColLabel`.
+        RoleGrantOptionWord = ColLabel - { ADMIN },
+        // gram.y resolves `a LIKE b escape`, `x IS JSON WITH UNIQUE keys`
+        // and `x IS JSON value` by precedence (`%nonassoc ESCAPE`, and the
+        // `%nonassoc IDENT ... KEYS OBJECT_P SCALAR VALUE_P ...` group), yet
+        // `SELECT a value` and `SELECT a escape` stay valid: the keyword is
+        // a bare label whenever no expression can continue. The set stays
+        // the full `bare_label`; the LR parser needs keyword
+        // precedence to settle those states (recursa #120).
+        SelectBareAliasName = bare_label
+            - { AND, OR, NOT, IS, IN, LIKE, ILIKE, COLLATE, SIMILAR, BETWEEN, OPERATOR, AT },
+        UnquotedIdent = NonReservedWord,
+        BareAliasName = AllWordKinds,
+        // gram.y `createdb_opt_name`: `IDENT` plus these keywords; the
+        // two-token `CONNECTION LIMIT` is its own variant of
+        // `CreateDbOptName`.
+        CreateDbOptWord = { ENCODING, LOCATION, OWNER, TABLESPACE, TEMPLATE },
+        // gram.y `utility_option_name`: `NonReservedWord | analyze_keyword |
+        // FORMAT_LA` (`FORMAT` is unreserved, so it is already a member;
+        // `ANALYSE` is not a pg-sql keyword and lexes as an identifier). The
+        // `FORMAT_LA` arm is not here: an admission set stands for a gram.y
+        // keyword category, and no category of gram.y holds an `_LA` token.
+        // `literal::UtilityOptionName` names that merged kind in its own
+        // variant, as gram.y names it in `utility_option_name` itself.
+        UtilityOptionName = NonReservedWord + { ANALYZE },
+        // gram.y `IDENT`: an identifier that is no keyword at all, the name
+        // of an old-style `CREATE AGGREGATE (name = value)` option
+        // (`old_aggr_elem: IDENT '=' def_arg`). Admitting `ColId` there put
+        // a column-name closure beside the parameter closure of the new
+        // syntax, and LALR merged that state with the target list's.
+        IdentOnly = AllWordKinds - AllWordKinds,
+    }
+    // Lookahead filters, one per case of PostgreSQL's `base_yylex`
+    // (`src/backend/parser/parser.c`): the LR token feed reads the
+    // merged kind when the token is immediately followed by a trigger, the
+    // way `base_yylex` rewrites the token stream so that `gram.y` stays
+    // LALR(1). Nodes keep writing
+    // `#[tok(NOT, BETWEEN)]`; lowering substitutes the merged kind where a
+    // trigger can follow.
+    lookahead {
+        // `parser.c`: `case NULLS_P:` -> `NULLS_LA` before FIRST, LAST
+        // (gram.y `opt_nulls_order`).
+        NULLS_LA = NULLS before { FIRST, LAST },
+        // `parser.c`: `case WITH:` -> `WITH_LA` before TIME, ORDINALITY
+        // (gram.y `ConstDatetime`, `func_table ... WITH_LA ORDINALITY`).
+        WITH_LA = WITH before { TIME, ORDINALITY },
+        // `parser.c`: `case WITHOUT:` -> `WITHOUT_LA` before TIME
+        // (gram.y `ConstDatetime`, `opt_timezone`).
+        WITHOUT_LA = WITHOUT before { TIME },
+        // `parser.c`: `case FORMAT:` -> `FORMAT_LA` before JSON (gram.y
+        // `json_format_clause`, `utility_option_name`). Added in 16 with its
+        // two keywords: research, PostgreSQL 16, "Lexical and literal syntax"
+        // (REL_16_15 parser.c, case `FORMAT`). REL_15_19 parser.c has no such
+        // case.
+        #[config(since = pg16)]
+        FORMAT_LA = FORMAT before { JSON },
+        // `parser.c`: `case NOT:` -> `NOT_LA` before BETWEEN, IN_P, LIKE,
+        // ILIKE, SIMILAR (gram.y `a_expr NOT_LA BETWEEN ...`, and the
+        // prefix twin `NOT_LA a_expr` that keeps `NOT between` a negated
+        // column). recursa #121 twins a filtered token at any rule
+        // position, the leading token of a prefix rule included, so the
+        // filter lowers everywhere gram.y writes `NOT_LA`.
+        NOT_LA = NOT before { BETWEEN, IN, LIKE, ILIKE, SIMILAR },
+        // `parser.c`: after a Unicode string/identifier token, a following
+        // `UESCAPE SCONST` is consumed as its escape clause. The grammar
+        // keeps `UESCAPE` as a bare-label keyword for every other position;
+        // the LR token feed therefore marks only the clause-shaped
+        // spelling. `StringLit` is content-bearing, unlike parser.c's other
+        // fixed-token triggers.
+        UESCAPE_LA = UESCAPE before { StringLit },
+        // The function-style typed literal spelling `type(args) 'value'`
+        // shares its argument list with an ordinary function call. Mark only
+        // the closing delimiter followed by its string payload so the LR
+        // table reduces ordinary arguments on `)` and shifts the typed-literal
+        // close on this distinct lookahead.
+        // Typed literals and parenthesized set queries need different merged
+        // kinds: their trigger sets are disjoint, and combining them would
+        // make a function close before `)` look like a typed-literal close.
+        RPAREN_TYPED_LA = RPAREN before { StringLit },
+        // A `)` that a set operator follows, which is how a completed
+        // parenthesized form parts from a grouped set query on one token:
+        // `(SELECT 1) UNION SELECT 2` continues the query, `(SELECT 1)` alone
+        // does not. Every closing rule that can end a `select_clause` names
+        // the merged kind, because lookahead substitution reads `FIRST` of
+        // the rest of the rule only and a closing `)` is rule-final: see
+        // `crate::ast::shared::expr::ParenthesizedClose`, `FunctionCallClose`
+        // and `TypeModifierClose`, and `crate::ast::dml::select::ValuesRow`
+        // and `TableAliasColumnList`.
+        //
+        // `RPAREN` is deliberately not a trigger. It was one, so that the
+        // inner `)` of `((SELECT 2))` shifted into
+        // `select_with_parens: '(' select_with_parens ')'` instead of closing
+        // an expression paren. As a trigger it merges the inner `)` of every
+        // `))` in the language, so each of the hundred-odd closing rules of
+        // the grammar would have to name the merged kind: 25 of them fail the
+        // embedded suite with the trigger in place, and nothing diagnoses the
+        // next one added. gram.y needs no lookahead there at all, because
+        // `select_with_parens` is its own nonterminal (REL_17_11 gram.y
+        // 12658-12663, second production at 12685), which pg-sql cannot
+        // mirror while every grammar type is also a parsing entry point.
+        RPAREN_SELECT_LA = RPAREN before { UNION, INTERSECT, EXCEPT },
+    }
+
+    // PostgreSQL's precedence declarations (`gram.y:829-908`, "Precedence:
+    // lowest to highest"), mirrored level for level, in gram.y's order.
+    //
+    // This block is the grammar's only precedence model. A rule takes the
+    // level of its last terminal that has one, unless a
+    // `#[parse(prec = NAME)]` override on the variant or the Node names a
+    // level, exactly as bison reads `%prec`. recursa's
+    // `docs/declared-precedence.md` states the model; `crate::ast::shared::expr`
+    // states where each override comes from.
+    //
+    // The numbering is gram.y's order times ten. Only the order matters; the
+    // gap leaves room for a level between two gram.y levels.
+    //
+    // PostgreSQL's scanner returns one `Op` token for every symbolic operator
+    // it does not name individually (`src/backend/parser/scan.l`), so gram.y's
+    // single `Op` stands for the whole family of spellings pg-sql gives their
+    // own token kinds. Every one of them is declared at gram.y's `Op` level
+    // below. Only `< > = <= >= <>`, `+ - * / % ^`, `::` and `.` are named by
+    // the scanner in their own right and take their own levels.
+    precedence {
+        // gram.y:830 `%left UNION EXCEPT`: the set operators of
+        // `SelectClause`, which is left-recursive as gram.y's `select_clause`
+        // is.
+        left(bp = 10) { UNION, EXCEPT },
+        // gram.y:831 `%left INTERSECT`.
+        left(bp = 20) { INTERSECT },
+        // gram.y:832 `%left OR` -- `Expr::Or`.
+        left(bp = 30) { OR },
+        // gram.y:833 `%left AND` -- `Expr::And`.
+        left(bp = 40) { AND },
+        // gram.y:834 `%right NOT` -- `Expr::Not`, and the level every
+        // `NOT_LA` prefix form takes through `%prec NOT` (gram.y:14855).
+        right(bp = 50) { NOT },
+        // gram.y:835 `%nonassoc IS ISNULL NOTNULL` ("IS sets precedence for
+        // IS NULL, etc") -- the whole `IS` family of `Expr` variants.
+        nonassoc(bp = 60) { IS, ISNULL, NOTNULL },
+        // gram.y:836 `%nonassoc '<' '>' '=' LESS_EQUALS GREATER_EQUALS
+        // NOT_EQUALS` -- `Expr::Lt` and friends. PostgreSQL's scanner spells
+        // `<>` and `!=` as one `NOT_EQUALS`; pg-sql keeps a token per
+        // spelling so the formatter can reproduce the one it read.
+        //
+        // `OVERLAPS` joins them, which gram.y does not do. gram.y needs no
+        // level for it because `a_expr: row OVERLAPS row` demands a row on
+        // the left, so `OVERLAPS` can never follow a bare column reference
+        // and the reduce is the only action there. pg-sql's `Expr::Overlaps`
+        // takes any operand, so `RANGE BETWEEN OVERLAPS ...` needs a level
+        // to settle `ColId: BETWEEN` against it; at this level it reduces,
+        // which is the answer gram.y arrives at without one.
+        nonassoc(bp = 70) { LT, GT, EQ, LTE, GTE, NEQ, BANGEQ, OVERLAPS },
+        // gram.y:837 `%nonassoc BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA` --
+        // `Expr::BetweenExpr`, `Expr::InExpr` and the LIKE family. `NOT_LA`
+        // is the lookahead filter declared above, and a level may name a
+        // merged kind, so the level is spelled as gram.y spells it. A twin
+        // does not inherit the level of the token it filters, which is what
+        // gram.y does too: bare `NOT` keeps its own precedence and gram.y
+        // writes `%prec NOT` where it wants that.
+        nonassoc(bp = 80) { BETWEEN, IN, LIKE, ILIKE, SIMILAR, NOT_LA },
+        // gram.y:838 `%nonassoc ESCAPE` ("ESCAPE must be just above
+        // LIKE/ILIKE/SIMILAR").
+        nonassoc(bp = 90) { ESCAPE },
+        // gram.y:886 `%nonassoc UNBOUNDED NESTED` ("ideally would have same
+        // precedence as IDENT"): deliberately just under the IDENT level so
+        // `UNBOUNDED PRECEDING` and `NESTED PATH` shift.
+        //
+        // `NESTED` and `PATH` (below) are keywords from 17 on: research,
+        // PostgreSQL 17, "Keywords". REL_16_15 gram.y 853-854 has
+        // `%nonassoc UNBOUNDED` and the IDENT level without `PATH`. `KEYS` and
+        // `SCALAR` (below) are keywords from 16 on: research, PostgreSQL 16,
+        // "Keywords". REL_15_19 gram.y has the IDENT level without them.
+        nonassoc(bp = 100) {
+            UNBOUNDED,
+            #[config(since = pg17)]
+            NESTED
+        },
+        // gram.y:887-888 `%nonassoc IDENT PARTITION RANGE ROWS GROUPS
+        // PRECEDING FOLLOWING CUBE ROLLUP SET KEYS OBJECT_P SCALAR VALUE_P
+        // WITH WITHOUT PATH`: gram.y's reference level for keywords with no
+        // natural precedence, just under `Op`.
+        //
+        // `IDENT` itself is not repeated: gram.y keeps it only as the
+        // reference point these keywords are aligned to ("that's not really
+        // necessary since we removed postfix operators"), and pg-sql's
+        // identifier content kinds decide nothing by precedence.
+        nonassoc(bp = 110) {
+            PARTITION,
+            RANGE,
+            ROWS,
+            GROUPS,
+            PRECEDING,
+            FOLLOWING,
+            CUBE,
+            ROLLUP,
+            SET,
+            #[config(since = pg16)]
+            KEYS,
+            OBJECT,
+            #[config(since = pg16)]
+            SCALAR,
+            VALUE,
+            WITH,
+            WITHOUT,
+            #[config(since = pg17)]
+            PATH
+        },
+        // gram.y:889 `%left Op OPERATOR` ("multi-character ops and
+        // user-defined operators").
+        //
+        // `Op` is a precedence-only name: gram.y writes `%prec Op` on every
+        // `qual_Op` and `subquery_Op` production (gram.y:14844, 14846,
+        // 15152, 15164, 15322, 15324), and pg-sql writes the same override
+        // where its own rule has no operator terminal of its own.
+        //
+        // The token list is every spelling PostgreSQL's scanner returns as
+        // `Op`: pg-sql names them one by one so the formatter can reproduce
+        // them, but they are one precedence class, as in gram.y.
+        left(bp = 120) {
+            Op,
+            OPERATOR,
+            CustomOp,
+            CONCAT,
+            CARETAT,
+            STARLTE,
+            STARGTE,
+            STARNEQ,
+            STARLT,
+            STARGT,
+            STAREQ,
+            TRIPLEEQ,
+            BANGEQEQ,
+            BANGEQMINUS,
+            LTLTLT,
+            LTLTEQ,
+            LTLTPIPE,
+            LTMINUSGT,
+            LTLT,
+            LTCARET,
+            LTAT,
+            GTGTGT,
+            GTGTEQ,
+            GTGT,
+            GTCARET,
+            MINUSPIPEMINUS,
+            PIPEGTGT,
+            PIPEAMPGT,
+            PIPEPIPESLASH,
+            PIPESLASH,
+            PIPE,
+            HASHARROWARROW,
+            HASHARROW,
+            HASHHASH,
+            HASHMINUS,
+            POUND,
+            ARROWARROW,
+            ARROW,
+            QUESTIONPIPEPIPE,
+            QUESTIONDASHPIPE,
+            QUESTIONPIPE,
+            QUESTIONAMP,
+            QUESTIONHASH,
+            QUESTIONDASH,
+            QUESTION,
+            ATATAT,
+            ATMINUSAT,
+            ATHASHAT,
+            ATPLUSAT,
+            ATAT,
+            ATQUESTION,
+            ATGT,
+            ATSIGN,
+            AMPLTPIPE,
+            AMPAMP,
+            AMPLT,
+            AMPGT,
+            AMP,
+            TILDELEQTILDE,
+            TILDEGEQTILDE,
+            TILDELTTILDE,
+            TILDEGTTILDE,
+            BANGTILDETILDESTAR,
+            TILDETILDESTAR,
+            BANGTILDETILDE,
+            TILDETILDE,
+            BANGTILDESTAR,
+            TILDESTAR,
+            BANGTILDE,
+            TILDEEQ,
+            TILDE
+        },
+        // gram.y:890 `%left '+' '-'` -- `Expr::Add` and `Expr::Sub`.
+        left(bp = 130) { PLUS, MINUS },
+        // gram.y:891 `%left '*' '/' '%'` -- `Expr::Mul`, `Div` and `Mod`.
+        left(bp = 140) { STAR, SLASH, PERCENT },
+        // gram.y:892 `%left '^'` -- `Expr::Pow`.
+        left(bp = 150) { CARET },
+        // gram.y:894 `%left AT` ("sets precedence for AT TIME ZONE, AT
+        // LOCAL") -- `Expr::AtTimeZone` and `Expr::AtLocal`, both of which
+        // end in a keyword with no level and take this one through
+        // `%prec AT` (gram.y:14792, 14799).
+        left(bp = 160) { AT },
+        // gram.y:895 `%left COLLATE` -- `Expr::Collate`.
+        left(bp = 170) { COLLATE },
+        // gram.y:896 `%right UMINUS`: a precedence-only name, carried by
+        // `#[parse(prec = UMINUS)]` on the unary `+` and `-` forms
+        // (gram.y:14815-14817) and on the parenthesised-query atom
+        // (gram.y:15391 `select_with_parens %prec UMINUS`).
+        right(bp = 180) { UMINUS },
+        // gram.y:897 `%left '[' ']'`.
+        left(bp = 190) { LBRACKET, RBRACKET },
+        // gram.y:898 `%left '(' ')'`, mirrored for `(` only.
+        //
+        // gram.y wants this level so that `CUBE '('` and `ROLLUP '('` shift
+        // rather than reduce `CUBE` as a function name (gram.y:871-873).
+        //
+        // `)` is deliberately left without a level. pg-sql still shares one
+        // `(`-led production between a parenthesized expression and a
+        // parenthesized query (`ParenContent`), which gram.y does not do:
+        // gram.y factors `select_with_parens` as its own nonterminal. Where
+        // pg-sql's factoring leaves a decision on `)`, the answer is authored
+        // as a scoped LR resolution on the variant, and a level for `)` would
+        // take that decision over -- above `#[parse(prec = UMINUS)]`, which is
+        // the level gram.y gives `select_with_parens` (gram.y:15391), so `)`
+        // would shift where the grammar must reduce. Leaving `)` unlevelled
+        // also keeps any new decision on `)` a build error rather than a
+        // silent answer.
+        left(bp = 200) { LPAREN },
+        // gram.y:899 `%left TYPECAST` -- `Expr::Cast`, spelled `::`.
+        left(bp = 210) { COLONCOLON },
+        // gram.y:900 `%left '.'`.
+        left(bp = 220) { DOT },
+        // gram.y:908 `%left JOIN CROSS LEFT FULL RIGHT INNER_P NATURAL`:
+        // "not part of the arithmetic hierarchy at all in their use as JOIN
+        // operators", high so that they stay usable as function names, and
+        // left-associative among the `joined_table` rules themselves.
+        left(bp = 230) { JOIN, CROSS, LEFT, FULL, RIGHT, INNER, NATURAL },
+    }
+}
+
+// PostgreSQL's scanner produces one identifier token for quoted and unquoted
+// spellings. Keep that as one canonical content base; the generated admission
+// types below differ only in which fixed keyword kinds each grammar position
+// may reclaim.
+recursa::ast_node! {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum ColId {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(ColId)
+            )]
+            // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
+            // random identifiers (table/schema/column names go through `ColId`, e.g.
+            // `QualifiedName.first`); the auto-generated "echo the fixed spelling" impl would
+            // conflict with it (E0119), so it's omitted here.
+            #[node(omit(Arbitrary))]
+            ColIdText,
+        ),
+    }
+}
+
+impl ColId<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: see
+    /// [`crate::ident::fold_identifier`].
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        crate::ident::fold_identifier(self.text())
+    }
+}
+
+// gram.y `ColLabel`: every keyword class, the `attr_name` after a dot in
+// `qualified_name` and `func_name` indirection.
+recursa::ast_node! {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum ColLabel {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(ColLabel)
+            )]
+            // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
+            // random identifiers (qualified-name parts after a dot, e.g. `QualifiedNamePart.name`);
+            // the auto-generated "echo the fixed spelling" impl would conflict with it (E0119), so
+            // it's omitted here.
+            #[node(omit(Arbitrary))]
+            ColLabelText,
+        ),
+    }
+}
+
+impl ColLabel<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: see
+    /// [`crate::ident::fold_identifier`].
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        crate::ident::fold_identifier(self.text())
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum NonReservedWord {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(NonReservedWord)
+            )]
+            NonReservedWordText,
+        ),
+    }
+}
+
+impl NonReservedWord<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: see
+    /// [`crate::ident::fold_identifier`].
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        crate::ident::fold_identifier(self.text())
+    }
+}
+
+recursa::ast_node! {
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Clone)]
+    pub enum type_function_name {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(type_function_name)
+            )]
+            TypeFunctionNameText,
+        ),
+    }
+}
+
+impl type_function_name<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: see
+    /// [`crate::ident::fold_identifier`].
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        crate::ident::fold_identifier(self.text())
+    }
+}
+
+recursa::ast_node! {
+    /// Unqualified function/table name after reserving `COLLATION FOR (...)` for
+    /// its dedicated SQL-standard table-expression production.
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Clone)]
+    pub enum table_function_name {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(TableFunctionName)
+            )]
+            TableFunctionNameText,
+        ),
+    }
+}
+
+recursa::ast_node! {
+    /// Identifier spelling admitted by an expression-level type name.
+    ///
+    /// PostgreSQL treats the legacy built-ins modeled as fixed `TypeName`
+    /// variants separately. From 17, `json` is a `COL_NAME` keyword and is no
+    /// identifier-spelled type: gram.y's `JsonType` takes it, with no type
+    /// modifiers.
+    #[allow(non_camel_case_types)]
+    #[derive(Debug, Clone)]
+    pub enum type_name_ident {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(TypeNameIdent)
+            )]
+            TypeNameIdentText,
+        ),
+    }
+}
+
+impl type_name_ident<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+}
+
+recursa::ast_node! {
+    #[derive(Debug, Clone)]
+    pub enum BareColLabel {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(BareColLabel)
+            )]
+            BareColLabelText,
+        ),
+    }
+}
+
+impl BareColLabel<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: see
+    /// [`crate::ident::fold_identifier`].
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        crate::ident::fold_identifier(self.text())
+    }
+}
+
+// Added in 16: the name of the option that `REVOKE … OPTION FOR` strips
+// (REL_16_15 gram.y 7805 `REVOKE ColId OPTION FOR …`). REL_15_19 gram.y 7738
+// spells only `ADMIN`.
+#[cfg(feature = "since-pg16")]
+recursa::ast_node! {
+    /// Every `ColId` spelling of a role-revoke option name except the bare
+    /// `ADMIN` keyword, which `crate::ast::utility::grant::RevokeRoleOptionName`
+    /// keeps as its own variant so the gate can name the spellings 16 adds.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum RoleRevokeOptionWord {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(RoleRevokeOptionWord)
+            )]
+            RoleRevokeOptionWordText,
+        ),
+    }
+}
+
+#[cfg(feature = "since-pg16")]
+impl RoleRevokeOptionWord<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+}
+
+// Added in 16: the name of one role-grant `WITH` option (REL_16_15 gram.y 7827
+// `grant_role_opt: ColLabel grant_role_opt_value`). REL_15_19 gram.y 7752
+// spells only `WITH ADMIN OPTION`.
+#[cfg(feature = "since-pg16")]
+recursa::ast_node! {
+    /// Every `ColLabel` spelling of a role-grant option name except the bare
+    /// `ADMIN` keyword, which `crate::ast::utility::grant::GrantRoleOptionName`
+    /// keeps as its own variant.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum RoleGrantOptionWord {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(RoleGrantOptionWord)
+            )]
+            RoleGrantOptionWordText,
+        ),
+    }
+}
+
+#[cfg(feature = "since-pg16")]
+impl RoleGrantOptionWord<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+}
+
+// Re-exports preserving the legacy `keyword::` / `punct::` / `literal::` paths
+// used throughout the rest of pg-sql. The `tokens!` macro emits every token
+// struct at this module's top level; these sub-modules expose them under the
+// names existing imports expect.
+
+// `DollarStringLit` is now a `tokens!` `literals` entry whose closed
+// same-delimiter matcher handles the closing-tag back-reference. It is generated
+// at this module's top level like every other literal, so no extra re-export is
+// needed here.
+
+#[allow(non_camel_case_types)]
+pub mod keyword {}
+
+pub mod soft_keyword {}
+
+pub mod punct {}
+
+// Literals
+pub mod literal {
+    recursa::ast_node! {
+        /// Canonical source module for the generated content-bearing literal
+        /// types used by the migrated PostgreSQL grammar.
+        #[allow(dead_code)]
+        #[derive(Debug, Clone)]
+        pub struct LiteralBindings {
+            // PostgreSQL `quotecontinue`: the whole concatenated value is one
+            // token, including every qualifying newline gap. This prevents the
+            // general trivia skipper from erasing a block comment between parts.
+            //
+            // Vertical tab is `space` and `non_newline_space` from 17: research,
+            // PostgreSQL 17, "Lexical and literal syntax" (commit ae6d06f0968).
+            // REL_16_15 scan.l 222-240 has `space [ \t\n\r\f]` and
+            // `horiz_space [ \t\f]`.
+            #[config_attr(since = pg17,
+                lex(
+                    pattern = r"'[^']*(?:''[^']*)*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*(?:''[^']*)*')+"
+                )
+            )]
+            #[config_attr(before = pg17,
+                lex(
+                    pattern = r"'[^']*(?:''[^']*)*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*(?:''[^']*)*')+"
+                )
+            )]
+            pub string_sequence: StringLitSequence,
+            #[lex(pattern = r"'[^']*(?:''[^']*)*'")]
+            pub string: StringLit,
+            #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
+            pub unicode_string: UnicodeStringLit,
+            #[lex(pattern = r"(?i:E)'(?:[^'\\]|\\.|'')*'")]
+            pub escape_string: EscapeStringLit,
+            #[lex(pattern = r"(?i:B)'[^']*'")]
+            pub bit_string: BitStringLit,
+            #[lex(pattern = r"(?i:X)'[^']*'")]
+            pub hex_string: HexStringLit,
+            #[lex(matcher)]
+            pub dollar_string: DollarStringLit,
+            #[lex(matcher)]
+            pub dollar_number: DollarNum,
+            #[lex(matcher)]
+            pub integer: IntegerLit,
+            #[lex(matcher)]
+            pub numeric: NumericLit,
+            #[lex(matcher)]
+            pub custom_operator: CustomOp,
+        }
+    }
+
+    /// Folds the `Iconst` of `FLOAT(p)` to the range that the `opt_float`
+    /// action checks (REL_17_11 gram.y 14473-14486): `"below_1"`, `"fits"` or
+    /// `"above_53"`. The `#[classify]` of `FloatPrecision` reads it.
+    ///
+    /// The text is an `IntegerLit`, so the lexer has already chosen its form
+    /// for the target version: decimal digits, and from 16 also `0x`, `0o` and
+    /// `0b` prefixes and `_` separators (REL_16_15 scan.l 395-410). The value
+    /// fits in `int32`, because a larger integer lexes as `NumericLit`.
+    pub fn float_precision_class(raw: &str) -> Option<&'static str> {
+        let digits = raw.replace('_', "");
+        let (radix, digits) = match digits.get(..2) {
+            Some("0x" | "0X") => (16, &digits[2..]),
+            Some("0o" | "0O") => (8, &digits[2..]),
+            Some("0b" | "0B") => (2, &digits[2..]),
+            _ => (10, digits.as_str()),
+        };
+        let value = u64::from_str_radix(digits, radix).ok()?;
+        Some(match value {
+            0 => "below_1",
+            1..=53 => "fits",
+            _ => "above_53",
+        })
+    }
+
+    // Catch-all for Postgres user-defined operator names.
+    //
+    // Matches any sequence of the characters `+ - * / < > = ~ ! @ # % ^ & | ?`.
+    // In expression contexts this is the catch-all infix and prefix
+    // operator of `Expr`, gram.y's `qual_Op`; known punct tokens have distinct
+    // lexical kinds. In DDL contexts (CREATE/ALTER/
+    // DROP OPERATOR) this is the primary scanner for the operator name.
+    //
+    // `CustomOp` is produced by the declarative `operator_run` matcher and
+    // receives its source-backed parse type from Recursa's generated token
+    // machinery.
+    // --- Identifier ---
+
+    /// `true` if `s` lexes as a fixed grammar keyword rather than a plain
+    /// identifier-shaped word.
+    ///
+    /// Used only by the `arbitrary`-feature identifier generator. A prior
+    /// version checked `s` against a hand-maintained keyword list that
+    /// silently missed real keywords (`USER`, `ROLE`, `TYPE`, `NAME`,
+    /// `VALUE`, `TIMESTAMP`, `COMMENT`, `PASSWORD`, `SESSION` — confirmed
+    /// against the grammar's actual ~480-entry keyword table), letting
+    /// `arb_ident_str` emit them as "identifiers" that the real lexer then
+    /// reclassified as fixed keywords, producing SQL that failed to
+    /// reparse. This runs the real generated lexer instead: a word that
+    /// isn't a keyword always lexes to the same generic content `TokenKind`
+    /// as a deliberately-nonsense baseline word that cannot match any
+    /// keyword pattern; anything that lexes to a *different* kind (or
+    /// doesn't lex as one clean token at all) matched a specific keyword
+    /// and is rejected. No list to keep in sync with the grammar.
+    #[cfg_attr(not(feature = "arbitrary"), allow(dead_code))]
+    fn is_keyword(s: &str) -> bool {
+        fn word_kind(word: &str) -> Option<String> {
+            let lexed = crate::lex(word);
+            let mut tokens = lexed.tokens();
+            let token = tokens.next()?;
+            (tokens.next().is_none() && lexed.errors().next().is_none())
+                .then(|| format!("{:?}", token.kind()))
+        }
+        const BASELINE: &str = "zzqqnotarealkeyword";
+        word_kind(s) != word_kind(BASELINE)
+    }
+
+    recursa::ast_node! {
+        /// SQL identifier admitted by PostgreSQL's `IDENT` / non-reserved-word
+        /// production. Quoted and unquoted spellings share one lexical base; the
+        /// named admission set controls which fixed keywords may occupy it.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum Ident {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(UnquotedIdent)
+                )]
+                // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
+                // random identifiers; the auto-generated "echo the fixed spelling" impl would conflict
+                // with it (E0119), so it's omitted here. `Ident`'s own sampling is unaffected — it
+                // goes through the content-token's separate `__RecursaArbitraryWith` impl, not this one.
+                #[node(omit(Arbitrary))]
+                IdentText,
+            ),
+        }
+    }
+
+    impl<'input> Ident<'input> {
+        /// The raw text of the identifier.
+        pub fn text(&self) -> &str {
+            match self {
+                Ident::Text(text) => text.text(),
+            }
+        }
+
+        /// The name PostgreSQL's scanner gives this identifier: see
+        /// [`crate::ident::fold_identifier`].
+        pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+            crate::ident::fold_identifier(self.text())
+        }
+    }
+
+    recursa::ast_node! {
+        /// Name of a `CREATE DATABASE` / `ALTER DATABASE` option: gram.y
+        /// `createdb_opt_name`, which admits a non-keyword identifier and the
+        /// keywords `ENCODING`, `LOCATION`, `OWNER`, `TABLESPACE` and
+        /// `TEMPLATE`. Every other keyword (`WITH`, `SET`, `REFRESH`, ...) is
+        /// the statement's own syntax and must not be reclaimed here.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum CreateDbOptWord {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(CreateDbOptWord)
+                )]
+                CreateDbOptWordText,
+            ),
+        }
+    }
+
+    impl<'input> CreateDbOptWord<'input> {
+        /// The raw text of the option name.
+        pub fn text(&self) -> &str {
+            match self {
+                CreateDbOptWord::Text(text) => text.text(),
+            }
+        }
+    }
+
+    recursa::ast_node! {
+        /// Name of an `EXPLAIN` / `VACUUM` / `ANALYZE` option: gram.y
+        /// `utility_option_name`, which is `NonReservedWord`, `analyze_keyword`
+        /// or `FORMAT` (`ANALYSE` is not a pg-sql keyword and lexes as an
+        /// identifier). Reserved words such as `SELECT`, `TABLE` and
+        /// `WITH` stay the statement's own syntax, so `EXPLAIN (SELECT 1)` is a
+        /// parenthesized statement and not an option list.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum UtilityOptionName {
+            /// `FORMAT` immediately before `JSON`, which `base_yylex` reads as
+            /// `FORMAT_LA`: gram.y names the merged kind in this very rule
+            /// (REL_17_11 gram.y 11878-11881 and REL_16_15 gram.y
+            /// 11709-11712, `utility_option_name: NonReservedWord |
+            /// analyze_keyword | FORMAT_LA`), so `EXPLAIN (FORMAT json)`
+            /// parses. The arm is a keyword position, which the `Text`
+            /// admission set cannot carry: an admission set stands for a
+            /// `gram.y` keyword category, and no category of gram.y holds an
+            /// `_LA` token. Added in 16 with `FORMAT_LA` itself: research,
+            /// PostgreSQL 16, "Lexical and literal syntax" (REL_16_15
+            /// parser.c, case `FORMAT`); REL_15_19 gram.y 11648-11651 has no
+            /// such arm and REL_15_19 parser.c no such case.
+            #[config(since = pg16)]
+            #[tok(FORMAT_LA)]
+            Format,
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(UtilityOptionName)
+                )]
+                UtilityOptionNameText,
+            ),
+        }
+    }
+
+    impl<'input> UtilityOptionName<'input> {
+        /// The raw text of the option name.
+        pub fn text(&self) -> &str {
+            match self {
+                // gram.y REL_17_11:11881 `FORMAT_LA { $$ = "format"; }`: the
+                // arm is a fixed keyword, so its name is the one spelling the
+                // rule action names.
+                #[cfg(feature = "since-pg16")]
+                UtilityOptionName::Format => "format",
+                UtilityOptionName::Text(text) => text.text(),
+            }
+        }
+    }
+
+    recursa::ast_node! {
+        /// gram.y `IDENT`: an identifier that is not a keyword.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum IdentOnly {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(IdentOnly)
+                )]
+                IdentOnlyText,
+            ),
+        }
+    }
+
+    impl<'input> IdentOnly<'input> {
+        /// The raw text of the identifier.
+        pub fn text(&self) -> &str {
+            match self {
+                IdentOnly::Text(text) => text.text(),
+            }
+        }
+    }
+
+    recursa::ast_node! {
+        /// Bare alias on an UPDATE target relation.
+        ///
+        /// PostgreSQL's `relation_expr_opt_alias` gives the following `SET`
+        /// keyword precedence over interpreting it as a bare alias. Quoted
+        /// identifiers and every other `ColId` spelling remain available.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum RelationAliasName {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(RelationAliasName)
+                )]
+                RelationAliasNameText,
+            ),
+        }
+    }
+
+    impl<'input> RelationAliasName<'input> {
+        /// Raw alias text, including quotes when present.
+        pub fn text(&self) -> &str {
+            match self {
+                RelationAliasName::Text(text) => text.text(),
+            }
+        }
+    }
+
+    recursa::ast_node! {
+        /// Bare alias on a SELECT target.
+        ///
+        /// `IS` starts several expression continuations. PostgreSQL's generated
+        /// parser shifts those continuations before reducing a bare alias; this
+        /// admission set encodes that precedence while explicit `AS is` and quoted
+        /// `"is"` aliases remain available.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum SelectBareAliasName {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(SelectBareAliasName)
+                )]
+                SelectBareAliasNameText,
+            ),
+        }
+    }
+
+    impl<'input> SelectBareAliasName<'input> {
+        /// Raw alias text, including quotes when present.
+        pub fn text(&self) -> &str {
+            match self {
+                SelectBareAliasName::Text(text) => text.text(),
+            }
+        }
+    }
+
+    recursa::ast_node! {
+        /// Identifier usable as a window `ref_name` (existing-window reference).
+        /// Rejects clause heads (`PARTITION`, `ORDER`, `ROWS`, `RANGE`, `GROUPS`)
+        /// so clauses after the optional `ref_name` parse deterministically.
+        ///
+        /// Modeled as a single-variant enum to preserve the legacy wrapper while
+        /// the generated content matcher enforces the named admission set.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum WindowRefNameIdent {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(WindowRefName)
+                )]
+                WindowRefNameText,
+            ),
+        }
+    }
+
+    // --- Alias name (any SQL word — identifier or keyword) ---
+
+    recursa::ast_node! {
+        /// Alias name, including PostgreSQL keywords admitted in bare-label
+        /// positions. Quoted and unquoted spellings share the identifier base.
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        pub enum AliasName {
+            Text(
+                #[lex(
+                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    admits(BareAliasName)
+                )]
+                // A hand-written `Arbitrary` impl below (`arb_ident_str`) produces realistic random
+                // alias names; the auto-generated "echo the fixed spelling" impl would conflict with
+                // it (E0119), so it's omitted here. `AliasName`'s own sampling is unaffected — it goes
+                // through the content-token's separate `__RecursaArbitraryWith` impl, not this one.
+                #[node(omit(Arbitrary))]
+                AliasNameText,
+            ),
+        }
+    }
+
+    impl<'input> AliasName<'input> {
+        /// Raw text of the alias name (with quotes if quoted).
+        pub fn text(&self) -> &str {
+            match self {
+                AliasName::Text(text) => text.text(),
+            }
+        }
+    }
+
+    // -- Manual Arbitrary impls for literal types --
+    //
+    // Literal types hold `Cow<str>` whose content must match the parse
+    // regex (including delimiters). A blind derive would generate random
+    // bytes. These impls produce syntactically valid SQL literals.
+
+    #[cfg(feature = "arbitrary")]
+    mod arbitrary_impls {
+        use super::*;
+        use crate::tokens::{ColIdText, ColLabelText};
+        use arbitrary::{Arbitrary, Unstructured};
+
+        const IDENT_REST: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789_";
+        const SAFE_CHARS: &[u8] = b"abc123 ";
+
+        // Realistic table/column-style words for identifier and alias
+        // sampling, so Shuffle-generated SQL reads like plausible schema
+        // rather than random character soup. A few natural compounds are
+        // spelled directly into the list instead of combining words at
+        // runtime. None of these collide with SQL_KEYWORDS above, but
+        // `arb_non_keyword_ident` still enforces that as a backstop.
+        const WORDS: &[&str] = &[
+            "id",
+            "uuid",
+            "name",
+            "title",
+            "description",
+            "email",
+            "username",
+            "password",
+            "user",
+            "users",
+            "customer",
+            "customers",
+            "account",
+            "accounts",
+            "orders",
+            "order_id",
+            "order_date",
+            "product",
+            "products",
+            "item",
+            "items",
+            "price",
+            "amount",
+            "total",
+            "quantity",
+            "count",
+            "status",
+            "active",
+            "enabled",
+            "type",
+            "category",
+            "categories",
+            "tag",
+            "tags",
+            "code",
+            "key_name",
+            "value",
+            "created_at",
+            "updated_at",
+            "deleted_at",
+            "timestamp",
+            "address",
+            "city",
+            "state",
+            "country",
+            "postal_code",
+            "phone",
+            "invoice",
+            "payment",
+            "balance",
+            "currency",
+            "employee",
+            "department",
+            "role",
+            "permission",
+            "session",
+            "token",
+            "url",
+            "note",
+            "notes",
+            "comment",
+            "message",
+            "subject",
+            "region",
+            "rating",
+            "score",
+            "priority",
+            "start_date",
+            "end_date",
+            "duration",
+            "reference",
+            "parent_id",
+            "user_id",
+            "customer_id",
+        ];
+
+        fn arb_ident_str(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
+            Ok((*u.choose(WORDS)?).to_string())
+        }
+
+        fn arb_non_keyword_ident(u: &mut Unstructured<'_>) -> arbitrary::Result<String> {
+            for _ in 0..100 {
+                let s = arb_ident_str(u)?;
+                if !super::is_keyword(&s) {
+                    return Ok(s);
+                }
+            }
+            Ok("_arb_ident".to_string())
+        }
+
+        fn arb_safe_body(u: &mut Unstructured<'_>, max: usize) -> arbitrary::Result<String> {
+            let len: usize = u.int_in_range(0..=max)?;
+            let mut s = String::with_capacity(len);
+            for _ in 0..len {
+                s.push(*u.choose(SAFE_CHARS)? as char);
+            }
+            Ok(s)
+        }
+
+        impl<'a> Arbitrary<'a> for IdentText<'_> {
+            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+                let s = arb_non_keyword_ident(u)?;
+                Ok(Self::new(s))
+            }
+        }
+
+        impl<'a> Arbitrary<'a> for AliasNameText<'_> {
+            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+                let s = arb_non_keyword_ident(u)?;
+                Ok(Self::new(s))
+            }
+        }
+
+        impl<'a> Arbitrary<'a> for ColIdText<'_> {
+            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+                let s = arb_non_keyword_ident(u)?;
+                Ok(Self::new(s))
+            }
+        }
+
+        impl<'a> Arbitrary<'a> for ColLabelText<'_> {
+            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+                let s = arb_non_keyword_ident(u)?;
+                Ok(Self::new(s))
+            }
+        }
+
+        impl<'a> Arbitrary<'a> for DollarStringLit<'_> {
+            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
+                // Tag: empty (yielding `$$...$$`) or a short ident-like word.
+                // The body must not contain the close sequence, so use the
+                // safe-char alphabet (no `$`).
+                let tag_len: usize = u.int_in_range(0..=4)?;
+                let mut tag = String::with_capacity(tag_len);
+                for _ in 0..tag_len {
+                    tag.push(*u.choose(IDENT_REST)? as char);
+                }
+                let body = arb_safe_body(u, 20)?;
+                let s = format!("${tag}${body}${tag}$");
+                Ok(Self::new(s))
+            }
+        }
+    }
+}
