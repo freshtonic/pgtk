@@ -131,6 +131,7 @@ fn verify_pg_built(pin: &Pin, tree: &Path) {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=csrc/psql_oracle.c");
+    println!("cargo:rerun-if-changed=csrc/libpq_encoding.c");
     println!("cargo:rerun-if-changed={PINS}");
     println!("cargo:rerun-if-changed={BUILD_PG}");
     println!("cargo:rerun-if-changed=../pgtk-sql/build-support/target_version.rs");
@@ -151,6 +152,9 @@ fn main() {
     verify_pg_built(&pin, &tree);
 
     let mut build = cc::Build::new();
+    for flag in configure_cppflags(&tree) {
+        build.flag(&flag);
+    }
     build
         .include(tree.join("src/include"))
         .include(tree.join("src/interfaces/libpq"))
@@ -176,6 +180,10 @@ fn main() {
             "pg_valid_server_encoding_id",
             Some("pg_valid_server_encoding_id_private"),
         );
+        // The static libpq calls two of the renamed functions by their plain
+        // names. The macOS linker removes the dead code that calls them, but a
+        // Linux link needs them.
+        build.file("csrc/libpq_encoding.c");
     }
 
     build.file("csrc/psql_oracle.c");
@@ -196,6 +204,7 @@ fn main() {
     // copied into `OUT_DIR` first: `src/interfaces/libpq` holds a shared
     // libpq beside the static one, and a link search of that directory finds
     // the shared library, which the test binary then cannot load.
+
     let libraries = PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo sets OUT_DIR"))
         .join("pg-libraries");
     std::fs::create_dir_all(&libraries).expect("create the link directory");
@@ -211,4 +220,28 @@ fn main() {
     println!("cargo:rustc-link-lib=static=pq");
     println!("cargo:rustc-link-lib=static=pgcommon");
     println!("cargo:rustc-link-lib=static=pgport");
+}
+
+/// The macro definitions that configure chose for the PostgreSQL tree: the
+/// `-D` flags of the `CPPFLAGS` line of `src/Makefile.global`, such as
+/// `-D_GNU_SOURCE` on Linux. The PostgreSQL sources that this crate compiles
+/// need the same definitions as PostgreSQL's own build. Without
+/// `_GNU_SOURCE`, glibc does not declare `strchrnul`, and `snprintf.c` then
+/// cuts the pointer that it returns to an `int`. The other flags (include
+/// paths, the macOS SDK) come from `cc`, and some of them are make variables.
+fn configure_cppflags(tree: &Path) -> Vec<String> {
+    let path = tree.join("src/Makefile.global");
+    let global = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    global
+        .lines()
+        .find_map(|line| line.strip_prefix("CPPFLAGS ="))
+        .map(|flags| {
+            flags
+                .split_whitespace()
+                .filter(|flag| flag.starts_with("-D"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }

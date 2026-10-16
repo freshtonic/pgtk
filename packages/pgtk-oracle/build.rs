@@ -201,6 +201,9 @@ fn main() {
     verify_pg_built(&pin, major, &tree);
 
     let mut build = cc::Build::new();
+    for flag in configure_cppflags(&tree) {
+        build.flag(&flag);
+    }
     build
         .include(tree.join("src/include"))
         .include(tree.join("src/backend"))
@@ -236,4 +239,28 @@ fn main() {
     );
     println!("cargo:rustc-link-lib=static=pgcommon");
     println!("cargo:rustc-link-lib=static=pgport");
+}
+
+/// The macro definitions that configure chose for the PostgreSQL tree: the
+/// `-D` flags of the `CPPFLAGS` line of `src/Makefile.global`, such as
+/// `-D_GNU_SOURCE` on Linux. The PostgreSQL sources that this crate compiles
+/// need the same definitions as PostgreSQL's own build. Without
+/// `_GNU_SOURCE`, glibc does not declare `strchrnul`, and `snprintf.c` then
+/// cuts the pointer that it returns to an `int`. The other flags (include
+/// paths, the macOS SDK) come from `cc`, and some of them are make variables.
+fn configure_cppflags(tree: &Path) -> Vec<String> {
+    let path = tree.join("src/Makefile.global");
+    let global = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    global
+        .lines()
+        .find_map(|line| line.strip_prefix("CPPFLAGS ="))
+        .map(|flags| {
+            flags
+                .split_whitespace()
+                .filter(|flag| flag.starts_with("-D"))
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
