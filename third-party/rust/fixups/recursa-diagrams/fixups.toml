@@ -1,0 +1,3 @@
+# Cargo builds build dependencies at opt-level 3 (profile.dev.build-override). The
+# recursa-codegen grammar analysis is very slow without optimization.
+rustc_flags = ["-Copt-level=3"]

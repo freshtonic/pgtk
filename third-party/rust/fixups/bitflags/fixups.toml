@@ -1,0 +1,3 @@
+# Only the macOS build uses this crate, and it does not build on Linux. Mark it, so that
+# `buck2 build //...` skips it on Linux.
+target_compatible_with = ["prelude//os:macos"]

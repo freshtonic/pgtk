@@ -1,0 +1,12 @@
+# The global kache rustc-wrapper strips incremental compilation on cache
+# misses. This crate compiles ~25MB of generated grammar code, so a cache-miss
+# full rebuild costs far more than an incremental rebuild. Disable the wrapper
+# for this workspace.
+[build]
+rustc-wrapper = ""
+
+# `cargo loop ...` is the edit loop: it tests pgtk-sql in the merge gate's own
+# configuration (scripts/merge-gate), so the loop and the gate share one build
+# and one incremental cache. Example: `cargo loop --test embedded`.
+[alias]
+loop = "test -p pgtk-sql --no-default-features --features pg17,spans,arbitrary,postgres-oracle"

@@ -1,0 +1,11 @@
+[package]
+name = "pgtk-catalog-xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pgtk-catalog = { path = "../pgtk-catalog", features = ["serde", "postgres"] }
+postgres.workspace = true
+serde_json.workspace = true
+zstd.workspace = true

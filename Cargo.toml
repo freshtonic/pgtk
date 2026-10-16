@@ -5,6 +5,51 @@ members = ["packages/*"]
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "https://github.com/freshtonic/dbtk"
+repository = "https://github.com/freshtonic/pgtk"
 
 [workspace.dependencies]
+arbitrary = "1"
+cc = "1"
+clap = "4"
+derive_more = "2.1.1"
+postgres = "0.19"
+recursa = { version = "0.1.0", default-features = false }
+recursa-codegen = { version = "0.1.0", default-features = false }
+regex = "1"
+serde = "1"
+serde_json = "1"
+sqlparser = "0.52"
+syn = "2"
+tempfile = "3"
+thiserror = "2"
+tokio = "1"
+tokio-postgres = "0.7"
+vec1 = "1"
+zstd = "0.13"
+
+# No debug info in the dev profile. On macOS the default is unpacked split
+# debug info, which keeps one object file per codegen unit beside the rlib:
+# about 5 GB for each build of the generated pgtk-sql grammar, read by every test
+# link. Use `--profile dev-debug` for a build with line tables.
+[profile.dev]
+debug = 0
+split-debuginfo = "off"
+
+[profile.dev-debug]
+inherits = "dev"
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+
+# recursa-codegen runs a CPU-bound grammar analysis in the build scripts of
+# pgtk-sql and pgtk-psql; at the default build-override opt-level of 0 that run
+# takes ~84s versus ~14s at 3.
+[profile.dev.build-override]
+opt-level = 3
+
+[profile.release.build-override]
+opt-level = 3
+
+# Bench binaries keep debug symbols so sampling profilers resolve parser
+# frames in the pgtk-sql flame harness.
+[profile.bench]
+debug = true

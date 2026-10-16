@@ -1,0 +1,35 @@
+[cells]
+  root = .
+  prelude = prelude
+  toolchains = toolchains
+  none = none
+
+[cell_aliases]
+  config = prelude
+  ovr_config = prelude
+  fbcode = none
+  fbsource = none
+  fbcode_macros = none
+  buck = none
+
+# Uses a copy of the prelude bundled with the buck2 binary. You can alternatively delete this
+# section and vendor a copy of the prelude to the `prelude` directory of your project.
+[external_cells]
+  prelude = bundled
+
+[parser]
+  target_platform_detector_spec = target:root//...->prelude//platforms:default \
+    target:prelude//...->prelude//platforms:default \
+    target:toolchains//...->prelude//platforms:default
+
+[build]
+  execution_platforms = root//platforms:default
+
+[buck2]
+  # The prelude leaves the upload choice of most actions to this setting. Uploads happen only
+  # when the execution platform also allows them, that is when the remote cache is on
+  # (platforms/defs.bzl). Buck2 ignores this setting in an included file.
+  default_allow_cache_upload = true
+
+# Written by tools/buck2: the toolchain ID and, when BUILDBUDDY_API_KEY is set, the remote cache.
+<?file:.buckconfig.pgtk>

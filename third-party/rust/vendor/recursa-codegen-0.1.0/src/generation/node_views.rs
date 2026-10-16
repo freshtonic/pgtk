@@ -1,0 +1,527 @@
+//! Generated Node-view metadata, span elements, and typed accessors.
+//!
+//! View validation and rendering are co-located because accessor names, provenance
+//! positions, repetition shapes, and authored visibility must evolve together.
+
+use super::*;
+
+/// Rejects semantic and fixed-span accessor names that collide within one Node shape.
+pub(super) fn validate_accessor_names(
+    node: &ResolvedNode,
+    body: &NodeBodyPlan,
+) -> Result<(), String> {
+    let mut names = BTreeMap::new();
+    let mut check = |element: &ElementParsePlan| -> Result<(), String> {
+        let name = match &element.kind {
+            ElementParseKind::Fixed { accessor, .. } => accessor.unraw().to_string(),
+            ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
+                accessor.unraw().to_string()
+            }
+            ElementParseKind::Semantic { field, .. } => {
+                let Some(accessor) = &field.accessor else {
+                    return Ok(());
+                };
+                accessor.unraw().to_string()
+            }
+        };
+        let description = format!("{} {:?}", element.metadata_name, element.explorer_source);
+        if let Some(previous) = names.insert(name.clone(), description.clone()) {
+            return Err(format!(
+                "generated accessor `{name}` collides within Node `{}` (`{previous}` and `{}`)",
+                node.ident, description
+            ));
+        }
+        Ok(())
+    };
+    match body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            for element in elements {
+                check(element)?;
+            }
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            for variant in variants {
+                for element in &variant.elements {
+                    check(element)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Renders source-order element metadata for every active shape of a Node.
+pub(super) fn render_metadata(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
+    let facade = &plan.facade;
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let name = metadata_static(node_index, None);
+            let entries = elements
+                .iter()
+                .map(|element| render_metadata_entry(facade, element));
+            quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let definitions = variants.iter().enumerate().map(|(index, variant)| {
+                let name = metadata_static(node_index, Some(index));
+                let entries = variant
+                    .elements
+                    .iter()
+                    .map(|element| render_metadata_entry(facade, element));
+                quote!(static #name: &[#facade::ElementMetadata] = &[#(#entries),*];)
+            });
+            quote!(#(#definitions)*)
+        }
+    }
+}
+
+/// Renders one element's stable name and fixed-token or semantic-field role.
+pub(super) fn render_metadata_entry(
+    facade: &Ident,
+    element: &ElementParsePlan,
+) -> proc_macro2::TokenStream {
+    let name = &element.metadata_name;
+    let role = match element.kind {
+        ElementParseKind::Fixed { .. } | ElementParseKind::OptionalFixedTokenGroup { .. } => {
+            quote!(#facade::ElementRole::FixedToken)
+        }
+        ElementParseKind::Semantic { .. } => {
+            quote!(#facade::ElementRole::SemanticField)
+        }
+    };
+    quote!(#facade::__private::element_metadata(Some(#name), #role))
+}
+
+/// Selects the provenance-element slice for the Node's active struct or enum shape.
+pub(super) fn render_span_elements(
+    node: &NodeParsePlan,
+    node_index: usize,
+) -> proc_macro2::TokenStream {
+    match &node.body {
+        NodeBodyPlan::Struct { .. } => {
+            let metadata = metadata_static(node_index, None);
+            quote!(cursor.elements(#metadata))
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let node_ident = &node.ident;
+            let arms = variants.iter().enumerate().map(|(index, variant)| {
+                let variant_ident = &variant.ident;
+                let pattern = variant_pattern(node_ident, variant_ident, variant.style);
+                let metadata = metadata_static(node_index, Some(index));
+                quote!(#pattern => cursor.elements(#metadata),)
+            });
+            quote!(match self { #(#arms)* })
+        }
+    }
+}
+
+/// Renders visibility-matched occurrence-view accessors for one Node.
+pub(super) fn render_accessors(
+    plan: &EmissionPlan,
+    node: &NodeParsePlan,
+) -> proc_macro2::TokenStream {
+    let node_ident = &node.ident;
+    let (_, type_generics, _) = node.generics.split_for_impl();
+    let self_type: Type = syn::parse_quote!(#node_ident #type_generics);
+    let self_type = &self_type;
+    match &node.body {
+        NodeBodyPlan::Struct { elements, .. } => {
+            let methods = elements.iter().enumerate().filter_map(|(index, element)| {
+                render_accessor(plan, self_type, element, index, None)
+            });
+            quote!(#(#methods)*)
+        }
+        NodeBodyPlan::Enum { variants, .. } => {
+            let methods = variants.iter().flat_map(|variant| {
+                variant
+                    .elements
+                    .iter()
+                    .enumerate()
+                    .filter_map(move |(index, element)| {
+                        render_accessor(
+                            plan,
+                            self_type,
+                            element,
+                            index,
+                            Some((node_ident, &variant.ident, variant.style)),
+                        )
+                    })
+            });
+            quote!(#(#methods)*)
+        }
+    }
+}
+
+/// Renders semantic-value and fixed-token span accessors for one planned element.
+///
+/// # Long-function contract
+///
+/// Rationale: renders authored and structural accessors from the same occurrence layout.
+/// Invariants: accessor names are prevalidated and every span cursor matches its source-order grammar element.
+/// Phases: binds the active shape, emits semantic accessors, then emits fixed-token spans.
+pub(super) fn render_accessor(
+    plan: &EmissionPlan,
+    self_type: &Type,
+    element: &ElementParsePlan,
+    element_index: usize,
+    variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
+) -> Option<proc_macro2::TokenStream> {
+    let facade = &plan.facade;
+    match &element.kind {
+        ElementParseKind::Fixed { accessor, .. }
+        | ElementParseKind::OptionalFixedTokenGroup { accessor, .. } => {
+            let method = accessor;
+            let active = variant.map(|(node, variant, style)| {
+                let pattern = variant_pattern(node, variant, style);
+                quote! {
+                    if !matches!(self.value, #pattern) { return None; }
+                }
+            });
+            Some(quote! {
+                pub fn #method(&self) -> Option<#facade::Span> {
+                    #active
+                    self.cursor.child(#element_index).span()
+                }
+            })
+        }
+        ElementParseKind::Semantic { field, projection } => match projection.as_ref() {
+            SemanticParseProjection::FixedPresence { .. } => {
+                let accessor = field.accessor.as_ref()?;
+                if let Some((node, variant_ident, style)) = variant {
+                    let binding = format_ident!("__recursa_presence");
+                    let active_pattern = field_binding_pattern(
+                        node,
+                        variant_ident,
+                        style,
+                        field.ident.as_ref(),
+                        field.index,
+                        &binding,
+                    );
+                    Some(quote! {
+                        pub fn #accessor(&self) -> Option<bool> {
+                            match self.value {
+                                #active_pattern => Some(*#binding),
+                                _ => None,
+                            }
+                        }
+                    })
+                } else {
+                    let value = field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    Some(quote! {
+                        pub fn #accessor(&self) -> bool {
+                            #value
+                        }
+                    })
+                }
+            }
+            SemanticParseProjection::Direct {
+                terminal,
+                terminal_node,
+                wrappers,
+                attachment,
+                ..
+            } => {
+                let terminal =
+                    if terminal_path_ident(terminal).is_some_and(|ident| ident.unraw() == "Self") {
+                        self_type.clone()
+                    } else {
+                        view_terminal_type(plan, terminal, *terminal_node)
+                    };
+                let terminal = &terminal;
+                let accessor = field.accessor.as_ref()?;
+                if let Some(repeat_index) = wrappers.iter().position(|wrapper| {
+                    matches!(wrapper, FieldWrapper::ZeroOrMore | FieldWrapper::OneOrMore)
+                }) {
+                    return Some(render_repeated_accessor(
+                        facade,
+                        accessor,
+                        field,
+                        terminal,
+                        wrappers,
+                        repeat_index,
+                        element_index,
+                        variant,
+                        attachment.as_deref(),
+                        plan.arena_ast,
+                    ));
+                }
+                let is_optional = wrappers
+                    .iter()
+                    .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+                let semantic_child = attachment
+                    .as_ref()
+                    .map(|attachment| attachment.before.len());
+                let semantic_cursor = |cursor: proc_macro2::TokenStream| {
+                    semantic_child.map_or(cursor.clone(), |child| quote!((#cursor).child(#child)))
+                };
+                if let Some((node, variant_ident, style)) = variant {
+                    let binding = format_ident!("__recursa_field");
+                    let active_pattern = field_binding_pattern(
+                        node,
+                        variant_ident,
+                        style,
+                        field.ident.as_ref(),
+                        field.index,
+                        &binding,
+                    );
+                    let value = if is_optional {
+                        let optional_reference =
+                            render_optional_view_reference(quote!(#binding), wrappers, true);
+                        let cursor =
+                            semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                        quote! {
+                            #optional_reference.map(|value| {
+                                #facade::__private::NodeViewFactory::view(
+                                    value,
+                                    #cursor,
+                                )
+                            })
+                        }
+                    } else {
+                        let reference = render_terminal_reference(quote!(#binding), wrappers, true);
+                        let cursor =
+                            semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                        quote! {
+                            Some(#facade::__private::NodeViewFactory::view(
+                                #reference,
+                                #cursor,
+                            ))
+                        }
+                    };
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
+                            match self.value {
+                                #active_pattern => #value,
+                                _ => None,
+                            }
+                        }
+                    })
+                } else if is_optional {
+                    let reference =
+                        field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    let optional_reference =
+                        render_optional_view_reference(reference, wrappers, false);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> Option<impl #facade::NodeView<Value = #terminal> + 'view>
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
+                            #optional_reference.map(|value| {
+                                #facade::__private::NodeViewFactory::view(
+                                    value,
+                                    #cursor,
+                                )
+                            })
+                        }
+                    })
+                } else {
+                    let reference =
+                        field_access(quote!(self.value), field.ident.as_ref(), field.index);
+                    let reference = render_terminal_reference(reference, wrappers, false);
+                    let cursor =
+                        semantic_cursor(quote!(self.cursor.child(#element_index).child(0)));
+                    Some(quote! {
+                        pub fn #accessor(
+                            &self,
+                        ) -> impl #facade::NodeView<Value = #terminal> + 'view
+                        where
+                            #terminal: #facade::__private::NodeViewFactory,
+                        {
+                            #facade::__private::NodeViewFactory::view(
+                                #reference,
+                                #cursor,
+                            )
+                        }
+                    })
+                }
+            }
+        },
+    }
+}
+
+/// Renders an open declaration terminal under the enclosing generated input lifetime.
+fn view_terminal_type(plan: &EmissionPlan, terminal: &Type, node: Option<NodeId>) -> Type {
+    let mut terminal = terminal.clone();
+    let generated_input: syn::Lifetime = syn::parse_quote!('input);
+    struct NormalizeLifetime<'a>(&'a syn::Lifetime);
+    impl syn::visit_mut::VisitMut for NormalizeLifetime<'_> {
+        fn visit_lifetime_mut(&mut self, lifetime: &mut syn::Lifetime) {
+            *lifetime = self.0.clone();
+        }
+    }
+    syn::visit_mut::VisitMut::visit_type_mut(
+        &mut NormalizeLifetime(&generated_input),
+        &mut terminal,
+    );
+    let Some(target) = node.and_then(|id| plan.nodes.iter().find(|candidate| candidate.node == id))
+    else {
+        return terminal;
+    };
+    if target.generics.lifetimes().next().is_none() {
+        return terminal;
+    }
+    let Type::Path(path) = &mut terminal else {
+        return terminal;
+    };
+    let Some(segment) = path.path.segments.last_mut() else {
+        return terminal;
+    };
+    match &mut segment.arguments {
+        PathArguments::None => {
+            let arguments: syn::AngleBracketedGenericArguments = syn::parse_quote!(<'input>);
+            segment.arguments = PathArguments::AngleBracketed(arguments);
+        }
+        PathArguments::AngleBracketed(arguments)
+            if !arguments
+                .args
+                .iter()
+                .any(|argument| matches!(argument, GenericArgument::Lifetime(_))) =>
+        {
+            arguments
+                .args
+                .insert(0, GenericArgument::Lifetime(generated_input));
+        }
+        PathArguments::AngleBracketed(_) | PathArguments::Parenthesized(_) => {}
+    }
+    terminal
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Renders a repeated semantic accessor while preserving container and occurrence order.
+///
+/// # Long-function contract
+///
+/// Rationale: handles repeated occurrences centrally because wrappers and provenance advance together.
+/// Invariants: iteration order and optional/non-empty container semantics match the parse plan.
+/// Phases: unwraps containers, maps semantic values to occurrence cursors, then restores the declared wrapper.
+pub(super) fn render_repeated_accessor(
+    facade: &Ident,
+    accessor: &Ident,
+    field: &FieldPlan,
+    terminal: &Type,
+    wrappers: &[FieldWrapper],
+    repeat_index: usize,
+    element_index: usize,
+    variant: Option<(&Ident, &Ident, ResolvedFieldStyle)>,
+    attachment: Option<&FixedAttachmentParsePlan>,
+    arena_ast: bool,
+) -> proc_macro2::TokenStream {
+    let outer = &wrappers[..repeat_index];
+    let inner = &wrappers[repeat_index + 1..];
+    let item_type = if arena_ast {
+        render_arena_wrapped_type(facade, terminal, inner)
+    } else {
+        render_wrapped_type(facade, terminal, inner)
+    };
+    let project = render_terminal_reference(quote!(value), inner, true);
+    let cursor = quote!(self.cursor.child(#element_index));
+    let repeated = |collection: proc_macro2::TokenStream| {
+        attachment.map_or_else(
+            || {
+                quote! {
+                    #facade::Repeated::new(
+                        (#collection).as_slice(),
+                        #cursor,
+                        |value: &#item_type| -> &#terminal { #project },
+                    )
+                }
+            },
+            |attachment| {
+                let semantic_child = attachment.before.len();
+                quote! {
+                    #facade::Repeated::new_attached(
+                        (#collection).as_slice(),
+                        #cursor,
+                        |value: &#item_type| -> &#terminal { #project },
+                        #semantic_child,
+                    )
+                }
+            },
+        )
+    };
+    let outer_optional = outer
+        .iter()
+        .any(|wrapper| matches!(wrapper, FieldWrapper::Optional));
+
+    if let Some((node, variant_ident, style)) = variant {
+        let binding = format_ident!("__recursa_field");
+        let active_pattern = field_binding_pattern(
+            node,
+            variant_ident,
+            style,
+            field.ident.as_ref(),
+            field.index,
+            &binding,
+        );
+        let active_value = if outer_optional {
+            let collection = render_optional_view_reference(quote!(#binding), outer, true);
+            let repeated = repeated(quote!(collection));
+            quote!(#collection.map(|collection| #repeated))
+        } else {
+            let collection = render_terminal_reference(quote!(#binding), outer, true);
+            let repeated = repeated(collection);
+            quote!(Some(#repeated))
+        };
+        quote! {
+            pub fn #accessor(
+                &self,
+            ) -> Option<#facade::Repeated<'view, #terminal, #item_type>>
+            where
+                #terminal: #facade::__private::NodeViewFactory,
+            {
+                match self.value {
+                    #active_pattern => #active_value,
+                    _ => None,
+                }
+            }
+        }
+    } else {
+        let reference = field_access(quote!(self.value), field.ident.as_ref(), field.index);
+        if outer_optional {
+            let collection = render_optional_view_reference(reference, outer, false);
+            let repeated = repeated(quote!(collection));
+            quote! {
+                pub fn #accessor(
+                    &self,
+                ) -> Option<#facade::Repeated<'view, #terminal, #item_type>>
+                where
+                    #terminal: #facade::__private::NodeViewFactory,
+                {
+                    #collection.map(|collection| #repeated)
+                }
+            }
+        } else {
+            let collection = render_terminal_reference(reference, outer, false);
+            let repeated = repeated(collection);
+            quote! {
+                pub fn #accessor(
+                    &self,
+                ) -> #facade::Repeated<'view, #terminal, #item_type>
+                where
+                    #terminal: #facade::__private::NodeViewFactory,
+                {
+                    #repeated
+                }
+            }
+        }
+    }
+}
+
+/// Derives a valid generated span-accessor identifier from an element metadata name.
+pub(super) fn fixed_accessor_ident(metadata_name: &str) -> Result<Ident, String> {
+    let direct = format!("{metadata_name}_span");
+    emitted_ident(&direct).or_else(|_| emitted_ident(&format!("element_{direct}")))
+}

@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo:
+    name: Cargo build and test
+    runs-on: ubuntu-latest
+    steps:
+      # The tests read the PostgreSQL sources and the pinned commits from the vendor/postgres
+      # object store, so the submodule needs its full history.
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      # rustup reads rust-toolchain.toml and installs the pinned toolchain.
+      - run: rustup show active-toolchain || rustup toolchain install
+      # The oracle crates link the pinned PostgreSQL releases, and the live tests run servers of
+      # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
+      - run: packages/pgtk-sql/scripts/fetch-postgres-pins
+      - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pgtk-sql/postgres
+          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+      - run: cargo build --locked --workspace
+      - run: cargo test --locked --workspace
+
+  buck2:
+    name: Buck2 build and test
+    runs-on: ubuntu-latest
+    env:
+      # tools/buck2 turns on the BuildBuddy remote cache when the key is set. A pull request from
+      # a fork gets no secrets, so it builds without the cache.
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: facebook/install-dotslash@v2
+      # One job at a time: Buck2 compiles the large generated grammar crates more than once (for
+      # metadata, diagnostics and the rlib), and two such compiles at the same time use all of the
+      # 8 GB of the runner. The remote cache supplies most actions after the first run.
+      - run: tools/buck2 build -j 1 //...
+      - run: tools/buck2 test -j 1 //...
+
+  third-party:
+    name: Third-party BUCK and vendor are up to date
+    runs-on: ubuntu-latest
+    env:
+      # Keep the same as the reindeer that generated the committed files.
+      REINDEER_REV: ffc8a53bf778283f9e1336b0d36ebf7899db1507
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: cargo install --locked --git https://github.com/facebookincubator/reindeer --rev "$REINDEER_REV" reindeer
+      - run: scripts/update-third-party
+      - name: Fail if the generated files changed
+        run: |
+          git add -A
+          git diff --cached --exit-code --stat

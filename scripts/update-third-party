@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Vendors the third-party crates in the root Cargo.lock and regenerates third-party/rust/BUCK.
+# This script never changes Cargo.lock. Use `cargo add` or `cargo update` to change dependencies.
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+reindeer --cargo-options=--locked vendor
+reindeer --cargo-options=--locked buckify
