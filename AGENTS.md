@@ -22,7 +22,12 @@ If reindeer reports a missing fixup, write `third-party/rust/fixups/<crate>/fixu
 ### New crates
 
 Each crate in `packages/` needs a hand-written `BUCK` file with a `rust_library` and a `rust_test`.
-Keep its deps the same as the `[dependencies]` in its `Cargo.toml`.
+Keep its deps the same as the `[dependencies]` in its `Cargo.toml`. The Cargo-only crates
+(`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-catalog-xtask`) have no `BUCK` file. See the ADR.
+
+If the crate has a build script that uses recursa-codegen, run it with
+`first_party_build_script` from `tools/rust/build_script.bzl`. `packages/pgtk-sql/BUCK` is the
+model.
 
 ## Agent skills
 

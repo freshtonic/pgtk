@@ -1,0 +1,122 @@
+# Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
+#
+# Buck builds the default Target Version (pg17) with `spans`, which pgtk-psql and pgtk-analyze
+# need. The other Target Versions and the oracle features are Cargo-only. See
+# docs/adr/0001-dual-buck2-cargo-build.md.
+
+load("//tools/rust:build_script.bzl", "first_party_build_script")
+
+PGTK_SQL_FEATURES = [
+    "default",
+    "pg17",
+    "since-pg15",
+    "since-pg16",
+    "since-pg17",
+    "spans",
+]
+
+# Integration tests that need only the library. The other tests read fixtures through
+# CARGO_MANIFEST_DIR or link an oracle, and run only under Cargo.
+STANDALONE_TESTS = [
+    "declared_precedence",
+    "declared_rejections",
+    "document",
+    "ident",
+    "minimum_version",
+    "strict_statement",
+    "table_parser",
+]
+
+export_file(
+    name = "target_version.rs",
+    src = "build-support/target_version.rs",
+    visibility = ["//packages/..."],
+)
+
+# The crate sources. The library compiles from this copy, and the build script reads it as
+# CARGO_MANIFEST_DIR, so recursa-codegen and the recursa macros see the same source paths.
+filegroup(
+    name = "pgtk-sql.crate",
+    srcs = glob(["src/**/*.rs"]) + [
+        "Cargo.toml",
+        "build-support/target_version.rs",
+        "build.rs",
+    ],
+)
+
+rust_binary(
+    name = "pgtk-sql-build-script-build",
+    srcs = [
+        "build-support/target_version.rs",
+        "build.rs",
+    ],
+    crate = "build_script_build",
+    crate_root = "build.rs",
+    edition = "2024",
+    deps = ["//third-party/rust:recursa-codegen"],
+)
+
+first_party_build_script(
+    name = "pgtk-sql-build-script-run",
+    build_script = ":pgtk-sql-build-script-build",
+    features = PGTK_SQL_FEATURES,
+    manifest_dir = ":pgtk-sql.crate",
+    package_name = "pgtk-sql",
+    version = "0.1.0",
+)
+
+rust_library(
+    name = "pgtk-sql",
+    srcs = [":pgtk-sql.crate"],
+    crate = "pgtk_sql",
+    crate_root = "pgtk-sql.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_MANIFEST_DIR": "pgtk-sql.crate",
+        "CARGO_PKG_NAME": "pgtk-sql",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "OUT_DIR": "$(location :pgtk-sql-build-script-run)",
+    },
+    features = PGTK_SQL_FEATURES,
+    deps = [
+        "//third-party/rust:clap",
+        "//third-party/rust:derive_more",
+        "//third-party/rust:recursa",
+        "//third-party/rust:regex",
+        "//third-party/rust:vec1",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+# The embedded tests: the test bodies under embedded-tests/, which tests/embedded/main.rs
+# includes through CARGO_MANIFEST_DIR.
+rust_test(
+    name = "pgtk-sql-test",
+    srcs = ["tests/embedded/main.rs"] + glob(["embedded-tests/**/*.rs"]),
+    crate = "embedded",
+    crate_root = "tests/embedded/main.rs",
+    edition = "2024",
+    env = {"CARGO_MANIFEST_DIR": "."},
+    features = PGTK_SQL_FEATURES,
+    deps = [
+        ":pgtk-sql",
+        "//third-party/rust:recursa",
+        "//third-party/rust:serde_json",
+    ],
+)
+
+[
+    rust_test(
+        name = "pgtk-sql-test-{}".format(test),
+        srcs = ["tests/{}.rs".format(test)],
+        crate = test,
+        crate_root = "tests/{}.rs".format(test),
+        edition = "2024",
+        features = PGTK_SQL_FEATURES,
+        deps = [
+            ":pgtk-sql",
+            "//third-party/rust:recursa",
+        ],
+    )
+    for test in STANDALONE_TESTS
+]

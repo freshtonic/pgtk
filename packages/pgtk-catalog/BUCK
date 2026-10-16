@@ -1,0 +1,22 @@
+# Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
+#
+# Buck builds the default features only. The optional features are Cargo-only.
+
+rust_library(
+    name = "pgtk-catalog",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pgtk_catalog",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = ["//third-party/rust:thiserror"],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "pgtk-catalog-test",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pgtk_catalog",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    deps = ["//third-party/rust:thiserror"],
+)

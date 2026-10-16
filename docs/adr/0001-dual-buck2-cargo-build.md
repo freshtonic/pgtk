@@ -24,6 +24,19 @@ clobber each other.
   Buck builds are thus offline and hermetic.
 - Cargo gets crates from crates.io. There is no source replacement at the root.
 - The BUCK file of each first-party crate is written by hand.
+- **Cargo-only crate**: a crate with no BUCK file. The Cargo-only crates are `pgtk-oracle`,
+  `pgtk-psql-oracle` and `pgtk-catalog-xtask`. The oracles link a PostgreSQL build from a cache
+  outside the repository, so Buck cannot build them hermetically. `pgtk-catalog-xtask` is a
+  maintenance tool.
+- Buck builds one feature set for each crate: the default features. `pgtk-sql` also has `spans`,
+  because `pgtk-psql` and `pgtk-analyze` need it. The other Target Versions and the oracle
+  features are Cargo-only.
+- A first-party build script that uses recursa-codegen runs through `first_party_build_script`
+  (`tools/rust/build_script.bzl`), not the prelude `buildscript_run`. recursa-codegen does not
+  accept a symlink in a source path, and it reads `CARGO_CFG_FEATURE`, which `buildscript_run`
+  does not set.
+- A first-party crate gets reindeer fixups too, because reindeer requires a build-script decision
+  for each workspace member. Reindeer generates no rules for a workspace member.
 - A third-party crate with a build script must have a fixup (`unresolved_fixup_error = true`).
 - `rust-toolchain.toml` pins rustc for both builds. Buck uses the system Rust toolchain.
 - `tools/buck2` (dotslash) pins buck2. The prelude is the copy that is bundled with buck2.

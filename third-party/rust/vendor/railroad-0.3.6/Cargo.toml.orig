@@ -1,0 +1,34 @@
+[package]
+name = "railroad"
+version = "0.3.6"
+authors = ["Lukas Lueg <lukas.lueg@gmail.com>"]
+license = "MIT"
+description = "A library to create syntax-diagrams as Scalable Vector Graphics"
+repository = "https://github.com/lukaslueg/railroad"
+documentation = "https://docs.rs/railroad"
+readme = "README.md"
+exclude = ["examples/*.jpeg", "examples/*.png", "examples/*.html"]
+edition = "2024"
+
+[features]
+default = [ "resvg" ]
+visual-debug = []
+
+[dependencies]
+unicode-width = "0.2"
+resvg = { version = "0.47", optional=true, features=["text", "system-fonts", "memmap-fonts"] }
+
+[dev-dependencies]
+railroad_verification = "0.1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[example]]
+name = "render"
+required-features = [ "resvg" ]
+
+[[bench]]
+name = "svg_generation"
+harness = false
+
+[package.metadata.docs.rs]
+features = [ "resvg" ]

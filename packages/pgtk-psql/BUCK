@@ -1,0 +1,88 @@
+# Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
+#
+# Buck builds the default Target Version (pg17). The psql-oracle feature is Cargo-only. See
+# docs/adr/0001-dual-buck2-cargo-build.md.
+
+load("//tools/rust:build_script.bzl", "first_party_build_script")
+
+PGTK_PSQL_FEATURES = [
+    "default",
+    "pg17",
+    "since-pg15",
+    "since-pg16",
+    "since-pg17",
+]
+
+# The crate sources. The library compiles from this copy, and the build script reads it as
+# CARGO_MANIFEST_DIR, so recursa-codegen and the recursa macros see the same source paths.
+filegroup(
+    name = "pgtk-psql.crate",
+    srcs = glob(["src/**/*.rs"]) + [
+        "Cargo.toml",
+        "build.rs",
+    ],
+)
+
+# build.rs includes ../pgtk-sql/build-support/target_version.rs, so the sources keep that layout.
+rust_binary(
+    name = "pgtk-psql-build-script-build",
+    srcs = [],
+    mapped_srcs = {
+        "//packages/pgtk-sql:target_version.rs": "pgtk-sql/build-support/target_version.rs",
+        "build.rs": "pgtk-psql/build.rs",
+    },
+    crate = "build_script_build",
+    crate_root = "pgtk-psql/build.rs",
+    edition = "2024",
+    deps = ["//third-party/rust:recursa-codegen"],
+)
+
+first_party_build_script(
+    name = "pgtk-psql-build-script-run",
+    build_script = ":pgtk-psql-build-script-build",
+    features = PGTK_PSQL_FEATURES,
+    manifest_dir = ":pgtk-psql.crate",
+    package_name = "pgtk-psql",
+    version = "0.1.0",
+)
+
+rust_library(
+    name = "pgtk-psql",
+    srcs = [":pgtk-psql.crate"],
+    crate = "pgtk_psql",
+    crate_root = "pgtk-psql.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_MANIFEST_DIR": "pgtk-psql.crate",
+        "CARGO_PKG_NAME": "pgtk-psql",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "OUT_DIR": "$(location :pgtk-psql-build-script-run)",
+    },
+    features = PGTK_PSQL_FEATURES,
+    deps = [
+        "//packages/pgtk-sql:pgtk-sql",
+        "//third-party/rust:derive_more",
+        "//third-party/rust:recursa",
+    ],
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "pgtk-psql-test",
+    srcs = [":pgtk-psql.crate"],
+    crate = "pgtk_psql",
+    crate_root = "pgtk-psql.crate/src/lib.rs",
+    edition = "2024",
+    env = {
+        "CARGO_MANIFEST_DIR": "pgtk-psql.crate",
+        "CARGO_PKG_NAME": "pgtk-psql",
+        "CARGO_PKG_VERSION": "0.1.0",
+        "OUT_DIR": "$(location :pgtk-psql-build-script-run)",
+    },
+    features = PGTK_PSQL_FEATURES,
+    deps = [
+        "//packages/pgtk-sql:pgtk-sql",
+        "//third-party/rust:derive_more",
+        "//third-party/rust:recursa",
+    ],
+)
