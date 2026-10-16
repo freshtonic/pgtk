@@ -4,7 +4,7 @@ Audit of `src/backend/parser/analyze.c` and `parse_*.c` (excluding `parse_utilcm
 and `parse_enr.c`) between the latest patch release of each major version.
 
 Tags compared: `REL_14_24`, `REL_15_19`, `REL_16_15`, `REL_17_11`.
-Source: `/Users/jamessadler/projects/pgtk-sql/vendor/postgres` (read only, no checkout).
+Source: `/Users/jamessadler/projects/pg-sql/vendor/postgres` (read only, no checkout).
 
 **Method note.** Almost every bug fix in these files is back-patched. `git log A..B`
 therefore lists ~80 commits per pair that are present in *both* tags. All findings below

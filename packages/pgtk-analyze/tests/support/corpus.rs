@@ -18,29 +18,62 @@ fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()
 }
 
-/// The vendored PostgreSQL source.
+/// The vendored PostgreSQL repository, the `vendor/postgres` submodule at the
+/// repository root. Its checkout can be a later release than the corpus, so
+/// the tests read the corpus from its object store, not from its checkout.
 pub fn postgres_dir() -> PathBuf {
-    root().join("vendor/postgres")
+    root().join("../../vendor/postgres")
 }
 
-/// The directory of the regression SQL files.
-pub fn corpus_dir() -> PathBuf {
-    postgres_dir().join("src/test/regress/sql")
+/// The frozen statement ranges, shared with pgtk-sql.
+fn frozen_split_path() -> PathBuf {
+    root().join("baselines/postgresql-17.9-statements.json")
 }
 
-/// The commit the vendored PostgreSQL is checked out at, or why that could
-/// not be learned.
-fn vendored_commit() -> Result<String, String> {
+/// Runs git in the vendored PostgreSQL repository and returns its output, or
+/// why it failed.
+fn git(arguments: &[&str]) -> Result<Vec<u8>, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(postgres_dir())
-        .args(["rev-parse", "HEAD"])
+        .args(arguments)
         .output()
         .map_err(|error| format!("cannot run git: {error}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    Ok(output.stdout)
+}
+
+/// Panics when the object store of the vendored PostgreSQL does not hold
+/// `commit`.
+fn require_commit(commit: &str) {
+    if let Err(error) = git(&["cat-file", "-e", &format!("{commit}^{{commit}}")]) {
+        panic!(
+            "vendor/postgres does not hold the commit {commit} that the statement ranges \
+             were frozen from ({error}); run `git submodule update --init` with full history"
+        );
+    }
+}
+
+/// The text of the object `spec` (`<commit>:<path>` or a blob ID) in the
+/// vendored PostgreSQL.
+fn object_text(spec: &str) -> String {
+    let bytes = git(&["cat-file", "-p", spec])
+        .unwrap_or_else(|error| panic!("cannot read {spec} from vendor/postgres: {error}"));
+    String::from_utf8(bytes).unwrap_or_else(|_| panic!("{spec} is not UTF-8"))
+}
+
+/// A file of the PostgreSQL commit that the statement ranges were frozen
+/// from, such as `src/test/regress/parallel_schedule`.
+pub fn frozen_file(path: &str) -> String {
+    let text = std::fs::read_to_string(frozen_split_path()).expect("frozen split");
+    let document: serde_json::Value = serde_json::from_str(&text).expect("frozen split JSON");
+    let gitlink = document["postgres"]["gitlink"]
+        .as_str()
+        .expect("frozen split records the PostgreSQL commit");
+    require_commit(gitlink);
+    object_text(&format!("{gitlink}:{path}"))
 }
 
 /// What one frozen item is.
@@ -81,15 +114,25 @@ impl CorpusFile {
 
 /// The frozen split of every file, keyed by file name.
 pub struct FrozenSplit {
-    files: BTreeMap<String, (usize, Vec<Item>)>,
+    files: BTreeMap<String, FrozenFile>,
     gitlink: String,
+}
+
+/// The frozen split of one file.
+struct FrozenFile {
+    /// The Git blob ID of the file in the frozen commit.
+    blob: String,
+    /// The length of the file in bytes.
+    bytes: usize,
+    /// The frozen items in source order.
+    items: Vec<Item>,
 }
 
 impl FrozenSplit {
     /// Read the frozen statement ranges, after checking that the vendored
-    /// PostgreSQL is checked out at the commit they were frozen from.
+    /// PostgreSQL holds the commit they were frozen from.
     pub fn load() -> Self {
-        let path = root().join("baselines/postgresql-17.9-statements.json");
+        let path = frozen_split_path();
         let text = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
         let document: serde_json::Value = serde_json::from_str(&text).expect("frozen split JSON");
@@ -101,22 +144,17 @@ impl FrozenSplit {
         let gitlink = document["postgres"]["gitlink"]
             .as_str()
             .expect("frozen split records the PostgreSQL commit");
-        match vendored_commit() {
-            Ok(commit) => assert_eq!(
-                commit, gitlink,
-                "vendor/postgres is not at the commit the statement ranges were frozen from; \
-                 run `git submodule update --init`"
-            ),
-            Err(error) => panic!(
-                "cannot read the vendor/postgres commit ({error}); run `git submodule update --init`"
-            ),
-        }
+        require_commit(gitlink);
         let files = document["files"]
             .as_array()
             .expect("frozen split files")
             .iter()
             .map(|file| {
                 let name = file["file"].as_str().expect("file name").to_owned();
+                let blob = file["source_git_blob"]
+                    .as_str()
+                    .expect("source_git_blob")
+                    .to_owned();
                 let bytes = file["source_bytes"].as_u64().expect("source_bytes") as usize;
                 let kinds = file["legacy_item_kinds"]
                     .as_str()
@@ -146,7 +184,7 @@ impl FrozenSplit {
                     kinds.len(),
                     "{name}: range and kind counts differ"
                 );
-                (name, (bytes, items))
+                (name, FrozenFile { blob, bytes, items })
             })
             .collect();
         Self {
@@ -165,26 +203,23 @@ impl FrozenSplit {
         self.files.keys().map(String::as_str)
     }
 
-    /// Read one corpus file and attach its frozen split.
-    ///
-    /// Panics when the file on disk is not the file the split was made from.
+    /// Read one corpus file, by its frozen blob ID, and attach its frozen
+    /// split.
     pub fn read(&self, name: &str) -> CorpusFile {
-        let (bytes, items) = self
+        let file = self
             .files
             .get(name)
             .unwrap_or_else(|| panic!("{name} has no frozen split"));
-        let path = corpus_dir().join(name);
-        let text = std::fs::read_to_string(&path)
-            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        let text = object_text(&file.blob);
         assert_eq!(
             text.len(),
-            *bytes,
-            "{name}: the file on disk is not the file the split was frozen from"
+            file.bytes,
+            "{name}: the blob is not the file the split was frozen from"
         );
         CorpusFile {
             name: name.to_owned(),
             text,
-            items: items.clone(),
+            items: file.items.clone(),
         }
     }
 }
@@ -195,10 +230,8 @@ impl FrozenSplit {
 /// follow this order. Files in one parallel group run in the listed order,
 /// which is one valid serialisation of the group.
 pub fn schedule() -> Vec<String> {
-    let path = postgres_dir().join("src/test/regress/parallel_schedule");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
-    text.lines()
+    frozen_file("src/test/regress/parallel_schedule")
+        .lines()
         .filter_map(|line| line.strip_prefix("test:"))
         .flat_map(|names| names.split_whitespace().map(|name| format!("{name}.sql")))
         .collect()

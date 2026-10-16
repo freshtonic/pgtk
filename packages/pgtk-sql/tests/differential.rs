@@ -347,8 +347,8 @@ macro_rules! corpus_tests {
 }
 
 // One entry per file in the PostgreSQL submodule's regression SQL
-// corpus (pgtk-sql/vendor/postgres/src/test/regress/sql/). Generated with:
-//   ls pgtk-sql/vendor/postgres/src/test/regress/sql/*.sql \
+// corpus (vendor/postgres/src/test/regress/sql/). Generated with:
+//   ls vendor/postgres/src/test/regress/sql/*.sql \
 //     | xargs -n1 basename | sed 's/\.sql$//' \
 //     | grep -E '^[A-Za-z_][A-Za-z0-9_]*$' | tr '\n' ','
 //

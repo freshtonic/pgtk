@@ -41,7 +41,8 @@ meta-commands such as `\set`, `\d` and `\if` that neither `pgtk-sql` nor
 harness therefore reads the statement byte ranges `pgtk-sql` froze when it
 captured its own baseline, copied to `baselines/postgresql-17.9-statements.json`,
 and treats every item that split marked as a non-statement as Skipped. The
-reader checks that the submodule is at the commit the ranges were frozen from.
+reader reads each file by its frozen Git blob ID from the object store of the
+submodule, which must hold the commit the ranges were frozen from.
 The design session chose the document parser as the primary splitter with the
 frozen ranges as a cross-check; that is reversed until the meta-command gap in
 `pgtk-psql` closes.

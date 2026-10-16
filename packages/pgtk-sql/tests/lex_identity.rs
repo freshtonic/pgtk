@@ -184,7 +184,7 @@ fn the_complete_corpus_lexes_without_a_panic() {
 
     for directory in [
         root.join("fixtures/stress"),
-        root.join("vendor/postgres/src/test/regress/sql"),
+        root.join("../../vendor/postgres/src/test/regress/sql"),
     ] {
         for path in sql_files(&directory) {
             let name = path

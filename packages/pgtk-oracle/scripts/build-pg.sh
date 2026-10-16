@@ -28,7 +28,7 @@ set -euo pipefail
 unset PROFILE
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../pgtk-sql" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PG_REPO="$REPO_ROOT/vendor/postgres"
 PINS="$SCRIPT_DIR/../pins.tsv"
 

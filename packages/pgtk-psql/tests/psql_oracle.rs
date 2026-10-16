@@ -58,7 +58,7 @@ fn target_version() -> &'static str {
 }
 
 fn repository() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../pgtk-sql/vendor/postgres")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/postgres")
 }
 
 fn baseline_path(feature: &str) -> PathBuf {

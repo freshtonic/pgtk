@@ -30,7 +30,7 @@ fn pins() -> Vec<Pin> {
 }
 
 fn repository_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../pgtk-sql")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
 fn git(repository: &Path, arguments: &[&str]) -> Option<String> {

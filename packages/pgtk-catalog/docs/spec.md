@@ -339,7 +339,7 @@ pub enum CastMethod { Function(Handle<Function>), Binary, InOut }    // f b i
 
 `src/builtin/generated.rs` is produced by `cargo xtask gen-builtins
 <path/to/pg_type.dat>` from PostgreSQL 17.9's `src/include/catalog/pg_type.dat`
-(vendored at `../pgtk-sql/vendor/postgres/src/include/catalog/pg_type.dat`).
+(vendored at `vendor/postgres/src/include/catalog/pg_type.dat` at the repository root).
 It contains:
 
 ```rust
