@@ -13,8 +13,8 @@ clobber each other.
 ## Decision
 
 - **Exported crate**: a crate that is published to crates.io and has Buck
-  `visibility = ["PUBLIC"]`. The exported crates are `pg-sql`, `pg-analyze`, `pg-catalog` and
-  `pg-proto`.
+  `visibility = ["PUBLIC"]`. The exported crates are `pgtk-sql`, `pgtk-analyze`, `pgtk-catalog` and
+  `pgtk-proto`.
 - **Internal crate**: a crate with `publish = false` and no PUBLIC visibility.
 - There is one `Cargo.lock`, at the workspace root. Both builds use it. Only `cargo` changes it.
   Reindeer reads it with `--locked`. Thus Cargo and Buck always use the same third-party versions.

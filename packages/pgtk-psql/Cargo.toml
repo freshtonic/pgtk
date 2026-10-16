@@ -1,0 +1,65 @@
+[package]
+name = "pgtk-psql"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "psql client-side grammar: variable interpolation, substitution and rendering to server SQL"
+license = "MIT"
+publish = false
+build = "build.rs"
+
+[features]
+# Target version (ADR 0009). pgtk-psql follows the pgtk-sql target version, so it
+# uses `default-features = false` on pgtk-sql and forwards these features.
+# Enable exactly one version feature.
+default = ["pg17"]
+pg14 = ["pgtk-sql/pg14", "pgtk-psql-oracle?/pg14"]
+pg15 = ["pgtk-sql/pg15", "since-pg15", "pgtk-psql-oracle?/pg15"]
+pg16 = ["pgtk-sql/pg16", "since-pg15", "since-pg16", "pgtk-psql-oracle?/pg16"]
+pg17 = ["pgtk-sql/pg17", "since-pg15", "since-pg16", "since-pg17", "pgtk-psql-oracle?/pg17"]
+pg18 = [
+    "pgtk-sql/pg18",
+    "since-pg15",
+    "since-pg16",
+    "since-pg17",
+    "since-pg18",
+    "pgtk-psql-oracle?/pg18",
+]
+pg19-beta = [
+    "pgtk-sql/pg19-beta",
+    "since-pg15",
+    "since-pg16",
+    "since-pg17",
+    "since-pg18",
+    "since-pg19",
+    "pgtk-psql-oracle?/pg19-beta",
+]
+since-pg15 = ["pgtk-sql/since-pg15"]
+since-pg16 = ["pgtk-sql/since-pg16"]
+since-pg17 = ["pgtk-sql/since-pg17"]
+since-pg18 = ["pgtk-sql/since-pg18"]
+since-pg19 = ["pgtk-sql/since-pg19"]
+# The psql oracle of the same target version (issue #79). It builds the
+# pinned PostgreSQL release, so it is opt-in, as `postgres-oracle` is for
+# pgtk-sql.
+psql-oracle = ["dep:pgtk-psql-oracle"]
+
+[dependencies]
+# `default-features = false` on both recursa crates, as pgtk-sql has: with the
+# (empty) default feature in the set, recursa is a different build unit from
+# the one pgtk-sql links, and pgtk-sql itself is compiled a second time.
+recursa = { workspace = true, features = ["diagrams", "explorer", "spans"] }
+pgtk-sql = { path = "../pgtk-sql", default-features = false, features = ["spans"] }
+derive_more = { workspace = true, features = ["deref"] }
+pgtk-psql-oracle = { path = "../pgtk-psql-oracle", optional = true, default-features = false }
+
+[build-dependencies]
+recursa-codegen = { workspace = true, features = ["diagrams", "explorer", "spans"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[[test]]
+name = "psql_oracle"
+path = "tests/psql_oracle.rs"
+required-features = ["psql-oracle"]
