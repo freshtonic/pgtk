@@ -637,3 +637,19 @@ pg_unicode_to_server_noerror(pg_wchar c, unsigned char *s)
     s[pg_utf_mblen(s)] = '\0';
     return true;
 }
+
+/* ---------------------------------------------------------------------- *
+ * Unreachable backend functions.                                         *
+ *                                                                        *
+ * extensible.c refers to dynahash's hash_search. The raw parser never    *
+ * makes an extensible node, so the call never runs. The macOS linker     *
+ * removes the dead code that calls it; a Linux link needs a definition.  *
+ * ---------------------------------------------------------------------- */
+#include "utils/hsearch.h"
+
+void *
+hash_search(HTAB *hashp, const void *keyPtr, HASHACTION action, bool *foundPtr)
+{
+    write_stderr("pgo_elog_stub: hash_search is not available in the oracle\n");
+    abort();
+}
