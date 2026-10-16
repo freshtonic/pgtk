@@ -89,6 +89,9 @@ PREPARE, DECLARE, SET, DEALLOCATE, CLOSE and the end of a transaction report
 a Session Effect, and the caller applies it.
 
 The crate depends on `pgtk-sql`, `pgtk-catalog` and `recursa`.
+To keep the build of `pgtk-sql` fast, set the build-override profile in your
+workspace (see [Build time](../pgtk-sql/README.md#build-time) in the `pgtk-sql`
+README).
 
 ## The Oracle harness
 
