@@ -35,6 +35,10 @@ jobs:
   buck2:
     name: Buck2 build and test
     runs-on: ubuntu-latest
+    env:
+      # tools/buck2 turns on the BuildBuddy remote cache when the key is set. A pull request from
+      # a fork gets no secrets, so it builds without the cache.
+      BUILDBUDDY_API_KEY: ${{ secrets.BUILDBUDDY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install

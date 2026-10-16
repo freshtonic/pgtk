@@ -1,0 +1,12 @@
+load("@prelude//platforms:defs.bzl", "host_configuration")
+load(":defs.bzl", "execution_platform")
+
+# tools/buck2 writes the [pgtk] values to .buckconfig.pgtk.
+execution_platform(
+    name = "default",
+    cpu_configuration = host_configuration.cpu,
+    os_configuration = host_configuration.os,
+    remote_cache = read_root_config("pgtk", "remote_cache", "false") == "true",
+    toolchain_id = read_root_config("pgtk", "toolchain_id", ""),
+    visibility = ["PUBLIC"],
+)

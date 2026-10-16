@@ -40,7 +40,16 @@ clobber each other.
   for each workspace member. Reindeer generates no rules for a workspace member.
 - A third-party crate with a build script must have a fixup (`unresolved_fixup_error = true`).
 - `rust-toolchain.toml` pins rustc for both builds. Buck uses the system Rust toolchain.
-- `tools/buck2` (dotslash) pins buck2. The prelude is the copy that is bundled with buck2.
+- `tools/buck2.dotslash` pins buck2. The prelude is the copy that is bundled with buck2.
+  `tools/buck2` is a wrapper that writes `.buckconfig.pgtk` and then runs the pinned buck2.
+- **Remote cache**: Buck2 uses the BuildBuddy cache when `BUILDBUDDY_API_KEY` is set. The
+  execution platform `root//platforms:default` runs every action locally, reads the cache and
+  uploads to it. There is one BuildBuddy organization and one key, which CI and developers
+  share for now.
+- The key of an action includes the OS, the CPU architecture and a toolchain ID, through the
+  remote execution properties of the platform. Buck2 does not hash the system toolchain, so
+  without the toolchain ID one toolchain could get the outputs of another. `tools/buck2`
+  calculates the ID before each command.
 
 ### Non-clobber rules
 

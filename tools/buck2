@@ -1,31 +1,60 @@
-#!/usr/bin/env dotslash
+#!/usr/bin/env bash
+# Runs the pinned buck2 (tools/buck2.dotslash) with the pgtk build settings.
+#
+# Before each command, the script writes .buckconfig.pgtk, which .buckconfig includes and git
+# ignores:
+#
+# - [pgtk] toolchain_id: a hash of the system toolchain that the build uses (rustc, clang and the
+#   SDK or C library). The execution platform (platforms/defs.bzl) puts it into the key of every
+#   action, so the remote cache never gives an output of one toolchain to another toolchain.
+# - When BUILDBUDDY_API_KEY is set: the BuildBuddy remote cache. Buck2 reads the key from the
+#   environment, so the key is never written to a file. Without the key, the build uses no remote
+#   cache.
+#
+# The script writes the file only when its contents change, because a change of the configuration
+# restarts the buck2 daemon.
+set -euo pipefail
 
-{
-  "name": "buck2",
-  "platforms": {
-    "macos-aarch64": {
-      "size": 35215856,
-      "hash": "blake3",
-      "digest": "61b9db91f0636d7da805e708dada3239325dca33523bca948f66600957b30e51",
-      "format": "zst",
-      "path": "buck2-aarch64-apple-darwin",
-      "providers": [
-        {
-          "url": "https://github.com/facebook/buck2/releases/download/2026-10-01/buck2-aarch64-apple-darwin.zst"
-        }
-      ]
-    },
-    "linux-x86_64": {
-      "size": 40032481,
-      "hash": "blake3",
-      "digest": "601729f1e507b9581f4a00d0c2e381552f08f2f9be46997508e8c7043631bb03",
-      "format": "zst",
-      "path": "buck2-x86_64-unknown-linux-musl",
-      "providers": [
-        {
-          "url": "https://github.com/facebook/buck2/releases/download/2026-10-01/buck2-x86_64-unknown-linux-musl.zst"
-        }
-      ]
-    }
-  }
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+toolchain_id() {
+  # rustc runs in the repository root, so rustup selects the toolchain of rust-toolchain.toml, as
+  # it does for the build.
+  (cd "$root" && rustc -vV)
+  /usr/bin/clang --version
+  /usr/bin/clang++ --version
+  uname -sm
+  case "$(uname -s)" in
+    Darwin) xcrun --show-sdk-version && xcrun --show-sdk-build-version ;;
+    Linux) ldd --version | head -1 ;;
+  esac
 }
+
+id="$(toolchain_id | shasum -a 256 | cut -c1-16)"
+# buck2 takes the address without the `grpcs` scheme; `tls = true` turns on TLS.
+endpoint="${BUILDBUDDY_ENDPOINT:-grpc://remote.buildbuddy.io:443}"
+
+config="# Written by tools/buck2. Do not edit.
+[pgtk]
+  toolchain_id = $id"
+if [ -n "${BUILDBUDDY_API_KEY:-}" ]; then
+  config+="
+  remote_cache = true
+
+[buck2_re_client]
+  engine_address = $endpoint
+  action_cache_address = $endpoint
+  cas_address = $endpoint
+  tls = true
+  http_headers = x-buildbuddy-api-key:\$BUILDBUDDY_API_KEY"
+else
+  config+="
+  remote_cache = false"
+fi
+
+file="$root/.buckconfig.pgtk"
+if [ "$(cat "$file" 2>/dev/null || true)" != "$config" ]; then
+  printf '%s\n' "$config" > "$file"
+fi
+
+exec "$root/tools/buck2.dotslash" "$@"
