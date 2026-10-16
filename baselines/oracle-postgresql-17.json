@@ -5,12 +5,12 @@
     "items": 42902,
     "skipped": 351,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 16,
-    "skipped_aborted_transaction": 210,
+    "skipped_parse_failed": 21,
+    "skipped_aborted_transaction": 205,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
-    "agree": 41728,
-    "known_divergence": 823,
+    "agree": 41733,
+    "known_divergence": 818,
     "disagree": 0
   },
   "files": {
@@ -820,14 +820,14 @@
     },
     "foreign_key.sql": {
       "items": 1154,
-      "skipped": 11,
+      "skipped": 12,
       "skipped_not_a_statement": 2,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 1141,
-      "known_divergence": 2,
+      "known_divergence": 1,
       "disagree": 0
     },
     "functional_deps.sql": {
@@ -844,14 +844,14 @@
     },
     "generated.sql": {
       "items": 119,
-      "skipped": 0,
+      "skipped": 1,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 118,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "geometry.sql": {
@@ -1768,13 +1768,13 @@
     },
     "privileges.sql": {
       "items": 1216,
-      "skipped": 9,
+      "skipped": 4,
       "skipped_not_a_statement": 0,
       "skipped_parse_failed": 0,
-      "skipped_aborted_transaction": 9,
+      "skipped_aborted_transaction": 4,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
-      "agree": 1204,
+      "agree": 1209,
       "known_divergence": 3,
       "disagree": 0
     },
@@ -2152,14 +2152,14 @@
     },
     "stats_ext.sql": {
       "items": 816,
-      "skipped": 2,
+      "skipped": 5,
       "skipped_not_a_statement": 2,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 3,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 811,
-      "known_divergence": 3,
+      "known_divergence": 0,
       "disagree": 0
     },
     "strings.sql": {
