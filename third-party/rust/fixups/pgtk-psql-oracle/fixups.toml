@@ -1,0 +1,4 @@
+# First-party workspace member. Reindeer generates no rules for it, but it requires a build
+# script decision. `run = true` makes reindeer buckify the build dependencies, which the
+# hand-written BUCK file of the crate uses to run the build script.
+buildscript.run = true

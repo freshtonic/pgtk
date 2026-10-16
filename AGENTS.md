@@ -1,6 +1,41 @@
-# dbtk
+# pgtk
 
-dbtk is a Cargo workspace of crates related to relational databases.
+pgtk is a Cargo workspace of crates related to relational databases.
+
+## Building
+
+pgtk builds with Cargo and with Buck2. See `docs/adr/0001-dual-buck2-cargo-build.md`.
+
+- Cargo: `cargo build --workspace` and `cargo test --workspace`.
+- Buck2: `tools/buck2 build //...` and `tools/buck2 test //...`. `tools/buck2` needs
+  [dotslash](https://dotslash-cli.com) (`cargo install dotslash`).
+
+### Third-party dependencies
+
+1. Add the version to the root `[workspace.dependencies]`. Use `dep.workspace = true` in the crate.
+2. Run `cargo` to update `Cargo.lock`. Only `cargo` changes `Cargo.lock`.
+3. Run `scripts/update-third-party`. Commit `third-party/rust/` with the change.
+4. Add the dep to the crate's BUCK file as `//third-party/rust:<crate>`.
+
+If reindeer reports a missing fixup, write `third-party/rust/fixups/<crate>/fixups.toml`.
+
+### New crates
+
+Each crate in `packages/` needs a hand-written `BUCK` file with a `rust_library` and a `rust_test`.
+Keep its deps the same as the `[dependencies]` in its `Cargo.toml`. The Cargo-only crates
+(`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
+`pgtk-catalog-xtask`) have no `BUCK` file. See the ADR.
+
+If the crate has a build script that uses recursa-codegen, run it with
+`first_party_build_script` from `tools/rust/build_script.bzl`. `packages/pgtk-sql/BUCK` is the
+model.
+
+### Tests
+
+`cargo test --workspace` runs every test. `pgtk-test-features` turns on the features that gate
+tests. If you gate a new test behind a feature, add that feature to
+`packages/pgtk-test-features/Cargo.toml`. A test that needs a PostgreSQL server uses
+`pgtk-test-server`, never a server that the developer must supply.
 
 ## Agent skills
 

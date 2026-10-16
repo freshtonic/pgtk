@@ -1,0 +1,48 @@
+# Toolchains for the Rust build. Only the toolchains that the Rust rules use are declared.
+# The Rust toolchain uses the `rustc` on PATH. `rust-toolchain.toml` pins its version.
+
+load("@prelude//tests:test_toolchain.bzl", "noop_test_toolchain")
+load("@prelude//toolchains:cxx.bzl", "system_cxx_toolchain")
+load("@prelude//toolchains:genrule.bzl", "system_genrule_toolchain")
+load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
+load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
+load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
+
+# Absolute tool paths: the shims that the prelude gives to Rust build scripts (CC, CXX, LD, AR)
+# start the tool with os.execl, which does not search PATH. The paths are the same on macOS and
+# on the GitHub Ubuntu runners.
+system_cxx_toolchain(
+    name = "cxx",
+    archiver = "/usr/bin/ar",
+    compiler = "/usr/bin/clang",
+    compiler_type = "clang",
+    cxx_compiler = "/usr/bin/clang++",
+    linker = "/usr/bin/clang++",
+    visibility = ["PUBLIC"],
+)
+
+system_genrule_toolchain(
+    name = "genrule",
+    visibility = ["PUBLIC"],
+)
+
+system_python_bootstrap_toolchain(
+    name = "python_bootstrap",
+    visibility = ["PUBLIC"],
+)
+
+remote_test_execution_toolchain(
+    name = "remote_test_execution",
+    visibility = ["PUBLIC"],
+)
+
+noop_test_toolchain(
+    name = "test",
+    visibility = ["PUBLIC"],
+)
+
+system_rust_toolchain(
+    name = "rust",
+    default_edition = "2024",
+    visibility = ["PUBLIC"],
+)

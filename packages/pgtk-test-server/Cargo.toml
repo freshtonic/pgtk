@@ -1,0 +1,12 @@
+[package]
+name = "pgtk-test-server"
+version = "0.1.0"
+description = "PostgreSQL servers for the pgtk tests, built from the vendored PostgreSQL source"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"

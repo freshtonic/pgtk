@@ -1,0 +1,18 @@
+[package]
+name = "pgtk-test-features"
+version = "0.1.0"
+description = "Turns on the test-only features of the pgtk crates in a workspace build"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Cargo unifies the features of a package across the packages of one build.
+# This member asks for the features that gate tests, so `cargo test
+# --workspace` builds and runs those tests. A consumer of a pgtk crate does
+# not get these features. `cargo test -p <crate>` alone does not either: give
+# it `--features` (see DEVELOPMENT.md).
+[dependencies]
+pgtk-catalog = { path = "../pgtk-catalog", features = ["async", "fixture", "postgres", "serde", "tokio-postgres"] }
+pgtk-psql = { path = "../pgtk-psql", features = ["psql-oracle"] }
+pgtk-sql = { path = "../pgtk-sql", features = ["postgres-oracle"] }

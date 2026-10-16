@@ -1,0 +1,744 @@
+//! The packed LALR(1) tables and their decoder.
+//!
+//! The tables mirror bison's `yypact`, `yytable`, `yycheck`, `yydefact`, `yypgoto`, `yydefgoto`,
+//! `yyr1` and `yyr2`, plus Recursa's `value_pops` and `reduce_actions` per rule,
+//! `expected_atoms` per terminal
+//! (the symbolic expectation the error path names a terminal by) and its `lookahead` filter
+//! table, the flat `(token, merged, trigger)` triples of the grammar's `lookahead`
+//! declarations, which [`DecodedTables::merged_terminal`] applies to the token feed. Codegen
+//! packs them (`recursa_codegen::lr::tables`) with URL-safe base64 and renders each as one
+//! byte-string literal so a table costs the compiler one token; this module is the runtime half
+//! of that format and must agree with the codegen encoder cell for cell.
+//!
+//! # Wire format
+//!
+//! A literal is one base64 digit giving the cell width, then `width` digits per cell, in the
+//! URL-safe alphabet below. Unsigned tables store the cell value. Signed tables
+//! store `0` for the sentinel [`PACT_NINF`] and otherwise the zigzag form of the value plus one,
+//! so small magnitudes keep small widths.
+//!
+//! # Lookup contract
+//!
+//! - action on terminal `t` in state `s`: if `pact[s] == PACT_NINF` take `defact[s]`; else let
+//!   `i = pact[s] + t`; if `0 <= i < table.len()` and `check[i] == t` the entry is `table[i]`,
+//!   otherwise take `defact[s]`.
+//! - `table[i] > 0` shifts to state `table[i]`; `table[i] < 0` reduces by rule `-table[i] - 1`;
+//!   `table[i] == TABLE_NINF` is an explicit error.
+//! - `defact[s] == 0` is an error; otherwise reduce by rule `defact[s] - 1`.
+//! - goto on nonterminal `n` from state `s`: let `i = pgoto[n] + s`; if in range and
+//!   `check[i] == s` go to `table[i]`, otherwise `defgoto[n]`.
+
+use std::sync::OnceLock;
+
+use super::provenance::FoldTable;
+
+/// The `pact` or `pgoto` value of a row that has no explicit entries.
+pub const PACT_NINF: i32 = i32::MIN;
+
+/// The `table` value of an explicit syntax error.
+pub const TABLE_NINF: i32 = i32::MIN;
+
+/// The URL-safe base64 alphabet shared with the codegen encoder.
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
+/// The packed tables of one generation's automaton, decoded once on first use.
+#[derive(Debug)]
+pub struct LrTables {
+    /// Dense index of the end-marker terminal, which stands for end of input.
+    end_marker: u32,
+    /// Packed `pact`.
+    pact: &'static [u8],
+    /// Packed `table`.
+    table: &'static [u8],
+    /// Packed `check`.
+    check: &'static [u8],
+    /// Packed `defact`.
+    defact: &'static [u8],
+    /// Packed `pgoto`.
+    pgoto: &'static [u8],
+    /// Packed `defgoto`.
+    defgoto: &'static [u8],
+    /// Packed `r1`.
+    r1: &'static [u8],
+    /// Packed `r2`.
+    r2: &'static [u8],
+    /// Packed `value_pops`.
+    value_pops: &'static [u8],
+    /// Packed `reduce_actions`: `1` when reducing the rule must run generated semantic code.
+    reduce_actions: &'static [u8],
+    /// Packed `expected_atoms`: per terminal, its canonical atom plus one, or `0` for none.
+    expected_atoms: &'static [u8],
+    /// Packed `lookahead`.
+    lookahead: &'static [u8],
+    /// Packed `folds`, the provenance fold of each rule (see [`super::provenance`]).
+    folds: &'static [u8],
+    /// Packed `tail`: per rule, whether the rule's end is constrained by root FOLLOW (`1`), never
+    /// constrained below it (`2`, a left-recursive continuation of its own enum Node), or
+    /// inherits the decision from its last symbol (`0`).
+    tail: &'static [u8],
+    /// Whether any fold carries a mandatory policy, so provenance is retained even when the
+    /// root's policy does not capture.
+    mandatory: bool,
+    /// The decoded form, filled on first lookup.
+    decoded: OnceLock<DecodedTables>,
+    /// The decoded `folds`, filled by the first capturing parse, never by one that does not.
+    fold_table: OnceLock<FoldTable>,
+    /// The decoded `expected_atoms`, filled by the first error, never by a successful parse.
+    atoms: OnceLock<Vec<u32>>,
+}
+
+/// The decoded tables, the form every lookup reads.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DecodedTables {
+    /// Base of each state's action row in `table`, or [`PACT_NINF`].
+    pub pact: Vec<i32>,
+    /// Packed action and goto entries.
+    pub table: Vec<i32>,
+    /// The key each entry of `table` belongs to: a terminal for action rows, a state for goto
+    /// columns, `-1` for unused slots.
+    pub check: Vec<i32>,
+    /// Default reduction of each state as `rule + 1`, or `0` for none.
+    pub defact: Vec<u32>,
+    /// Base of each nonterminal's goto column in `table`, or [`PACT_NINF`].
+    pub pgoto: Vec<i32>,
+    /// Default goto target of each nonterminal.
+    pub defgoto: Vec<u32>,
+    /// Left-hand-side nonterminal of each rule.
+    pub r1: Vec<u32>,
+    /// Right-hand-side length of each rule.
+    pub r2: Vec<u32>,
+    /// Value-carrying right-hand-side symbols of each rule.
+    pub value_pops: Vec<u32>,
+    /// Whether each rule has generated semantic work.
+    pub reduce_actions: Vec<u32>,
+    /// Lookahead filters as flat `(token, merged, trigger)` triples.
+    pub lookahead: Vec<u32>,
+    /// First lookahead triple for each filtered source terminal, or `u32::MAX` when the terminal
+    /// has no filter. Triples for one source terminal are contiguous in the generated table.
+    lookahead_index: Vec<u32>,
+    /// The tail decision of each rule; see [`LrTables::new`].
+    pub tail: Vec<u32>,
+    /// Rule metadata co-located for the parser's reduction hot path.
+    pub(super) rules: Vec<DecodedRule>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Rule metadata co-located in one cache-friendly parser hot-path record.
+///
+/// The field order keeps the record at 16 bytes; the compile-time size assertion below prevents
+/// layout drift from silently increasing the cost of every reduction.
+pub(super) struct DecodedRule {
+    /// Left-hand-side nonterminal passed to the goto lookup after reducing.
+    pub(super) lhs: u32,
+    /// Number of parser-state frames removed by the rule.
+    pub(super) pops: u32,
+    /// Number of semantic values the generated action consumes.
+    pub(super) value_pops: u32,
+    /// Whether the reduction dispatches generated semantic construction work.
+    pub(super) has_reduce_action: bool,
+    /// Compact encoded provenance-tail policy used by occurrence folding.
+    pub(super) tail: u8,
+}
+
+const _: () = assert!(std::mem::size_of::<DecodedRule>() == 16);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// One decoded table action.
+pub enum TableAction {
+    /// Shift and go to the state.
+    Shift(u32),
+    /// Reduce by the rule.
+    Reduce(u32),
+    /// Syntax error.
+    Error,
+}
+
+impl LrTables {
+    /// Binds the packed literals of one generation; the argument order is the literal order
+    /// codegen renders.
+    #[allow(clippy::too_many_arguments)]
+    pub const fn new(
+        end_marker: u32,
+        pact: &'static [u8],
+        table: &'static [u8],
+        check: &'static [u8],
+        defact: &'static [u8],
+        pgoto: &'static [u8],
+        defgoto: &'static [u8],
+        r1: &'static [u8],
+        r2: &'static [u8],
+        value_pops: &'static [u8],
+        reduce_actions: &'static [u8],
+        expected_atoms: &'static [u8],
+        lookahead: &'static [u8],
+        folds: &'static [u8],
+        tail: &'static [u8],
+        mandatory: bool,
+    ) -> Self {
+        Self {
+            end_marker,
+            pact,
+            table,
+            check,
+            defact,
+            pgoto,
+            defgoto,
+            r1,
+            r2,
+            value_pops,
+            reduce_actions,
+            expected_atoms,
+            lookahead,
+            folds,
+            tail,
+            mandatory,
+            decoded: OnceLock::new(),
+            fold_table: OnceLock::new(),
+            atoms: OnceLock::new(),
+        }
+    }
+
+    /// Reports whether some rule folds an occurrence under a mandatory policy, which makes a
+    /// parse capture provenance whatever its root's policy and request say.
+    pub fn mandatory_provenance(&self) -> bool {
+        self.mandatory
+    }
+
+    /// Returns the decoded provenance folds, decoding the literal on first use.
+    pub fn folds(&self) -> &FoldTable {
+        self.fold_table
+            .get_or_init(|| FoldTable::decode(&decode_unsigned(self.folds)))
+    }
+
+    /// Returns the terminal that stands for end of input.
+    pub fn end_marker(&self) -> u32 {
+        self.end_marker
+    }
+
+    /// Returns the decoded tables, decoding the literals on first use.
+    ///
+    /// The literals are generated, so a malformed one is a generation bug and panics.
+    pub fn decoded(&self) -> &DecodedTables {
+        self.decoded.get_or_init(|| {
+            let lookahead = decode_unsigned(self.lookahead);
+            let r1 = decode_unsigned(self.r1);
+            let r2 = decode_unsigned(self.r2);
+            let value_pops = decode_unsigned(self.value_pops);
+            let reduce_actions = decode_unsigned(self.reduce_actions);
+            let tail = decode_unsigned(self.tail);
+            let rules = collate_rules(&r1, &r2, &value_pops, &reduce_actions, &tail);
+            DecodedTables {
+                pact: decode_signed(self.pact),
+                table: decode_signed(self.table),
+                check: decode_signed(self.check),
+                defact: decode_unsigned(self.defact),
+                pgoto: decode_signed(self.pgoto),
+                defgoto: decode_unsigned(self.defgoto),
+                r1,
+                r2,
+                value_pops,
+                reduce_actions,
+                lookahead_index: build_lookahead_index(&lookahead, self.end_marker),
+                lookahead,
+                tail,
+                rules,
+            }
+        })
+    }
+
+    /// Returns the canonical atom of each terminal, as the atom index plus one or `0` when the
+    /// terminal has no atom; the end marker has no entry.
+    ///
+    /// This is the vocabulary [`ParseError::expected`](crate::ParseError::expected) renders. Only
+    /// the error path reads it, so it is decoded apart from the action tables.
+    pub fn expected_atoms(&self) -> &[u32] {
+        self.atoms
+            .get_or_init(|| decode_unsigned(self.expected_atoms))
+    }
+}
+
+/// Joins the generated structure-of-arrays rule metadata into hot-path records.
+///
+/// Every input has exactly one cell per rule. Mismatched generated literals are protocol bugs and
+/// therefore fail immediately instead of producing a partial table.
+fn collate_rules(
+    r1: &[u32],
+    r2: &[u32],
+    value_pops: &[u32],
+    reduce_actions: &[u32],
+    tail: &[u32],
+) -> Vec<DecodedRule> {
+    let rule_count = r1.len();
+    assert_eq!(r2.len(), rule_count, "r2 has one cell per rule");
+    assert_eq!(
+        value_pops.len(),
+        rule_count,
+        "value_pops has one cell per rule"
+    );
+    assert_eq!(
+        reduce_actions.len(),
+        rule_count,
+        "reduce_actions has one cell per rule"
+    );
+    assert_eq!(tail.len(), rule_count, "tail has one cell per rule");
+    (0..rule_count)
+        .map(|rule| DecodedRule {
+            lhs: r1[rule],
+            pops: r2[rule],
+            value_pops: value_pops[rule],
+            has_reduce_action: reduce_actions[rule] != 0,
+            tail: u8::try_from(tail[rule]).expect("a tail decision fits in one byte"),
+        })
+        .collect()
+}
+
+impl DecodedTables {
+    /// The terminal the token feed presents for a record of `kind` followed by a record of
+    /// `next`: the merged terminal of the lookahead filter whose token is `kind` and whose
+    /// triggers hold `next`, otherwise `kind` itself. Only the table lookup sees the merged
+    /// terminal; the records themselves keep their lexed kinds.
+    pub fn merged_terminal(&self, kind: u32, next: Option<u32>) -> u32 {
+        let Some(next) = next else {
+            return kind;
+        };
+        let Some(start) = self.lookahead_index.get(kind as usize).copied() else {
+            return kind;
+        };
+        if start == u32::MAX {
+            return kind;
+        }
+        self.lookahead[start as usize..]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .take_while(|triple| triple[0] == kind)
+            .find(|triple| triple[0] == kind && triple[2] == next)
+            .map_or(kind, |triple| triple[1])
+    }
+
+    /// Reports whether this source terminal can be rewritten by one-token lookahead.
+    pub fn requires_lookahead(&self, kind: u32) -> bool {
+        self.lookahead_index
+            .get(kind as usize)
+            .is_some_and(|start| *start != u32::MAX)
+    }
+
+    /// Reports whether a state acts without reading a lookahead.
+    pub fn acts_by_default(&self, state: u32) -> bool {
+        self.pact[state as usize] == PACT_NINF
+    }
+
+    /// Looks the action on a terminal up in a state, following the module's lookup contract.
+    pub fn action(&self, state: u32, terminal: u32) -> TableAction {
+        let base = self.pact[state as usize];
+        if base != PACT_NINF {
+            let slot = i64::from(base) + i64::from(terminal);
+            if slot >= 0 && (slot as usize) < self.table.len() {
+                let slot = slot as usize;
+                if self.check[slot] == terminal as i32 {
+                    let entry = self.table[slot];
+                    return if entry == TABLE_NINF {
+                        TableAction::Error
+                    } else if entry > 0 {
+                        TableAction::Shift(entry as u32)
+                    } else {
+                        TableAction::Reduce((-entry - 1) as u32)
+                    };
+                }
+            }
+        }
+        self.default_action(state)
+    }
+
+    /// Looks up a lexed token as the terminal the token feed presents for it.
+    ///
+    /// A lookahead filter is absolute, as bison's `base_yylex` replacement is: once the record
+    /// after this one is a trigger, the merged terminal is the only terminal looked up, and a
+    /// state with no action for it is a syntax error. The source terminal is never retried, so a
+    /// grammar that admits the source token where a trigger may follow it must admit the merged
+    /// kind there too, the way `gram.y` writes `opt_with: WITH | WITH_LA`.
+    pub fn filtered_action(&self, state: u32, kind: u32, next: Option<u32>) -> TableAction {
+        self.action(state, self.merged_terminal(kind, next))
+    }
+
+    /// Returns a state's default action: its default reduction, or an error when it has none.
+    pub fn default_action(&self, state: u32) -> TableAction {
+        match self.defact[state as usize] {
+            0 => TableAction::Error,
+            rule => TableAction::Reduce(rule - 1),
+        }
+    }
+
+    /// Looks the goto on a nonterminal up from a state.
+    pub fn goto(&self, state: u32, nonterminal: u32) -> u32 {
+        let base = self.pgoto[nonterminal as usize];
+        if base != PACT_NINF {
+            let slot = i64::from(base) + i64::from(state);
+            if slot >= 0 && (slot as usize) < self.table.len() {
+                let slot = slot as usize;
+                if self.check[slot] == state as i32 {
+                    return self.table[slot] as u32;
+                }
+            }
+        }
+        self.defgoto[nonterminal as usize]
+    }
+
+    /// Returns the terminals with an explicit shift or reduce in a state, in ascending order.
+    ///
+    /// This is the state's own row, not the expected set of an error raised in it: default
+    /// reductions taken on the way to the state hide continuations, which
+    /// [`lac`](crate::lr::lac) recovers from the pre-reduction stack.
+    pub fn explicit_terminals(&self, state: u32, terminal_count: u32) -> Vec<u32> {
+        let base = self.pact[state as usize];
+        if base == PACT_NINF {
+            return Vec::new();
+        }
+        (0..terminal_count)
+            .filter(|terminal| {
+                let slot = i64::from(base) + i64::from(*terminal);
+                slot >= 0
+                    && (slot as usize) < self.table.len()
+                    && self.check[slot as usize] == *terminal as i32
+                    && self.table[slot as usize] != TABLE_NINF
+            })
+            .collect()
+    }
+}
+
+/// Reads one base64 digit.
+fn digit(byte: u8) -> u32 {
+    ALPHABET
+        .iter()
+        .position(|candidate| *candidate == byte)
+        .map(|value| value as u32)
+        .unwrap_or_else(|| panic!("byte {byte:#04x} is outside the LR table alphabet"))
+}
+
+/// Decodes an unsigned table literal: a width digit, then `width` digits per cell.
+fn decode_unsigned(literal: &[u8]) -> Vec<u32> {
+    let Some((width, cells)) = literal.split_first() else {
+        panic!("an LR table literal carries at least its width digit");
+    };
+    let width = digit(*width) as usize;
+    assert!(
+        width > 0 && cells.len() % width == 0,
+        "LR table literal is ragged: {} digits at width {width}",
+        cells.len()
+    );
+    cells
+        .chunks(width)
+        .map(|cell| {
+            cell.iter()
+                .fold(0_u32, |value, byte| (value << 6) | digit(*byte))
+        })
+        .collect()
+}
+
+/// Decodes a signed table literal, inverting codegen's zigzag-plus-one mapping.
+fn decode_signed(literal: &[u8]) -> Vec<i32> {
+    decode_unsigned(literal)
+        .into_iter()
+        .map(|value| {
+            if value == 0 {
+                PACT_NINF
+            } else {
+                let zigzag = value - 1;
+                ((zigzag >> 1) as i32) ^ -((zigzag & 1) as i32)
+            }
+        })
+        .collect()
+}
+
+/// Builds the constant-time source-terminal index for generated lookahead triples.
+fn build_lookahead_index(lookahead: &[u32], terminal_count: u32) -> Vec<u32> {
+    let mut index = vec![u32::MAX; terminal_count as usize];
+    for (triple, values) in lookahead.as_chunks::<3>().0.iter().enumerate() {
+        let token = values[0] as usize;
+        let entry = index
+            .get_mut(token)
+            .expect("a lookahead filter names a grammar terminal");
+        if *entry == u32::MAX {
+            *entry = (triple * 3) as u32;
+        }
+    }
+    index
+}
+
+#[cfg(test)]
+pub(super) mod tests {
+    use super::*;
+
+    /// The provenance folds of the textbook rules, hand-encoded: the three-symbol rules fold to
+    /// a node of a group, a leaf and a group (`E -> E + T`, `T -> T * F`) or of a leaf, a group
+    /// and a leaf (`F -> ( E )`), the unit rules to a node of one group, and `F -> id` passes its
+    /// token through as a content token would; every policy is inherited.
+    const TEXTBOOK_FOLDS: &[u8] =
+        b"BAAACADABBABBAACBBACABABBACADABBABBAACBBACABABBACADABAABBBACBAAAAA";
+
+    /// No textbook rule is decided by its caller FOLLOW.
+    const TEXTBOOK_TAIL: &[u8] = b"BAAAAAAA";
+
+    /// The dragon-book expression grammar `E -> E + T | T`, `T -> T * F | F`,
+    /// `F -> ( E ) | id`, as codegen's `lr::textbook::expression_grammar` packs and encodes it.
+    /// Terminals are `+ * ( ) id $end` (0..=5); rules are `0: $accept -> E`, `1: E -> E + T`,
+    /// `2: E -> T`, `3: T -> T * F`, `4: T -> F`, `5: F -> ( E )`, `6: F -> id`; the start state
+    /// of `E` is 0. The literals are copied from that encoder's output; the last one maps each
+    /// terminal to its atom (`+ * ( ) id` are atoms 0 to 4), which the tests' `GrammarInfo` names.
+    pub(in crate::lr) static TEXTBOOK: LrTables = LrTables::new(
+        5,
+        b"BFFADJABFFAJA",
+        b"BPPVTDRFNBBBX",
+        b"BBBPHFDJDCCCR",
+        b"BAAHBDFAAAGCE",
+        b"BNAKH",
+        b"BDAEF",
+        b"BBAACCDD",
+        b"BBDBDBDB",
+        b"BBCBCBBA",
+        b"BABABAAB",
+        b"BBCDEF",
+        b"B",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
+    );
+
+    /// The textbook tables with a synthetic lookahead filter: `(` before `)` is read as `id`
+    /// (terminals 2, 4 and 3), which is what `lr::tests` uses to prove the feed substitutes the
+    /// lookup terminal only.
+    pub(in crate::lr) static FILTERED_TEXTBOOK: LrTables = LrTables::new(
+        5,
+        b"BFFADJABFFAJA",
+        b"BPPVTDRFNBBBX",
+        b"BBBPHFDJDCCCR",
+        b"BAAHBDFAAAGCE",
+        b"BNAKH",
+        b"BDAEF",
+        b"BBAACCDD",
+        b"BBDBDBDB",
+        b"BBCBCBBA",
+        b"BABABAAB",
+        b"BBCDEF",
+        b"BCED",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
+    );
+
+    /// The textbook tables with `)` filtered to `id` before `+`. No state that accepts the
+    /// source `)` accepts the merged `id`, so the filter makes every `)` before `+` a syntax
+    /// error: the lookahead is absolute and the source terminal is never retried.
+    pub(in crate::lr) static ABSENT_MERGED_TEXTBOOK: LrTables = LrTables::new(
+        5,
+        b"BFFADJABFFAJA",
+        b"BPPVTDRFNBBBX",
+        b"BBBPHFDJDCCCR",
+        b"BAAHBDFAAAGCE",
+        b"BNAKH",
+        b"BDAEF",
+        b"BBAACCDD",
+        b"BBDBDBDB",
+        b"BBCBCBBA",
+        b"BABABAAB",
+        b"BBCDEF",
+        b"BDEA",
+        TEXTBOOK_FOLDS,
+        TEXTBOOK_TAIL,
+        false,
+    );
+
+    /// The decoded form codegen's `LrTables::pack` produced for the textbook grammar.
+    pub(in crate::lr) fn textbook_decoded() -> DecodedTables {
+        let r1 = vec![1, 0, 0, 2, 2, 3, 3];
+        let r2 = vec![1, 3, 1, 3, 1, 3, 1];
+        let value_pops = vec![1, 2, 1, 2, 1, 1, 0];
+        let reduce_actions = vec![0, 1, 0, 1, 0, 0, 1];
+        let tail = vec![0; 7];
+        let rules = collate_rules(&r1, &r2, &value_pops, &reduce_actions, &tail);
+        DecodedTables {
+            pact: vec![
+                2, 2, PACT_NINF, 1, 4, PACT_NINF, 0, 2, 2, PACT_NINF, 4, PACT_NINF,
+            ],
+            table: vec![7, 7, 10, 9, 1, 8, 2, 6, 0, 0, 0, 11],
+            check: vec![0, 0, 7, 3, 2, 1, 4, 1, -1, -1, -1, 8],
+            defact: vec![0, 0, 7, 1, 3, 5, 0, 0, 0, 6, 2, 4],
+            pgoto: vec![6, PACT_NINF, -5, 3],
+            defgoto: vec![3, 0, 4, 5],
+            r1,
+            r2,
+            value_pops,
+            reduce_actions,
+            lookahead: Vec::new(),
+            lookahead_index: vec![u32::MAX; 5],
+            tail,
+            rules,
+        }
+    }
+
+    #[test]
+    fn the_lookahead_table_maps_a_token_before_a_trigger_to_its_merged_terminal() {
+        let decoded = FILTERED_TEXTBOOK.decoded();
+        assert_eq!(decoded.lookahead, [2, 4, 3]);
+        assert_eq!(
+            decoded.merged_terminal(2, Some(3)),
+            4,
+            "`(` before `)` is `id`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(2, Some(0)),
+            2,
+            "`(` before `+` stays `(`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(2, None),
+            2,
+            "`(` at the end stays `(`"
+        );
+        assert_eq!(
+            decoded.merged_terminal(4, Some(3)),
+            4,
+            "an unfiltered token stays"
+        );
+        assert!(TEXTBOOK.decoded().lookahead.is_empty());
+        assert_eq!(TEXTBOOK.decoded().merged_terminal(2, Some(3)), 2);
+    }
+
+    #[test]
+    fn a_filtered_action_looks_the_merged_terminal_up_and_only_it() {
+        let filtered = FILTERED_TEXTBOOK.decoded();
+        assert_eq!(
+            filtered.filtered_action(0, 2, Some(3)),
+            TableAction::Shift(2),
+            "the start row accepts merged `id`"
+        );
+
+        // State 6 shifts the source `)` and has no entry for the merged `id`. The lookahead is
+        // absolute, so the row's answer for `id` stands: a syntax error, not the `)` action.
+        let absent = ABSENT_MERGED_TEXTBOOK.decoded();
+        assert_eq!(absent.action(6, 3), TableAction::Shift(9));
+        assert_eq!(absent.action(6, 4), TableAction::Error);
+        assert_eq!(
+            absent.filtered_action(6, 3, Some(0)),
+            TableAction::Error,
+            "a row without merged `id` rejects the filtered `)`"
+        );
+        assert_eq!(
+            absent.filtered_action(6, 3, Some(1)),
+            TableAction::Shift(9),
+            "`)` before a token that is no trigger stays `)`"
+        );
+    }
+
+    #[test]
+    fn filtered_actions_select_each_disjoint_filter_of_one_source_token() {
+        // Source terminal 0 has four disjoint continuations. Two select
+        // distinct merged terminals with actions; the third selects an
+        // explicit error and the fourth a merged terminal absent from this
+        // row. Neither of the last two retries the source terminal.
+        let lookahead = vec![0, 1, 4, 0, 2, 5, 0, 3, 6, 0, 8, 7];
+        let tables = DecodedTables {
+            pact: vec![0],
+            table: vec![10, 11, 12, TABLE_NINF],
+            check: vec![0, 1, 2, 3],
+            defact: vec![0],
+            pgoto: Vec::new(),
+            defgoto: Vec::new(),
+            r1: Vec::new(),
+            r2: Vec::new(),
+            value_pops: Vec::new(),
+            reduce_actions: Vec::new(),
+            lookahead_index: build_lookahead_index(&lookahead, 9),
+            lookahead,
+            tail: Vec::new(),
+            rules: Vec::new(),
+        };
+
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(4)),
+            TableAction::Shift(11)
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(5)),
+            TableAction::Shift(12)
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(6)),
+            TableAction::Error,
+            "an explicit error for a merged terminal must not fall back"
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(7)),
+            TableAction::Error,
+            "an absent merged entry is a syntax error, not the source action"
+        );
+        assert_eq!(
+            tables.filtered_action(0, 0, Some(9)),
+            TableAction::Shift(10),
+            "a continuation that triggers no filter keeps the source terminal"
+        );
+    }
+
+    #[test]
+    fn the_decoder_reproduces_the_tables_codegen_packed() {
+        assert_eq!(*TEXTBOOK.decoded(), textbook_decoded());
+        assert_eq!(TEXTBOOK.end_marker(), 5);
+    }
+
+    #[test]
+    fn lookups_agree_with_the_codegen_simulation_of_the_textbook_grammar() {
+        // `id + id * id` reduces `F -> id`, `T -> F`, `E -> T`, `F -> id`, `T -> F`, `F -> id`,
+        // `T -> T * F`, `E -> E + T` and then accepts on `$end`, exactly as
+        // `expression_grammar_tables_drive_a_prefix_parse` asserts in codegen.
+        let tables = TEXTBOOK.decoded();
+        let (plus, star, id, end) = (0, 1, 4, 5);
+        let mut stack = vec![0_u32];
+        let mut reductions = Vec::new();
+        let input = [id, plus, id, star, id];
+        let mut position = 0;
+        loop {
+            let state = *stack.last().unwrap();
+            let lookahead = input.get(position).copied().unwrap_or(end);
+            match tables.action(state, lookahead) {
+                TableAction::Shift(target) => {
+                    stack.push(target);
+                    position += 1;
+                }
+                TableAction::Reduce(0) => break,
+                TableAction::Reduce(rule) => {
+                    let pops = tables.r2[rule as usize] as usize;
+                    stack.truncate(stack.len() - pops);
+                    reductions.push(rule);
+                    let top = *stack.last().unwrap();
+                    stack.push(tables.goto(top, tables.r1[rule as usize]));
+                }
+                TableAction::Error => panic!("unexpected error at token {position}"),
+            }
+        }
+        assert_eq!(reductions, [6, 4, 2, 6, 4, 6, 3, 1]);
+        assert_eq!(position, 5);
+    }
+
+    #[test]
+    fn reduce_only_states_act_by_default_and_the_explicit_terminals_are_the_row() {
+        let tables = TEXTBOOK.decoded();
+        assert!(tables.acts_by_default(2));
+        assert!(!tables.acts_by_default(0));
+        // State 0 shifts `(` and `id` only.
+        assert_eq!(tables.explicit_terminals(0, 6), [2, 4]);
+        assert_eq!(tables.action(0, 0), TableAction::Error);
+        assert!(tables.explicit_terminals(2, 6).is_empty());
+    }
+
+    #[test]
+    #[should_panic(expected = "outside the LR table alphabet")]
+    fn a_byte_outside_the_alphabet_is_a_generation_bug() {
+        decode_unsigned(b"B!");
+    }
+
+    #[test]
+    #[should_panic(expected = "ragged")]
+    fn a_ragged_literal_is_a_generation_bug() {
+        decode_unsigned(b"CABC");
+    }
+}
