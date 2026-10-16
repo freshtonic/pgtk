@@ -8,7 +8,9 @@ pgtk builds with Cargo and with Buck2. Both builds use the same `Cargo.lock`. Fo
 - **Rust**: install [rustup](https://rustup.rs). rustup reads `rust-toolchain.toml` and installs
   the pinned toolchain when you first run `cargo`.
 - **Buck2**: install [dotslash](https://dotslash-cli.com) (`cargo install dotslash`).
-  `tools/buck2` uses dotslash to get the pinned buck2. You do not install buck2 yourself.
+  `tools/buck2` runs the pinned buck2 (`tools/buck2.dotslash`). You do not install buck2
+  yourself. Always run buck2 through `tools/buck2`, because it also writes the build settings
+  (see [The remote cache](#the-remote-cache)).
 - **C toolchain**: `/usr/bin/clang`, `/usr/bin/clang++` and `/usr/bin/ar`. The Buck2 C++
   toolchain uses these absolute paths.
 - **PostgreSQL build tools**: `make`, `bison`, `flex`, `perl` and libxml2 (on Debian and Ubuntu,
@@ -164,6 +166,27 @@ Buck2 builds less than Cargo:
 
 Buck2 writes only to `buck-out/`, and Cargo writes only to `target/`. The two builds do not
 change each other's files.
+
+### The remote cache
+
+Buck2 can use the BuildBuddy remote cache. All actions still run on your machine: Buck2 reads
+the outputs of an action from the cache when the cache has them, and it uploads the outputs of
+the actions that it runs.
+
+To use the cache, set the API key before you run `tools/buck2`:
+
+```sh
+export BUILDBUDDY_API_KEY=<key>
+tools/buck2 build //...
+```
+
+Without the key, Buck2 uses no remote cache. CI gets the key from the `BUILDBUDDY_API_KEY`
+secret.
+
+Buck2 does not hash the system toolchain, so `tools/buck2` puts a toolchain ID into the key of
+each action. The ID is a hash of `rustc -vV`, the clang version, the OS and CPU, and the macOS
+SDK or the C library version. `tools/buck2` calculates it again before each command and writes it
+to `.buckconfig.pgtk`, so an update of the toolchain gets new cache keys at once.
 
 ## Change a dependency
 

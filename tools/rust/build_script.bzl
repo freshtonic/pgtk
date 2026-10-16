@@ -19,6 +19,9 @@ def first_party_build_script(name, build_script, manifest_dir, package_name, ver
     native.genrule(
         name = name,
         out = "OUT_DIR",
+        # The runner gives the build script absolute paths, so the genrule must run locally. The
+        # prelude also uploads a genrule to the remote cache only when it runs locally.
+        labels = ["uses_local_filesystem_abspaths"],
         cmd = " ".join([
             "python3 $(location //tools/rust:run_build_script.py)",
             "--build-script $(exe {})".format(build_script),

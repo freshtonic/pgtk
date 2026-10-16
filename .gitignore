@@ -1,3 +1,4 @@
 /target
 /buck-out
+/.buckconfig.pgtk
 /third-party/rust/.cargo/
