@@ -1,6 +1,3 @@
-[submodule "packages/pgtk-sql/vendor/postgres"]
-	path = packages/pgtk-sql/vendor/postgres
-	url = https://github.com/postgres/postgres.git
-[submodule "packages/pgtk-analyze/vendor/postgres"]
-	path = packages/pgtk-analyze/vendor/postgres
+[submodule "vendor/postgres"]
+	path = vendor/postgres
 	url = https://github.com/postgres/postgres.git

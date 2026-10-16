@@ -202,7 +202,7 @@ impl FrozenFile {
     /// `vendor/postgres` object database. The pinned oracle release can be
     /// later than the corpus release, so the checked-out file can differ.
     pub fn source(&self) -> String {
-        let repository = concat!(env!("CARGO_MANIFEST_DIR"), "/vendor/postgres");
+        let repository = concat!(env!("CARGO_MANIFEST_DIR"), "/../../vendor/postgres");
         let output = std::process::Command::new("git")
             .args(["-C", repository, "cat-file", "blob", &self.source_git_blob])
             .output()

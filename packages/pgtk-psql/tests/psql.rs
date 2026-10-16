@@ -980,7 +980,7 @@ fn a_line_comment_is_sent_from_15() {
 fn every_regression_script_is_a_psql_document() {
     let directory = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../pgtk-sql/vendor/postgres/src/test/regress/sql"
+        "/../../vendor/postgres/src/test/regress/sql"
     );
     let mut scripts: Vec<_> = std::fs::read_dir(directory)
         .expect("the vendored PostgreSQL submodule must be checked out")

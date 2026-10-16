@@ -1054,7 +1054,7 @@ implementation record and measurements are in
 
 ## Sources
 
-All paths relative to `~/projects/pgtk-sql/vendor/postgres`.
+All paths relative to `~/projects/pg-sql/vendor/postgres`.
 
 | Topic | File |
 | --- | --- |

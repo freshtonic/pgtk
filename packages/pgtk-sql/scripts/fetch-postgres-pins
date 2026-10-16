@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Fetches the pinned PostgreSQL release of every target version
-# (../pgtk-oracle/pins.tsv) into the vendor/postgres submodule's object store.
+# (packages/pgtk-oracle/pins.tsv) into the vendor/postgres submodule's object store.
 # The pgtk-oracle build extracts each pin from there with `git archive`.
 # The submodule checkout does not change.
 set -euo pipefail
 
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-pins=../pgtk-oracle/pins.tsv
+cd "$(dirname "${BASH_SOURCE[0]}")/../../.."
+pins=packages/pgtk-oracle/pins.tsv
 
 refspecs=()
 while IFS=$'\t' read -r feature ref commit; do

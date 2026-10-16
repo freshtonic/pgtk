@@ -86,9 +86,7 @@ impl Plan {
 /// The schedule as groups of file names.
 fn schedule_groups() -> Vec<Vec<String>> {
     let mut groups: Vec<Vec<String>> = Vec::new();
-    let path = super::corpus::postgres_dir().join("src/test/regress/parallel_schedule");
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+    let text = super::corpus::frozen_file("src/test/regress/parallel_schedule");
     for line in text.lines() {
         if let Some(names) = line.strip_prefix("test:") {
             groups.push(
