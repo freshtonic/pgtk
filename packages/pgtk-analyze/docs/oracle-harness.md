@@ -55,17 +55,18 @@ all of which PostgreSQL rejects at parse too.
 ## Order, state and parallelism
 
 Files depend on state left by earlier files, so the schedule matters, and
-the run is parallel anyway. The harness does it in two passes. Both run in
-one Docker container that the harness makes from the image the run names,
-and keeps between runs (`tests/support/cluster.rs`).
+the run is parallel anyway. The harness does it in two passes. Both run on
+this host, with the pinned PostgreSQL release that `pgtk-test-server` builds
+from the vendored source (`tests/support/cluster.rs`).
 
 **Snapshots.** The first pass makes an empty cluster with the `oracle`
 superuser and the `regression` database, as pg_regress has it. It executes
 every file in `parallel_schedule` order on that one server, with a fresh
 session per file as pg_regress uses. After each schedule group it stops the
 server and copies the whole cluster into a snapshot. No comparison happens;
-it is pure execution. The snapshots are in the container under a directory
-named after the vendored PostgreSQL commit and a format number. A run whose
+it is pure execution. The snapshots are in the target directory
+(`CARGO_TARGET_TMPDIR`) under a directory named after the vendored
+PostgreSQL commit and a format number. A run whose
 snapshots are complete skips the pass; `PG_ANALYZE_ORACLE_REBUILD=1` forces
 it.
 
@@ -144,26 +145,25 @@ so message text and literal handling match the expected output files.
 ## Running it
 
 ```sh
-PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle -- --nocapture
+cargo test --release --test oracle -- --nocapture
 ```
 
-The harness makes a container named after the image, for example
-`pgtk-analyze-oracle-postgres-17`, if it does not exist. The container
-publishes ports 54400 to 54431 on 127.0.0.1, one for each worker, so a run
-has at most 32 workers. Each cluster has durability off, because it is
-disposable and the copies are I/O bound. `PG_ANALYZE_ORACLE_JOBS` sets the
-worker count, default the CPU count. `PG_ANALYZE_ORACLE_FILES=int4,join`
+The first run on a machine builds the server (`pgtk-test-server`). Each
+server listens only on a Unix socket, in a socket directory that belongs to
+the checkout, with the worker's port in the socket name, so a run uses no TCP
+port. A run has at most 32 workers. Each cluster has durability off, because
+it is disposable and the copies are I/O bound. `PG_ANALYZE_ORACLE_JOBS` sets
+the worker count, default the CPU count. `PG_ANALYZE_ORACLE_FILES=int4,join`
 replays only those files and checks only their counts; with
 `PG_ANALYZE_UPDATE_BASELINE=1` it re-pins only those entries.
 
-Only one run may use the container at a time: a run stops every server it
-finds in the container when it starts. Without the variable the test prints
-a message and passes.
+Only one run in a checkout may use the servers at a time: a run stops every
+server that an earlier run of the checkout left behind when it starts.
 
 ## What is deferred
 
 - The tree-level Oracle, a `nodeToString` extension, is a later workspace
   member (design session Q15 and Q34).
-- Oracles for 14, 15 and 16 need only an image of that version and a
-  baseline file each; the harness reads the major from the image's
-  binaries.
+- Oracles for 14, 15 and 16 need only a server of that pinned release
+  (`pgtk_test_server::installation_of`) and a baseline file each; the
+  harness reads the major from the server's binaries.

@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use std::time::Instant;
 
-use super::cluster::{Container, PORT_BASE, ROOT};
+use super::cluster::{Host, PORT_BASE};
 use super::oracle::Server;
 use super::plan::{Plan, PlannedFile};
 use super::replay::{FileResult, execute_file, replay_file};
@@ -22,7 +22,7 @@ use super::subject::Subject;
 /// Replay every file in `selected` with `jobs` workers, returning each
 /// file's result keyed by name.
 pub fn run(
-    container: &Container,
+    host: &Host,
     snapshots: &Snapshots,
     plan: &Plan,
     selected: &[&PlannedFile],
@@ -43,14 +43,8 @@ pub fn run(
                     let next = queue.lock().unwrap_or_else(|p| p.into_inner()).pop_front();
                     let Some(file) = next else { break };
                     let started = Instant::now();
-                    let result = replay_on_own_server(
-                        container,
-                        snapshots,
-                        plan,
-                        file,
-                        worker,
-                        subject.as_mut(),
-                    );
+                    let result =
+                        replay_on_own_server(host, snapshots, plan, file, worker, subject.as_mut());
                     eprintln!(
                         "{}: {:?} ({} catalog loads, {:.1?}, worker {worker})",
                         file.name,
@@ -74,22 +68,22 @@ pub fn run(
 /// execute the file's earlier siblings on it, replay the file, and discard
 /// the server.
 fn replay_on_own_server(
-    container: &Container,
+    host: &Host,
     snapshots: &Snapshots,
     plan: &Plan,
     file: &PlannedFile,
     worker: usize,
     subject: &mut dyn Subject,
 ) -> FileResult {
-    let dir = format!("{ROOT}/work/w{worker:02}");
+    let dir = format!("{}/work/w{worker:02}", host.root());
     let port = PORT_BASE + u16::try_from(worker).expect("a worker number fits in a port");
-    container.copy(&snapshots.before_group(file.group), &dir);
-    container.start(&dir, port);
-    let server = Server::at_port(port);
+    host.copy(&snapshots.before_group(file.group), &dir);
+    host.start(&dir, port);
+    let server = Server::at_port(host, port);
     for sibling in &plan.groups[file.group][..file.index] {
         execute_file(&server, sibling);
     }
     let result = replay_file(&server, file, subject);
-    container.discard(&dir);
+    host.discard(&dir);
     result
 }
