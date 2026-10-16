@@ -2,24 +2,21 @@
 //! server and against this crate, and hold the per-file outcome counts to a
 //! pinned baseline. `docs/oracle-harness.md` explains the design.
 //!
-//! The test reads the connection string from `PG_ANALYZE_ORACLE_URL` and
-//! passes with a message when it is unset. The server must be the major
-//! version the baseline is for, and it must be disposable: the corpus
-//! creates and drops objects, roles and databases freely.
+//! The test reads a PostgreSQL Docker image from `PG_ANALYZE_ORACLE_IMAGE`
+//! and passes with a message when it is unset. The harness makes a container
+//! from the image and keeps it between runs, and it starts one server inside
+//! it for every file it replays (`support::cluster`). The image must be the
+//! major version the baseline is for.
 //!
 //! ```sh
-//! docker run -d --name pg-analyze-oracle-17 -e POSTGRES_USER=oracle \
-//!   -e POSTGRES_PASSWORD=oracle -e POSTGRES_DB=regression -p 54317:5432 \
-//!   postgres:17 -c fsync=off -c synchronous_commit=off -c full_page_writes=off \
-//!   -c max_connections=200
-//! PG_ANALYZE_ORACLE_URL=postgres://oracle:oracle@localhost:54317/regression \
-//!   cargo test --test oracle -- --nocapture
+//! PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle
 //! ```
 //!
-//! - `PG_ANALYZE_ORACLE_JOBS=n` sets the worker count (default: the CPU count).
+//! - `PG_ANALYZE_ORACLE_JOBS=n` sets the worker count (default: the CPU count,
+//!   at most 32).
 //! - `PG_ANALYZE_ORACLE_FILES=int4,join` replays only those files and checks
 //!   only their counts.
-//! - `PG_ANALYZE_ORACLE_REBUILD=1` rebuilds the group snapshots the server
+//! - `PG_ANALYZE_ORACLE_REBUILD=1` rebuilds the group snapshots the container
 //!   keeps between runs.
 //! - `PG_ANALYZE_UPDATE_BASELINE=1` pins the run's counts instead of checking
 //!   them.
@@ -38,14 +35,14 @@ use std::path::Path;
 use std::time::Instant;
 
 use support::baseline::{Baseline, FileCounts};
+use support::cluster::{Container, MAX_WORKERS};
 use support::corpus::FrozenSplit;
-use support::oracle::Server;
 use support::plan::Plan;
 use support::scheduler;
 use support::snapshots::Snapshots;
 use support::subject::{AnalyzerSubject, Subject};
 
-const URL_VARIABLE: &str = "PG_ANALYZE_ORACLE_URL";
+const IMAGE_VARIABLE: &str = "PG_ANALYZE_ORACLE_IMAGE";
 const JOBS_VARIABLE: &str = "PG_ANALYZE_ORACLE_JOBS";
 const FILES_VARIABLE: &str = "PG_ANALYZE_ORACLE_FILES";
 const REBUILD_VARIABLE: &str = "PG_ANALYZE_ORACLE_REBUILD";
@@ -53,29 +50,15 @@ const UPDATE_VARIABLE: &str = "PG_ANALYZE_UPDATE_BASELINE";
 
 #[test]
 fn regression_corpus_matches_the_pinned_baseline() {
-    let Ok(url) = std::env::var(URL_VARIABLE) else {
-        println!("skipping the oracle harness: set {URL_VARIABLE} to run it against a server");
+    let Ok(image) = std::env::var(IMAGE_VARIABLE) else {
+        println!(
+            "skipping the oracle harness: set {IMAGE_VARIABLE} to a PostgreSQL image to run it"
+        );
         return;
     };
-    let mut server = Server::connect(&url).unwrap_or_else(|error| {
-        let detail = error
-            .as_db_error()
-            .map(|db| db.message().to_owned())
-            .unwrap_or_default();
-        panic!("cannot connect: {error} {detail}")
-    });
-    let major = {
-        let mut probe = server.session("postgres").expect("open a probe session");
-        u32::from(
-            probe
-                .catalog()
-                .expect("load the catalog once to learn the server version")
-                .catalog
-                .metadata()
-                .server_version
-                .major,
-        )
-    };
+    let container = Container::ensure(&image);
+    container.reset();
+    let major = container.major();
 
     let started = Instant::now();
     let split = FrozenSplit::load();
@@ -89,7 +72,7 @@ fn regression_corpus_matches_the_pinned_baseline() {
 
     let snapshots = Snapshots::new(split.gitlink());
     let rebuild = std::env::var_os(REBUILD_VARIABLE).is_some();
-    snapshots.ensure(&mut server, &plan, rebuild);
+    snapshots.ensure(&container, &plan, rebuild);
 
     let only = std::env::var(FILES_VARIABLE).ok().map(|list| {
         list.split(',')
@@ -119,12 +102,13 @@ fn regression_corpus_matches_the_pinned_baseline() {
     let jobs = std::env::var(JOBS_VARIABLE)
         .ok()
         .and_then(|jobs| jobs.parse().ok())
-        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+        .unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()))
+        .min(MAX_WORKERS);
     let report_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/oracle");
     std::fs::create_dir_all(&report_dir).expect("create report dir");
 
     let replay_started = Instant::now();
-    let results = scheduler::run(server.config(), &snapshots, &plan, &selected, jobs, || {
+    let results = scheduler::run(&container, &snapshots, &plan, &selected, jobs, || {
         Box::new(AnalyzerSubject) as Box<dyn Subject>
     });
     let loads = results

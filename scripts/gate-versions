@@ -6,7 +6,7 @@
 # FEATURE is a version feature: pg14, pg15, pg16, pg17, pg18 or pg19-beta.
 # With no argument, the script runs all six, one after the other. For each
 # version it runs clippy and the full test suite in that build. The Oracle
-# harness runs only in the pg17 build, and only when PG_ANALYZE_ORACLE_URL
+# harness runs only in the pg17 build, and only when PG_ANALYZE_ORACLE_IMAGE
 # is set.
 #
 # Each version has its own target directory under target/versions, because
