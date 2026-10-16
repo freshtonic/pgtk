@@ -1,0 +1,159 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  workspace:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pg-sql
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pg-sql
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: freshtonic/recursa
+          # recursa is private: the default GITHUB_TOKEN cannot read it. The secret is a
+          # fine-grained personal access token with contents:read on freshtonic/recursa.
+          token: ${{ secrets.RECURSA_READ_TOKEN }}
+          path: recursa
+          fetch-depth: 0
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
+      - name: Check out the reviewed Recursa revision
+        run: git -C ../recursa checkout "$(tr -d '[:space:]' < .recursa-revision)"
+      - name: Verify workspace and dependency revision
+        run: |
+          scripts/tests/verify-workspace.sh
+          scripts/verify-recursa-revision
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check the pg-sql PostgreSQL statement grammar
+        run: cargo check --locked --package pg-sql
+      - name: Check migration tooling
+        run: cargo check --locked --package pg-sql-migrate
+      - name: Verify reviewed semantic changes
+        run: >-
+          cargo run --locked --package pg-sql-migrate --
+          execution verify-semantic-changes
+          --repository-root .
+          --ledger migration/reviewed-semantic-changes.json
+      - name: Test frozen statement-span contracts
+        run: cargo test --locked --package pg-sql-migrate --test statement_spans
+      - name: Check nested/flat AST parity over the pinned corpus
+        run: cargo test --locked --package pg-sql --test flat_parity
+      - name: Check the pg17 grammar with the arbitrary feature
+        run: cargo check --locked --package pg-sql --features arbitrary
+      - name: Check nested/flat AST parity with spans captured
+        run: >-
+          cargo test --locked --package pg-sql
+          --features spans --test flat_parity
+      - name: Reject warnings in the flat-parity target
+        run: >-
+          cargo clippy --locked --package pg-sql
+          --test flat_parity
+          -- -D warnings
+      - name: Reject warnings in migration tooling
+        run: cargo clippy --locked --package pg-sql-migrate --all-targets -- -D warnings
+
+  oracle:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: pg-sql
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pg-sql
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: freshtonic/recursa
+          # recursa is private: the default GITHUB_TOKEN cannot read it. The secret is a
+          # fine-grained personal access token with contents:read on freshtonic/recursa.
+          token: ${{ secrets.RECURSA_READ_TOKEN }}
+          path: recursa
+          fetch-depth: 0
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
+      - name: Check out the reviewed Recursa revision
+        run: git -C ../recursa checkout "$(tr -d '[:space:]' < .recursa-revision)"
+      - name: Fetch the pinned PostgreSQL releases (pg-oracle/pins.tsv)
+        run: scripts/fetch-postgres-pins
+      - name: Install PostgreSQL build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison flex
+      - name: Run the merge gate (ADR 0011)
+        run: scripts/merge-gate
+      - name: Verify frozen statement spans and PostgreSQL source blobs
+        run: cargo run --locked --package pg-sql-migrate -- baseline verify-statements
+      - name: Recapture and review frozen statement spans
+        run: >-
+          cargo run --locked --package pg-sql-migrate --
+          baseline review-statements
+          --legacy-repository .
+          --postgres-repository vendor/postgres
+          --baseline baselines/postgresql-17.9.json
+          --spans baselines/postgresql-17.9-statements.json
+      - name: Reject warnings in the strict-statement acceptance targets
+        run: >-
+          cargo clippy --locked --package pg-sql --features postgres-oracle
+          --lib
+          --test embedded
+          --test strict_statement
+          --test fmt
+          --test embedded_inventory
+          --test differential_baseline
+          --test accepted_legacy_gaps
+          --test differential
+          -- -D warnings
+      - name: Verify the PostgreSQL source stayed immutable
+        run: test -z "$(git -C vendor/postgres status --porcelain)"
+
+  # The release gate runs every target version (ADR 0011), one version for
+  # each job. The merge gate above covers pg17.
+  versions:
+    name: target version ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [pg14, pg15, pg16, pg17, pg18, pg19-beta]
+    defaults:
+      run:
+        working-directory: pg-sql
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pg-sql
+          submodules: true
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: freshtonic/recursa
+          # recursa is private: the default GITHUB_TOKEN cannot read it. The secret is a
+          # fine-grained personal access token with contents:read on freshtonic/recursa.
+          token: ${{ secrets.RECURSA_READ_TOKEN }}
+          path: recursa
+          fetch-depth: 0
+      - name: Install the pinned toolchain from rust-toolchain.toml
+        run: rustup toolchain install --no-self-update
+      - name: Check out the reviewed Recursa revision
+        run: git -C ../recursa checkout "$(tr -d '[:space:]' < .recursa-revision)"
+      - name: Fetch the pinned PostgreSQL releases (pg-oracle/pins.tsv)
+        run: scripts/fetch-postgres-pins
+      - name: Install PostgreSQL build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes bison flex
+      - name: Release gate for target version ${{ matrix.version }}
+        run: scripts/release-gate ${{ matrix.version }}
