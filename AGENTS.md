@@ -1,10 +1,10 @@
-# dbtk
+# pgtk
 
-dbtk is a Cargo workspace of crates related to relational databases.
+pgtk is a Cargo workspace of crates related to relational databases.
 
 ## Building
 
-dbtk builds with Cargo and with Buck2. See `docs/adr/0001-dual-buck2-cargo-build.md`.
+pgtk builds with Cargo and with Buck2. See `docs/adr/0001-dual-buck2-cargo-build.md`.
 
 - Cargo: `cargo build --workspace` and `cargo test --workspace`.
 - Buck2: `tools/buck2 build //...` and `tools/buck2 test //...`. `tools/buck2` needs
