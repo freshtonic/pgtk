@@ -1,0 +1,11 @@
+[package]
+name = "xtask"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+pg-catalog = { path = "..", features = ["serde", "postgres"] }
+postgres = "0.19"
+serde_json = "1"
+zstd = "0.13"
