@@ -14,7 +14,10 @@ clobber each other.
 
 - **Exported crate**: a crate that is published to crates.io and has Buck
   `visibility = ["PUBLIC"]`. The exported crates are `pgtk-sql`, `pgtk-analyze`, `pgtk-catalog` and
-  `pgtk-proto`.
+  `pgtk-proto`. Their manifests have `publish = true`. An exported crate can use an internal crate
+  only as a dev-dependency, because `cargo publish` removes a dev-dependency that has no version.
+  Thus `pgtk-oracle` is a dev-dependency of `pgtk-sql`. A version feature of `pgtk-sql` selects
+  the release of the oracle, and `postgres-oracle` turns on the oracle's `parser` feature.
 - **Internal crate**: a crate with `publish = false` and no PUBLIC visibility.
 - There is one `Cargo.lock`, at the workspace root. Both builds use it. Only `cargo` changes it.
   Reindeer reads it with `--locked`. Thus Cargo and Buck always use the same third-party versions.

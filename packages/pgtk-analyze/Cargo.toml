@@ -5,7 +5,8 @@ edition = "2024"
 rust-version = "1.88"
 description = "PostgreSQL parse analysis over pgtk-sql and pgtk-catalog"
 license = "MIT"
-publish = false
+repository.workspace = true
+publish = true
 
 [features]
 # Grammar Version (ADR 0005). Enable exactly one version feature; pgtk-sql stops
@@ -44,8 +45,8 @@ since-pg18 = []
 since-pg19 = []
 
 [dependencies]
-pgtk-sql = { path = "../pgtk-sql", default-features = false, features = ["spans"] }
-pgtk-catalog = { path = "../pgtk-catalog" }
+pgtk-sql = { version = "0.1.0", path = "../pgtk-sql", default-features = false, features = ["spans"] }
+pgtk-catalog = { version = "0.1.0", path = "../pgtk-catalog" }
 recursa.workspace = true
 thiserror.workspace = true
 

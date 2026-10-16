@@ -2,11 +2,14 @@
 //! release, linked as a static lib.
 //!
 //! The version feature (`pg14` ... `pg19-beta`, default `pg17`) selects the
-//! release from `pins.tsv` (ADR 0009). See
+//! release from `pins.tsv` (ADR 0009). The parser is behind the `parser` feature
+//! (default on); without it the crate has only the pin constants. See
 //! docs/plans/2026-05-21-differential-parser-testing-design.md.
 
+#[cfg(feature = "parser")]
 mod parser;
 
+#[cfg(feature = "parser")]
 pub use parser::{node_to_string, parse_equal, parse_ok, Equal};
 
 /// The Git ref (a release tag, or a branch for a pre-release major) of the
