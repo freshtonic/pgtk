@@ -14,16 +14,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # The tests read the PostgreSQL sources and the pinned commits from the vendor/postgres
-      # object stores, so the submodules need their full history.
+      # object store, so the submodule needs its full history.
       - uses: actions/checkout@v4
         with:
           submodules: true
           fetch-depth: 0
       # rustup reads rust-toolchain.toml and installs the pinned toolchain.
       - run: rustup show active-toolchain || rustup toolchain install
-      # The pgtk-oracle and pgtk-psql-oracle build scripts build the pinned PostgreSQL release.
+      # The oracle crates link the pinned PostgreSQL releases, and the live tests run servers of
+      # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
-      - run: sudo apt-get update && sudo apt-get install --yes bison flex
+      - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pgtk-sql/postgres
+          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
 

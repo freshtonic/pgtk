@@ -4,6 +4,9 @@
 #
 # Usage: build-pg.sh [FEATURE [TREE]]
 #
+# With PGTK_PG_INSTALL=1 it also installs the server (see the end of the
+# script).
+#
 #   FEATURE  a version feature from pgtk-oracle/pins.tsv (default: pg17).
 #   TREE     the directory for the source tree and the build. The default
 #            is the shared cache (ADR 0012): <cache>/<ref>-<commit>, where
@@ -67,6 +70,21 @@ if [ -e "$PG_TREE" ] && [ "$(cat "$STAMP" 2>/dev/null || true)" != "$commit" ]; 
   rm -rf "$PG_TREE"
 fi
 
+# The configure options. The installed binaries find their shared libraries
+# at the configured prefix, so the prefix must be TREE/install. libxml makes
+# the server the same as the stock PostgreSQL packages, which the
+# pgtk-analyze oracle baseline was pinned against. TREE/pgtk-configure-options
+# records the options of the tree; a tree configured with other options (an
+# older tree, or a tree that was moved) is built again.
+PREFIX="$PG_TREE/install"
+CONFIGURE_OPTIONS=(--prefix="$PREFIX" --with-libxml --without-icu --without-zlib --without-readline)
+OPTIONS_STAMP="$PG_TREE/pgtk-configure-options"
+if [ -f "$PG_TREE/src/Makefile.global" ] \
+  && [ "$(cat "$OPTIONS_STAMP" 2>/dev/null || true)" != "${CONFIGURE_OPTIONS[*]}" ]; then
+  echo "The tree is not configured with ${CONFIGURE_OPTIONS[*]}. Removing it."
+  rm -rf "$PG_TREE"
+fi
+
 if [ ! -e "$STAMP" ]; then
   if ! git -C "$PG_REPO" cat-file -e "$commit^{commit}" 2>/dev/null; then
     echo "The commit $commit ($ref) is not in $PG_REPO." >&2
@@ -84,7 +102,8 @@ fi
 
 if [ ! -f "$PG_TREE/src/Makefile.global" ]; then
   echo "Configuring..."
-  ( cd "$PG_TREE" && ./configure --without-icu --without-zlib --without-readline )
+  ( cd "$PG_TREE" && ./configure "${CONFIGURE_OPTIONS[@]}" )
+  echo "${CONFIGURE_OPTIONS[*]}" > "$OPTIONS_STAMP"
 fi
 
 # PostgreSQL links its generated headers into src/include with absolute
@@ -99,3 +118,11 @@ echo "Building (this is slow the first time)..."
 make -C "$PG_TREE" -j"$(getconf _NPROCESSORS_ONLN)" all
 
 echo "Done. Generated sources and static libs are in $PG_TREE."
+
+# With PGTK_PG_INSTALL=1, also install the server into TREE/install, so tests
+# can run it (pgtk-test-server). The last line names the bin directory.
+if [ -n "${PGTK_PG_INSTALL:-}" ]; then
+  echo "Installing into $PREFIX..."
+  make -C "$PG_TREE" -s -j"$(getconf _NPROCESSORS_ONLN)" install >/dev/null
+  echo "PGTK_PG_BIN=$PREFIX/bin"
+fi

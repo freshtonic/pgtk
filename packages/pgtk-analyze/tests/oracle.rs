@@ -2,21 +2,20 @@
 //! server and against this crate, and hold the per-file outcome counts to a
 //! pinned baseline. `docs/oracle-harness.md` explains the design.
 //!
-//! The test reads a PostgreSQL Docker image from `PG_ANALYZE_ORACLE_IMAGE`
-//! and passes with a message when it is unset. The harness makes a container
-//! from the image and keeps it between runs, and it starts one server inside
-//! it for every file it replays (`support::cluster`). The image must be the
-//! major version the baseline is for.
+//! The servers are the pinned PostgreSQL release, built from the vendored
+//! source (`pgtk-test-server`); the first run on a machine builds it. The
+//! harness starts one server for every file it replays (`support::cluster`).
+//! The release must be the major version the baseline is for.
 //!
 //! ```sh
-//! PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle
+//! cargo test --release --test oracle
 //! ```
 //!
 //! - `PG_ANALYZE_ORACLE_JOBS=n` sets the worker count (default: the CPU count,
 //!   at most 32).
 //! - `PG_ANALYZE_ORACLE_FILES=int4,join` replays only those files and checks
 //!   only their counts.
-//! - `PG_ANALYZE_ORACLE_REBUILD=1` rebuilds the group snapshots the container
+//! - `PG_ANALYZE_ORACLE_REBUILD=1` rebuilds the group snapshots that the harness
 //!   keeps between runs.
 //! - `PG_ANALYZE_UPDATE_BASELINE=1` pins the run's counts instead of checking
 //!   them.
@@ -35,14 +34,13 @@ use std::path::Path;
 use std::time::Instant;
 
 use support::baseline::{Baseline, FileCounts};
-use support::cluster::{Container, MAX_WORKERS};
+use support::cluster::{Host, MAX_WORKERS};
 use support::corpus::FrozenSplit;
 use support::plan::Plan;
 use support::scheduler;
 use support::snapshots::Snapshots;
 use support::subject::{AnalyzerSubject, Subject};
 
-const IMAGE_VARIABLE: &str = "PG_ANALYZE_ORACLE_IMAGE";
 const JOBS_VARIABLE: &str = "PG_ANALYZE_ORACLE_JOBS";
 const FILES_VARIABLE: &str = "PG_ANALYZE_ORACLE_FILES";
 const REBUILD_VARIABLE: &str = "PG_ANALYZE_ORACLE_REBUILD";
@@ -50,15 +48,9 @@ const UPDATE_VARIABLE: &str = "PG_ANALYZE_UPDATE_BASELINE";
 
 #[test]
 fn regression_corpus_matches_the_pinned_baseline() {
-    let Ok(image) = std::env::var(IMAGE_VARIABLE) else {
-        println!(
-            "skipping the oracle harness: set {IMAGE_VARIABLE} to a PostgreSQL image to run it"
-        );
-        return;
-    };
-    let container = Container::ensure(&image);
-    container.reset();
-    let major = container.major();
+    let host = Host::ensure();
+    host.reset();
+    let major = host.major();
 
     let started = Instant::now();
     let split = FrozenSplit::load();
@@ -70,9 +62,9 @@ fn regression_corpus_matches_the_pinned_baseline() {
         started.elapsed()
     );
 
-    let snapshots = Snapshots::new(split.gitlink());
+    let snapshots = Snapshots::new(&host, split.gitlink());
     let rebuild = std::env::var_os(REBUILD_VARIABLE).is_some();
-    snapshots.ensure(&container, &plan, rebuild);
+    snapshots.ensure(&host, &plan, rebuild);
 
     let only = std::env::var(FILES_VARIABLE).ok().map(|list| {
         list.split(',')
@@ -108,7 +100,7 @@ fn regression_corpus_matches_the_pinned_baseline() {
     std::fs::create_dir_all(&report_dir).expect("create report dir");
 
     let replay_started = Instant::now();
-    let results = scheduler::run(&container, &snapshots, &plan, &selected, jobs, || {
+    let results = scheduler::run(&host, &snapshots, &plan, &selected, jobs, || {
         Box::new(AnalyzerSubject) as Box<dyn Subject>
     });
     let loads = results

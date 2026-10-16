@@ -52,6 +52,7 @@ thiserror.workspace = true
 [dev-dependencies]
 pgtk-catalog = { path = "../pgtk-catalog", features = ["fixture", "postgres"] }
 pgtk-psql = { path = "../pgtk-psql", default-features = false }
+pgtk-test-server = { path = "../pgtk-test-server" }
 postgres.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

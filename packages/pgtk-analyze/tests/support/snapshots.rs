@@ -4,13 +4,13 @@
 //!
 //! A snapshot is a whole cluster, not a database, so it holds the roles,
 //! tablespaces and other objects the whole cluster shares as well.
-//! Snapshots persist in the container between runs. Their directory carries
+//! Snapshots persist in the target directory between runs. Their directory carries
 //! the vendored PostgreSQL commit and a format number, so a change to either
 //! makes the harness rebuild them.
 
 use std::time::Instant;
 
-use super::cluster::{Container, PORT_BASE, ROOT};
+use super::cluster::{Host, PORT_BASE};
 use super::oracle::Server;
 use super::plan::Plan;
 use super::replay::execute_file;
@@ -25,9 +25,9 @@ pub struct Snapshots {
 }
 
 impl Snapshots {
-    pub fn new(gitlink: &str) -> Self {
+    pub fn new(host: &Host, gitlink: &str) -> Self {
         Self {
-            dir: format!("{ROOT}/snapshots/{}-{FORMAT}", &gitlink[..8]),
+            dir: format!("{}/snapshots/{}-{FORMAT}", host.root(), &gitlink[..8]),
         }
     }
 
@@ -55,10 +55,10 @@ impl Snapshots {
     /// Every file runs in schedule order on one server, with a fresh session
     /// for each file, as pg_regress runs them. The server is stopped after
     /// each group so that the copy of its cluster is consistent.
-    pub fn ensure(&self, container: &Container, plan: &Plan, rebuild: bool) {
+    pub fn ensure(&self, host: &Host, plan: &Plan, rebuild: bool) {
         let complete = format!("{}/complete", self.dir);
         if !rebuild
-            && container
+            && host
                 .exec(&format!("[ -f {complete} ] && echo yes || true"))
                 .trim()
                 == "yes"
@@ -70,24 +70,25 @@ impl Snapshots {
         }
 
         let started = Instant::now();
-        let build = format!("{ROOT}/build");
-        container.exec(&format!(
-            "rm -rf {ROOT}/snapshots {build} && mkdir -p {}",
+        let build = format!("{}/build", host.root());
+        host.exec(&format!(
+            "rm -rf {}/snapshots {build} && mkdir -p {}",
+            host.root(),
             self.dir
         ));
-        container.init(&build);
-        container.copy(&build, &self.base());
-        let server = Server::at_port(PORT_BASE);
+        host.init(&build);
+        host.copy(&build, &self.base());
+        let server = Server::at_port(host, PORT_BASE);
         for (group, files) in plan.groups.iter().enumerate() {
-            container.start(&build, PORT_BASE);
+            host.start(&build, PORT_BASE);
             for file in files {
                 execute_file(&server, file);
             }
-            container.stop(&build);
-            container.copy(&build, &self.after_group(group));
+            host.stop(&build);
+            host.copy(&build, &self.after_group(group));
             eprintln!("snapshot after group {group:02} ({} files)", files.len());
         }
-        container.exec(&format!("rm -rf {build} {build}.log && touch {complete}"));
+        host.exec(&format!("rm -rf {build} {build}.log && touch {complete}"));
         eprintln!(
             "built {} snapshots in {:.1?}",
             plan.groups.len() + 1,

@@ -88,18 +88,18 @@ Diagnostic PostgreSQL raises for it. Analysis never changes the Session:
 PREPARE, DECLARE, SET, DEALLOCATE, CLOSE and the end of a transaction report
 a Session Effect, and the caller applies it.
 
-The crate depends on the sibling checkouts `../pgtk-sql`, `../pgtk-catalog` and
-`../recursa`.
+The crate depends on `pgtk-sql`, `pgtk-catalog` and `recursa`.
 
 ## The Oracle harness
 
 `tests/oracle.rs` replays the vendored regression corpus against live
-PostgreSQL servers and pins the per-file counts in `baselines/`. It needs
-Docker and a PostgreSQL 17 image. The harness makes its own container from
-the image and starts one server in it for each file it replays:
+PostgreSQL servers and pins the per-file counts in `baselines/`. The servers
+are the pinned PostgreSQL 17 release, built from the vendored source
+(`pgtk-test-server`). The harness starts one server for each file it replays.
+It is part of the default suite:
 
 ```sh
-PG_ANALYZE_ORACLE_IMAGE=postgres:17 cargo test --release --test oracle
+cargo test --release --test oracle
 ```
 
 `docs/oracle-harness.md` describes what is compared and the verdicts. The

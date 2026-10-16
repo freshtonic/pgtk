@@ -6,130 +6,108 @@
 //! object the whole cluster shares therefore belong to one file, so no file
 //! can see what another file does, whatever runs at the same time.
 //!
-//! The servers run inside one Docker container that the harness makes and
-//! keeps between runs. The container publishes one port for each worker, and
-//! it holds the snapshots under [`ROOT`]. Only one harness run may use the
-//! container at a time: a run stops every server it finds when it starts.
+//! The servers run on this host, from the pinned PostgreSQL release that
+//! `pgtk-test-server` builds from the vendored source. The harness keeps their
+//! clusters and the snapshots under [`Host::root`] in the target directory,
+//! where the snapshots persist between runs. Each server listens only on a
+//! Unix socket in the socket directory of the checkout, with the worker's port
+//! in the socket name, so a run shares no port with any other process. Only
+//! one run of the harness in a checkout may use the servers at a time: a run
+//! stops every server it finds when it starts.
 
+use std::ffi::OsString;
+use std::hash::{Hash, Hasher};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Where the harness keeps its clusters inside the container.
-pub const ROOT: &str = "/oracle";
-
-/// The host and container port of worker 0. Worker `n` uses
-/// `PORT_BASE + n`, and the snapshot build uses `PORT_BASE`.
+/// The port of worker 0. Worker `n` uses `PORT_BASE + n`, and the snapshot
+/// build uses `PORT_BASE`. A port only names a socket in the socket
+/// directory.
 pub const PORT_BASE: u16 = 54400;
 
-/// The number of ports the container publishes, so the most workers a run
-/// can have.
+/// The most workers a run can have.
 pub const MAX_WORKERS: usize = 32;
-
-/// Bump when the container's layout changes: its ports, its mounts or what
-/// [`Container::ensure`] prepares inside it. A container of another layout
-/// must be removed by hand.
-const LAYOUT: &str = "1";
 
 /// The settings each cluster adds to the defaults. Durability is off because
 /// every cluster is disposable and copies are I/O bound.
 const SETTINGS: &str = "
-listen_addresses = '*'
+listen_addresses = ''
 fsync = off
 synchronous_commit = off
 full_page_writes = off
 ";
 
-/// The harness's container.
-pub struct Container {
-    name: String,
+/// The host that runs the harness's servers.
+pub struct Host {
+    root: String,
+    sockets: PathBuf,
+    path: OsString,
 }
 
-impl Container {
-    /// Find or make the container for `image`, and start it if it is
-    /// stopped.
-    pub fn ensure(image: &str) -> Self {
-        let name = format!(
-            "pgtk-analyze-oracle-{}",
-            image
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect::<String>()
-        );
-        let inspect = Command::new("docker")
-            .args([
-                "container",
-                "inspect",
-                "--format",
-                "{{.State.Running}} {{index .Config.Labels \"pgtk-analyze.oracle\"}}",
-                &name,
-            ])
-            .output()
-            .unwrap_or_else(|error| panic!("cannot run docker: {error}"));
-        if inspect.status.success() {
-            let state = String::from_utf8_lossy(&inspect.stdout);
-            let mut words = state.split_whitespace();
-            let running = words.next() == Some("true");
-            if words.next() != Some(LAYOUT) {
-                panic!("container {name} has another layout; remove it with `docker rm -f {name}`");
-            }
-            if !running {
-                docker(&["start", &name]);
-            }
-        } else {
-            let last = PORT_BASE + MAX_WORKERS as u16 - 1;
-            let ports = format!("127.0.0.1:{PORT_BASE}-{last}:{PORT_BASE}-{last}");
-            let label = format!("pgtk-analyze.oracle={LAYOUT}");
-            // Parallel query uses dynamic shared memory in /dev/shm, and
-            // Docker's default of 64 MB is too small for many servers.
-            docker(&[
-                "run",
-                "--detach",
-                "--name",
-                &name,
-                "--label",
-                &label,
-                "--shm-size=2g",
-                "--publish",
-                &ports,
-                image,
-                "sleep",
-                "infinity",
-            ]);
-            docker(&[
-                "exec",
-                &name,
-                "bash",
-                "-ec",
-                &format!("mkdir -p {ROOT} && chown postgres:postgres {ROOT}"),
-            ]);
+impl Host {
+    /// Install the server binaries if the cache does not hold them, and make
+    /// the directories of the harness.
+    pub fn ensure() -> Self {
+        let installation = pgtk_test_server::installation();
+        let root = concat!(env!("CARGO_TARGET_TMPDIR"), "/pgtk-analyze-oracle").to_owned();
+        // A short directory, named after the checkout: the socket path must
+        // fit in `sun_path`.
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        root.hash(&mut hasher);
+        let sockets =
+            std::env::temp_dir().join(format!("pgtk-oracle-{:08x}", hasher.finish() as u32));
+        for dir in [Path::new(&root), sockets.as_path()] {
+            std::fs::create_dir_all(dir)
+                .unwrap_or_else(|error| panic!("cannot make {}: {error}", dir.display()));
         }
-        Self { name }
+        Self {
+            root,
+            sockets,
+            path: installation.path_env(),
+        }
     }
 
-    /// Run a bash script as the `postgres` user in the container, and
+    /// Where the harness keeps its clusters.
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// The directory of the servers' sockets.
+    pub fn socket_dir(&self) -> &Path {
+        &self.sockets
+    }
+
+    /// Run a bash script with the server binaries first in `PATH`, and
     /// return what it writes to standard output.
     pub fn exec(&self, script: &str) -> String {
-        docker(&["exec", "-u", "postgres", &self.name, "bash", "-ec", script])
+        let output = Command::new("bash")
+            .args(["-ec", script])
+            .env("PATH", &self.path)
+            .output()
+            .unwrap_or_else(|error| panic!("cannot run bash: {error}"));
+        if !output.status.success() {
+            panic!(
+                "the script failed: {}\n{script}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        String::from_utf8_lossy(&output.stdout).into_owned()
     }
 
     /// The major version of the server binaries.
     pub fn major(&self) -> u32 {
-        let version = self.exec("pg_config --version");
-        version
-            .trim()
-            .strip_prefix("PostgreSQL ")
-            .and_then(|rest| rest.split(['.', ' ']).next())
-            .and_then(|major| major.parse().ok())
-            .unwrap_or_else(|| panic!("cannot read the version from {version:?}"))
+        pgtk_test_server::installation().major()
     }
 
     /// Stop every server an earlier run left behind and remove its cluster.
     pub fn reset(&self) {
         self.exec(&format!(
-            "for pid in {ROOT}/build/postmaster.pid {ROOT}/work/*/postmaster.pid; do
+            "for pid in {root}/build/postmaster.pid {root}/work/*/postmaster.pid; do
                  [ -f \"$pid\" ] && pg_ctl -D \"$(dirname \"$pid\")\" -m immediate stop >/dev/null || true
              done
-             rm -rf {ROOT}/build {ROOT}/work
-             mkdir -p {ROOT}/work"
+             rm -rf {root}/build {root}/work
+             mkdir -p {root}/work",
+            root = self.root,
         ));
     }
 
@@ -140,13 +118,13 @@ impl Container {
             "initdb -D {dir} -U {user} -A trust --locale=C -E UTF8 >/dev/null
              cat >> {dir}/postgresql.conf <<'EOF'
 {SETTINGS}
-EOF
-             echo 'host all all all trust' >> {dir}/pg_hba.conf",
+EOF",
             user = super::oracle::USER,
         ));
         self.start(dir, PORT_BASE);
         self.exec(&format!(
-            "psql -X -q -p {PORT_BASE} -U {user} -d postgres -c 'CREATE DATABASE {database}'",
+            "psql -X -q -h {sockets} -p {PORT_BASE} -U {user} -d postgres -c 'CREATE DATABASE {database}'",
+            sockets = self.sockets.display(),
             user = super::oracle::USER,
             database = super::oracle::DATABASE,
         ));
@@ -157,7 +135,8 @@ EOF
     /// connections.
     pub fn start(&self, dir: &str, port: u16) {
         self.exec(&format!(
-            "pg_ctl -D {dir} -o '-p {port}' -l {dir}.log -w -t 120 start >/dev/null"
+            "pg_ctl -D {dir} -o '-p {port} -k {sockets}' -l {dir}.log -w -t 120 start >/dev/null",
+            sockets = self.sockets.display(),
         ));
     }
 
@@ -178,20 +157,4 @@ EOF
              rm -rf {dir} {dir}.log"
         ));
     }
-}
-
-/// Run docker, and return its standard output. A failure ends the test.
-fn docker(args: &[&str]) -> String {
-    let output = Command::new("docker")
-        .args(args)
-        .output()
-        .unwrap_or_else(|error| panic!("cannot run docker: {error}"));
-    if !output.status.success() {
-        panic!(
-            "docker {} failed: {}",
-            args.first().copied().unwrap_or_default(),
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    String::from_utf8_lossy(&output.stdout).into_owned()
 }

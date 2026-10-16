@@ -605,6 +605,7 @@ dependencies = [
  "pgtk-catalog",
  "pgtk-psql",
  "pgtk-sql",
+ "pgtk-test-server",
  "postgres",
  "recursa",
  "serde",
@@ -616,6 +617,7 @@ dependencies = [
 name = "pgtk-catalog"
 version = "0.1.0"
 dependencies = [
+ "pgtk-test-server",
  "postgres",
  "serde",
  "serde_json",
@@ -682,6 +684,19 @@ dependencies = [
  "tempfile",
  "vec1",
 ]
+
+[[package]]
+name = "pgtk-test-features"
+version = "0.1.0"
+dependencies = [
+ "pgtk-catalog",
+ "pgtk-psql",
+ "pgtk-sql",
+]
+
+[[package]]
+name = "pgtk-test-server"
+version = "0.1.0"
 
 [[package]]
 name = "phf"

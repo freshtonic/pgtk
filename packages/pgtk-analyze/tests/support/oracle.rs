@@ -61,16 +61,16 @@ pub const USER: &str = "oracle";
 /// The database the corpus runs in, as pg_regress names it.
 pub const DATABASE: &str = "regression";
 
-/// One server the harness started, reached at a port on this host.
+/// One server the harness started, reached at its socket on this host.
 pub struct Server {
     config: postgres::Config,
 }
 
 impl Server {
-    pub fn at_port(port: u16) -> Self {
+    pub fn at_port(host: &super::cluster::Host, port: u16) -> Self {
         let mut config = postgres::Config::new();
         config
-            .host("127.0.0.1")
+            .host_path(host.socket_dir())
             .port(port)
             .user(USER)
             .dbname(DATABASE);

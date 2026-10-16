@@ -1,52 +1,43 @@
 //! Live tests against a real PostgreSQL server.
 //!
-//! The tests read the connection string from `PG_CATALOG_TEST_URL`. Each one
-//! prints a message and passes when that variable is not set, so a checkout
-//! with no server still runs `cargo test`.
-//!
-//! ```sh
-//! PG_CATALOG_TEST_URL=postgres://postgres@localhost:5432/postgres \
-//!     cargo test --features postgres --test loader_live
-//! ```
+//! The tests run a server of the pinned PostgreSQL release, built from the
+//! vendored source (`pgtk-test-server`). The first run on a machine builds
+//! it. One server runs for the test process, and each test makes its own
+//! database on it, so the tests run in parallel and no test sees what another
+//! test does.
 //!
 //! The file needs the `postgres` feature, the `tokio-postgres` feature, or
-//! both. Without them it holds no test.
+//! both. Without them it holds no test. `cargo test --workspace` turns both
+//! on (the `pgtk-test-features` member).
 
 #![cfg(any(feature = "postgres", feature = "tokio-postgres"))]
 
-/// The variable that holds the connection string.
-const URL_VARIABLE: &str = "PG_CATALOG_TEST_URL";
+use pgtk_test_server::Server;
+use std::sync::OnceLock;
 
-/// The connection string, when the caller set it.
-fn url() -> Option<String> {
-    std::env::var(URL_VARIABLE).ok()
-}
+/// The version features of the PostgreSQL releases that the loader supports.
+/// Each test runs against each of them.
+const VERSIONS: [&str; 4] = ["pg14", "pg15", "pg16", "pg17"];
 
-/// Print why a test did no work.
-fn skip(test: &str) {
-    println!("skipping {test}: set {URL_VARIABLE} to run it against a server");
-}
-
-/// The lock that lets one live test at a time use the server.
-///
-/// The tests share one database. One of them makes a schema and drops it
-/// again, so a test beside it sees the database half made. Each test holds
-/// this lock for the whole of its body.
-static SERVER: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-/// Take the lock on the server.
-///
-/// A test that fails poisons the lock. The next test still takes it, because
-/// the lock guards the server and not a value in memory.
-fn lock_server() -> std::sync::MutexGuard<'static, ()> {
-    SERVER
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// A connection string for a new, empty database named after `test`, on the
+/// server of each supported release.
+fn databases(test: &str) -> Vec<String> {
+    static SERVERS: [OnceLock<Server>; VERSIONS.len()] =
+        [const { OnceLock::new() }; VERSIONS.len()];
+    VERSIONS
+        .iter()
+        .zip(&SERVERS)
+        .map(|(feature, server)| {
+            server
+                .get_or_init(|| Server::start_of(feature))
+                .create_database(test)
+        })
+        .collect()
 }
 
 #[cfg(feature = "postgres")]
 mod sync_tests {
-    use super::{lock_server, skip, url};
+    use super::databases;
     use pgtk_catalog::{
         ArgMode, Builtin, CastMethod, Catalog, ConstraintKind, FiresWhen, FunctionKind, Identity,
         Loaded, Name, ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent,
@@ -93,301 +84,295 @@ mod sync_tests {
 
     #[test]
     fn it_loads_a_stock_database_with_no_diagnostics() {
-        let Some(url) = url() else {
-            skip("it_loads_a_stock_database_with_no_diagnostics");
-            return;
-        };
-        let _guard = lock_server();
-        let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
-        let loaded = load(&mut client);
-        let catalog = &loaded.catalog;
+        for url in databases("it_loads_a_stock_database_with_no_diagnostics") {
+            let mut client =
+                Client::connect(&url, NoTls).expect("the server accepts the connection");
+            let loaded = load(&mut client);
+            let catalog = &loaded.catalog;
 
-        assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+            assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
 
-        let version = catalog.metadata().server_version;
-        assert!(
-            (14..=17).contains(&version.major),
-            "version {version} is in range"
-        );
-        assert!(!catalog.metadata().search_path.is_empty());
-
-        // `int4` is the built-in of the same name.
-        let int4 = catalog.builtin(Builtin::Int4);
-        assert_eq!(catalog[int4].name, Name::new("int4"));
-        assert_eq!(catalog.as_builtin(int4), Some(Builtin::Int4));
-        assert_eq!(
-            catalog.qualified_name_of_type(int4),
-            QualifiedName::new("pg_catalog", "int4")
-        );
-
-        // `int4[]` is the array of `int4`, and each points at the other.
-        let int4_array = catalog.builtin(Builtin::Int4Array);
-        assert_eq!(catalog[int4].array, Some(int4_array));
-        assert_eq!(catalog[int4_array].kind, TypeKind::Array { element: int4 });
-        assert_eq!(catalog[int4_array].array, None);
-
-        // `+` for two `int4` gives an `int4`.
-        let plus = QualifiedName::new("pg_catalog", "+");
-        let handle =
-            infix_operator(catalog, &plus, "int4", "int4").expect("int4 + int4 is an operator");
-        let operator = &catalog[handle];
-        assert_eq!(operator.result, int4);
-        assert_eq!(
-            catalog.qualified_name_of_function(operator.function).name,
-            Name::new("int4pl")
-        );
-
-        // `int4` sorts and hashes. `json` does neither.
-        let btree = catalog
-            .btree_ordering(int4)
-            .expect("int4 has a default btree operator class");
-        assert_eq!(catalog[btree.lt].name, Name::new("<"));
-        assert_eq!(catalog[btree.gt].name, Name::new(">"));
-        assert_eq!(catalog.hash_equality(int4), Some(btree.eq));
-        let json = catalog.builtin(Builtin::Json);
-        assert_eq!(catalog.btree_ordering(json), None);
-        assert_eq!(catalog.hash_equality(json), None);
-
-        // The loader reads the type of each default of each stock function.
-        for (_, function) in catalog.functions() {
-            assert_eq!(
-                function.default_types.len(),
-                usize::from(function.default_count)
-            );
+            let version = catalog.metadata().server_version;
             assert!(
-                function.default_types.iter().all(Option::is_some),
-                "a default of {} has no type",
-                function.name
+                (14..=17).contains(&version.major),
+                "version {version} is in range"
             );
+            assert!(!catalog.metadata().search_path.is_empty());
+
+            // `int4` is the built-in of the same name.
+            let int4 = catalog.builtin(Builtin::Int4);
+            assert_eq!(catalog[int4].name, Name::new("int4"));
+            assert_eq!(catalog.as_builtin(int4), Some(Builtin::Int4));
+            assert_eq!(
+                catalog.qualified_name_of_type(int4),
+                QualifiedName::new("pg_catalog", "int4")
+            );
+
+            // `int4[]` is the array of `int4`, and each points at the other.
+            let int4_array = catalog.builtin(Builtin::Int4Array);
+            assert_eq!(catalog[int4].array, Some(int4_array));
+            assert_eq!(catalog[int4_array].kind, TypeKind::Array { element: int4 });
+            assert_eq!(catalog[int4_array].array, None);
+
+            // `+` for two `int4` gives an `int4`.
+            let plus = QualifiedName::new("pg_catalog", "+");
+            let handle =
+                infix_operator(catalog, &plus, "int4", "int4").expect("int4 + int4 is an operator");
+            let operator = &catalog[handle];
+            assert_eq!(operator.result, int4);
+            assert_eq!(
+                catalog.qualified_name_of_function(operator.function).name,
+                Name::new("int4pl")
+            );
+
+            // `int4` sorts and hashes. `json` does neither.
+            let btree = catalog
+                .btree_ordering(int4)
+                .expect("int4 has a default btree operator class");
+            assert_eq!(catalog[btree.lt].name, Name::new("<"));
+            assert_eq!(catalog[btree.gt].name, Name::new(">"));
+            assert_eq!(catalog.hash_equality(int4), Some(btree.eq));
+            let json = catalog.builtin(Builtin::Json);
+            assert_eq!(catalog.btree_ordering(json), None);
+            assert_eq!(catalog.hash_equality(json), None);
+
+            // The loader reads the type of each default of each stock function.
+            for (_, function) in catalog.functions() {
+                assert_eq!(
+                    function.default_types.len(),
+                    usize::from(function.default_count)
+                );
+                assert!(
+                    function.default_types.iter().all(Option::is_some),
+                    "a default of {} has no type",
+                    function.name
+                );
+            }
+
+            // The database has an encoding, and the three collations that each
+            // server has are there for it.
+            let encoding = &catalog.metadata().encoding;
+            assert!(!encoding.name.is_empty());
+            for name in ["default", "C", "POSIX"] {
+                let handle = catalog
+                    .collation_named(&QualifiedName::new("pg_catalog", name))
+                    .unwrap_or_else(|| panic!("{name} is a collation"));
+                assert!(encoding.can_use(&catalog[handle]));
+            }
+            for (_, ty) in catalog.types() {
+                assert_eq!(ty.is_collatable, ty.collation.is_some(), "{}", ty.name);
+            }
+
+            // `SHOW timezone` names its column `TimeZone`.
+            let timezone = catalog.parameter("timezone").expect("TimeZone is there");
+            assert_eq!(timezone.name, "TimeZone");
+            assert_eq!(timezone.kind, ParameterKind::String);
+            assert_eq!(
+                catalog.parameter("WORK_MEM").map(|p| p.kind),
+                Some(ParameterKind::Integer)
+            );
+            assert_eq!(catalog.parameter("no_such_parameter"), None);
+
+            // `text` to `varchar` is a binary cast.
+            let text = catalog.builtin(Builtin::Text);
+            let varchar = catalog.builtin(Builtin::Varchar);
+            let cast = catalog.cast(text, varchar).expect("text casts to varchar");
+            assert_eq!(catalog[cast].method, CastMethod::Binary);
+
+            // `count` is an aggregate.
+            let count = QualifiedName::new("pg_catalog", "count");
+            let overloads = catalog.functions_named(&count);
+            assert!(!overloads.is_empty(), "count has at least one overload");
+            for handle in overloads {
+                let function = &catalog[*handle];
+                assert_eq!(function.kind, FunctionKind::Aggregate);
+                assert!(function.aggregate.is_some(), "count has aggregate detail");
+            }
+
+            // `pg_class` is a table with a `relname` column.
+            let pg_class = catalog
+                .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
+                .expect("pg_class is a relation");
+            let relation = &catalog[pg_class];
+            assert_eq!(relation.kind, RelationKind::Table);
+            let relname = relation.column("relname").expect("pg_class has relname");
+            assert_eq!(
+                catalog.qualified_name_of_type(relname.ty).name,
+                Name::new("name")
+            );
+            // The row type of pg_class names the relation back.
+            let row_type = relation.row_type.expect("a table has a row type");
+            let TypeKind::Composite(detail) = &catalog[row_type].kind else {
+                panic!("the row type of a relation is a composite");
+            };
+            assert_eq!(detail.relation, Some(pg_class));
+            assert_eq!(detail.fields.len(), relation.columns.len());
         }
-
-        // The database has an encoding, and the three collations that each
-        // server has are there for it.
-        let encoding = &catalog.metadata().encoding;
-        assert!(!encoding.name.is_empty());
-        for name in ["default", "C", "POSIX"] {
-            let handle = catalog
-                .collation_named(&QualifiedName::new("pg_catalog", name))
-                .unwrap_or_else(|| panic!("{name} is a collation"));
-            assert!(encoding.can_use(&catalog[handle]));
-        }
-        for (_, ty) in catalog.types() {
-            assert_eq!(ty.is_collatable, ty.collation.is_some(), "{}", ty.name);
-        }
-
-        // `SHOW timezone` names its column `TimeZone`.
-        let timezone = catalog.parameter("timezone").expect("TimeZone is there");
-        assert_eq!(timezone.name, "TimeZone");
-        assert_eq!(timezone.kind, ParameterKind::String);
-        assert_eq!(
-            catalog.parameter("WORK_MEM").map(|p| p.kind),
-            Some(ParameterKind::Integer)
-        );
-        assert_eq!(catalog.parameter("no_such_parameter"), None);
-
-        // `text` to `varchar` is a binary cast.
-        let text = catalog.builtin(Builtin::Text);
-        let varchar = catalog.builtin(Builtin::Varchar);
-        let cast = catalog.cast(text, varchar).expect("text casts to varchar");
-        assert_eq!(catalog[cast].method, CastMethod::Binary);
-
-        // `count` is an aggregate.
-        let count = QualifiedName::new("pg_catalog", "count");
-        let overloads = catalog.functions_named(&count);
-        assert!(!overloads.is_empty(), "count has at least one overload");
-        for handle in overloads {
-            let function = &catalog[*handle];
-            assert_eq!(function.kind, FunctionKind::Aggregate);
-            assert!(function.aggregate.is_some(), "count has aggregate detail");
-        }
-
-        // `pg_class` is a table with a `relname` column.
-        let pg_class = catalog
-            .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
-            .expect("pg_class is a relation");
-        let relation = &catalog[pg_class];
-        assert_eq!(relation.kind, RelationKind::Table);
-        let relname = relation.column("relname").expect("pg_class has relname");
-        assert_eq!(
-            catalog.qualified_name_of_type(relname.ty).name,
-            Name::new("name")
-        );
-        // The row type of pg_class names the relation back.
-        let row_type = relation.row_type.expect("a table has a row type");
-        let TypeKind::Composite(detail) = &catalog[row_type].kind else {
-            panic!("the row type of a relation is a composite");
-        };
-        assert_eq!(detail.relation, Some(pg_class));
-        assert_eq!(detail.fields.len(), relation.columns.len());
     }
 
     #[test]
     fn it_loads_custom_entities_with_the_right_shape() {
-        let Some(url) = url() else {
-            skip("it_loads_custom_entities_with_the_right_shape");
-            return;
-        };
-        let _guard = lock_server();
-        let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
+        for url in databases("it_loads_custom_entities_with_the_right_shape") {
+            let mut client =
+                Client::connect(&url, NoTls).expect("the server accepts the connection");
 
-        // The schema name holds the process id, so two runs at once do not
-        // collide. The server reserves the prefix `pg_`, so the name does
-        // not start with it.
-        let schema = format!("catalog_live_{}", std::process::id());
-        client
-            .batch_execute(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
-            .expect("the old schema goes");
-        client
-            .batch_execute(&setup_sql(&schema))
-            .expect("the setup runs");
+            // The schema name holds the process id, so two runs at once do not
+            // collide. The server reserves the prefix `pg_`, so the name does
+            // not start with it.
+            let schema = format!("catalog_live_{}", std::process::id());
+            client
+                .batch_execute(&format!("DROP SCHEMA IF EXISTS {schema} CASCADE"))
+                .expect("the old schema goes");
+            client
+                .batch_execute(&setup_sql(&schema))
+                .expect("the setup runs");
 
-        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let loaded = load(&mut client);
-            assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
-            check_custom_entities(&loaded.catalog, &schema);
-        }));
+            let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+                let loaded = load(&mut client);
+                assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+                check_custom_entities(&loaded.catalog, &schema);
+            }));
 
-        client
-            .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
-            .expect("the schema goes");
+            client
+                .batch_execute(&format!("DROP SCHEMA {schema} CASCADE"))
+                .expect("the schema goes");
 
-        if let Err(payload) = outcome {
-            std::panic::resume_unwind(payload);
+            if let Err(payload) = outcome {
+                std::panic::resume_unwind(payload);
+            }
         }
     }
 
     #[test]
     fn it_loads_the_temporary_schema_of_the_session() {
-        let Some(url) = url() else {
-            skip("it_loads_the_temporary_schema_of_the_session");
-            return;
-        };
-        let _guard = lock_server();
-        let mut client = Client::connect(&url, NoTls).expect("the server accepts the connection");
+        for url in databases("it_loads_the_temporary_schema_of_the_session") {
+            let mut client =
+                Client::connect(&url, NoTls).expect("the server accepts the connection");
 
-        // A temporary table lives as long as the session, so the same client
-        // makes it and loads it. The server drops it when the client goes.
-        client
-            .batch_execute(
-                "CREATE TEMP TABLE catalog_live_nocols ();
-                 CREATE TEMP TABLE catalog_live_temp (id int4 NOT NULL, label text);
-                 CREATE TEMP TABLE catalog_live_keyed (id int PRIMARY KEY, name text);
-                 CREATE TEMP TABLE catalog_live_pair (
-                     a int, b int, c text, PRIMARY KEY (b, a)
-                 );
-                 CREATE TEMP TABLE catalog_live_identity (
-                     always int GENERATED ALWAYS AS IDENTITY,
-                     by_default int GENERATED BY DEFAULT AS IDENTITY,
-                     plain int,
-                     doubled int GENERATED ALWAYS AS (plain * 2) STORED
-                 );
-                 CREATE TEMP TABLE catalog_live_deferred (
-                     id int PRIMARY KEY DEFERRABLE, name text
-                 );",
-            )
-            .expect("the setup runs");
+            // A temporary table lives as long as the session, so the same client
+            // makes it and loads it. The server drops it when the client goes.
+            client
+                .batch_execute(
+                    "CREATE TEMP TABLE catalog_live_nocols ();
+                     CREATE TEMP TABLE catalog_live_temp (id int4 NOT NULL, label text);
+                     CREATE TEMP TABLE catalog_live_keyed (id int PRIMARY KEY, name text);
+                     CREATE TEMP TABLE catalog_live_pair (
+                         a int, b int, c text, PRIMARY KEY (b, a)
+                     );
+                     CREATE TEMP TABLE catalog_live_identity (
+                         always int GENERATED ALWAYS AS IDENTITY,
+                         by_default int GENERATED BY DEFAULT AS IDENTITY,
+                         plain int,
+                         doubled int GENERATED ALWAYS AS (plain * 2) STORED
+                     );
+                     CREATE TEMP TABLE catalog_live_deferred (
+                         id int PRIMARY KEY DEFERRABLE, name text
+                     );",
+                )
+                .expect("the setup runs");
 
-        let loaded = load(&mut client);
-        assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
-        let catalog = &loaded.catalog;
+            let loaded = load(&mut client);
+            assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+            let catalog = &loaded.catalog;
 
-        // The catalog holds one temporary schema, with the name that the
-        // server gave it. The TOAST schema beside it is not here.
-        let temporary = catalog
-            .temporary_schema()
-            .expect("the session has a temporary schema");
-        let schema_name = catalog[temporary].name.as_str().to_owned();
-        assert!(schema_name.starts_with("pg_temp_"), "{schema_name}");
-        let flagged = catalog
-            .schemas()
-            .filter(|(_, schema)| schema.is_temporary)
-            .count();
-        assert_eq!(flagged, 1, "one schema is temporary");
-        assert!(
-            catalog
+            // The catalog holds one temporary schema, with the name that the
+            // server gave it. The TOAST schema beside it is not here.
+            let temporary = catalog
+                .temporary_schema()
+                .expect("the session has a temporary schema");
+            let schema_name = catalog[temporary].name.as_str().to_owned();
+            assert!(schema_name.starts_with("pg_temp_"), "{schema_name}");
+            let flagged = catalog
                 .schemas()
-                .all(|(_, schema)| !schema.name.as_str().starts_with("pg_toast")),
-            "no TOAST schema is here"
-        );
+                .filter(|(_, schema)| schema.is_temporary)
+                .count();
+            assert_eq!(flagged, 1, "one schema is temporary");
+            assert!(
+                catalog
+                    .schemas()
+                    .all(|(_, schema)| !schema.name.as_str().starts_with("pg_toast")),
+                "no TOAST schema is here"
+            );
 
-        // `pg_temp` on a search path is the temporary schema.
-        let int4 = catalog.builtin(Builtin::Int4);
-        let path = SearchPath::new(catalog, ["pg_temp", "public"]);
-        let handle = catalog
-            .relation_visible(&path, "catalog_live_temp")
-            .expect("pg_temp resolves the temporary table");
-        let relation = &catalog[handle];
-        assert_eq!(relation.schema, temporary);
-        assert_eq!(relation.kind, RelationKind::Table);
-        assert_eq!(relation.columns.len(), 2);
-        assert_eq!(relation.column("id").expect("id is there").ty, int4);
-
-        // The name that the server gave the schema finds the same relation.
-        assert_eq!(
-            catalog.relation_named(&QualifiedName::new(
-                schema_name.as_str(),
-                "catalog_live_temp"
-            )),
-            Some(handle)
-        );
-
-        // A primary key arrives in key order, with its deferrable flag. A
-        // table with no key has none.
-        let key_of = |name: &str| {
+            // `pg_temp` on a search path is the temporary schema.
+            let int4 = catalog.builtin(Builtin::Int4);
+            let path = SearchPath::new(catalog, ["pg_temp", "public"]);
             let handle = catalog
-                .relation_visible(&path, name)
-                .expect("pg_temp resolves the table");
-            catalog[handle].primary_key.clone()
-        };
-        assert_eq!(
-            key_of("catalog_live_keyed"),
-            Some(PrimaryKey {
-                columns: vec![1],
-                deferrable: false,
-            })
-        );
-        assert_eq!(
-            key_of("catalog_live_pair"),
-            Some(PrimaryKey {
-                columns: vec![2, 1],
-                deferrable: false,
-            })
-        );
-        let deferred = key_of("catalog_live_deferred").expect("the table has a key");
-        assert!(deferred.deferrable);
-        assert_eq!(deferred.grouping_columns(), None);
-        assert_eq!(key_of("catalog_live_temp"), None);
+                .relation_visible(&path, "catalog_live_temp")
+                .expect("pg_temp resolves the temporary table");
+            let relation = &catalog[handle];
+            assert_eq!(relation.schema, temporary);
+            assert_eq!(relation.kind, RelationKind::Table);
+            assert_eq!(relation.columns.len(), 2);
+            assert_eq!(relation.column("id").expect("id is there").ty, int4);
 
-        // An identity column keeps its kind. A generated column is not an
-        // identity column.
-        let identity = catalog
-            .relation_visible(&path, "catalog_live_identity")
-            .expect("pg_temp resolves the table");
-        let column = |name: &str| catalog[identity].column(name).expect("the column is there");
-        assert_eq!(column("always").identity, Some(Identity::Always));
-        assert_eq!(column("by_default").identity, Some(Identity::ByDefault));
-        assert_eq!(column("plain").identity, None);
-        assert_eq!(column("doubled").identity, None);
-        assert!(column("doubled").generated);
-        assert!(!column("always").generated);
-
-        // A table with no column loads, and has a row type with no field.
-        let nocols = catalog
-            .relation_visible(&path, "catalog_live_nocols")
-            .expect("pg_temp resolves the table with no column");
-        assert_eq!(catalog[nocols].columns, Vec::new());
-
-        // The path of the session holds the temporary schema too, and so
-        // does a path that does not name it.
-        for path in [
-            SearchPath::from_metadata(catalog),
-            SearchPath::new(catalog, ["public"]),
-        ] {
-            assert_eq!(path.schemas().first(), Some(&temporary));
+            // The name that the server gave the schema finds the same relation.
             assert_eq!(
-                catalog.relation_visible(&path, "catalog_live_temp"),
+                catalog.relation_named(&QualifiedName::new(
+                    schema_name.as_str(),
+                    "catalog_live_temp"
+                )),
                 Some(handle)
             );
+
+            // A primary key arrives in key order, with its deferrable flag. A
+            // table with no key has none.
+            let key_of = |name: &str| {
+                let handle = catalog
+                    .relation_visible(&path, name)
+                    .expect("pg_temp resolves the table");
+                catalog[handle].primary_key.clone()
+            };
+            assert_eq!(
+                key_of("catalog_live_keyed"),
+                Some(PrimaryKey {
+                    columns: vec![1],
+                    deferrable: false,
+                })
+            );
+            assert_eq!(
+                key_of("catalog_live_pair"),
+                Some(PrimaryKey {
+                    columns: vec![2, 1],
+                    deferrable: false,
+                })
+            );
+            let deferred = key_of("catalog_live_deferred").expect("the table has a key");
+            assert!(deferred.deferrable);
+            assert_eq!(deferred.grouping_columns(), None);
+            assert_eq!(key_of("catalog_live_temp"), None);
+
+            // An identity column keeps its kind. A generated column is not an
+            // identity column.
+            let identity = catalog
+                .relation_visible(&path, "catalog_live_identity")
+                .expect("pg_temp resolves the table");
+            let column = |name: &str| catalog[identity].column(name).expect("the column is there");
+            assert_eq!(column("always").identity, Some(Identity::Always));
+            assert_eq!(column("by_default").identity, Some(Identity::ByDefault));
+            assert_eq!(column("plain").identity, None);
+            assert_eq!(column("doubled").identity, None);
+            assert!(column("doubled").generated);
+            assert!(!column("always").generated);
+
+            // A table with no column loads, and has a row type with no field.
+            let nocols = catalog
+                .relation_visible(&path, "catalog_live_nocols")
+                .expect("pg_temp resolves the table with no column");
+            assert_eq!(catalog[nocols].columns, Vec::new());
+
+            // The path of the session holds the temporary schema too, and so
+            // does a path that does not name it.
+            for path in [
+                SearchPath::from_metadata(catalog),
+                SearchPath::new(catalog, ["public"]),
+            ] {
+                assert_eq!(path.schemas().first(), Some(&temporary));
+                assert_eq!(
+                    catalog.relation_visible(&path, "catalog_live_temp"),
+                    Some(handle)
+                );
+            }
         }
     }
 
@@ -849,35 +834,28 @@ mod sync_tests {
 
 #[cfg(feature = "tokio-postgres")]
 mod async_tests {
-    use super::{lock_server, skip, url};
+    use super::databases;
     use pgtk_catalog::{Builtin, Name};
 
-    // The guard stays across each `await`. This is safe here, because the
-    // test is the only task on its runtime, and the lock keeps two test
-    // threads off one server. An async lock would need another dependency.
-    #[allow(clippy::await_holding_lock)]
     #[tokio::test]
     async fn it_loads_through_the_async_executor() {
-        let Some(url) = url() else {
-            skip("it_loads_through_the_async_executor");
-            return;
-        };
-        let _guard = lock_server();
-        let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-            .await
-            .expect("the server accepts the connection");
-        tokio::spawn(async move {
-            let _ = connection.await;
-        });
+        for url in databases("it_loads_through_the_async_executor") {
+            let (mut client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .expect("the server accepts the connection");
+            tokio::spawn(async move {
+                let _ = connection.await;
+            });
 
-        let loaded = pgtk_catalog::load_async(&mut client)
-            .await
-            .expect("the load succeeds");
-        assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+            let loaded = pgtk_catalog::load_async(&mut client)
+                .await
+                .expect("the load succeeds");
+            assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
 
-        let catalog = &loaded.catalog;
-        let int4 = catalog.builtin(Builtin::Int4);
-        assert_eq!(catalog[int4].name, Name::new("int4"));
-        assert!(catalog.types().len() > 100, "a server has many types");
+            let catalog = &loaded.catalog;
+            let int4 = catalog.builtin(Builtin::Int4);
+            assert_eq!(catalog[int4].name, Name::new("int4"));
+            assert!(catalog.types().len() > 100, "a server has many types");
+        }
     }
 }

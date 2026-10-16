@@ -165,8 +165,10 @@ rest so that they are not re-decided.
   committed. A test asserts the embedded format version matches the crate's.
 - `CatalogBuilder` is the only constructor; Loader and tests both use it.
   Test Catalogs usually start from the Fixture and add Entities. No DSL yet.
-- Loader integration tests read `PG_CATALOG_TEST_URL` and skip when unset.
-  CI runs 14, 15, 16, 17 containers and asserts no unexpected Diagnostics.
+- Loader integration tests run each test against servers of the pinned 14,
+  15, 16 and 17 releases, built from the vendored source
+  (`pgtk-test-server`), and assert no unexpected Diagnostics. Each test makes
+  its own database on each server.
 
 ## Crate
 
