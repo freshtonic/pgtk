@@ -46,7 +46,10 @@ jobs:
       # Two jobs at a time: Buck2 compiles the large generated grammar crates more than once (for
       # metadata, diagnostics and the rlib), and four such compiles need more than the 16 GB of
       # the runner. The remote cache supplies most actions after the first run.
-      - run: tools/buck2 build -j 2 //...
+      # Temporary: log the memory of the runner, to find why the runner shuts down.
+      - run: |
+          ( while sleep 10; do echo "mem: $(free -m | awk 'NR==2 {print $3 " MB used, " $7 " MB available"}'), disk: $(df -h --output=avail . | tail -1)"; done ) &
+          tools/buck2 build -j 2 //...
       - run: tools/buck2 test -j 2 //...
 
   third-party:
