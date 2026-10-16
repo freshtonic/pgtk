@@ -12,7 +12,9 @@ pgtk builds with Cargo and with Buck2. Both builds use the same `Cargo.lock`. Fo
   yourself. Always run buck2 through `tools/buck2`, because it also writes the build settings
   (see [The remote cache](#the-remote-cache)).
 - **C toolchain**: `/usr/bin/clang`, `/usr/bin/clang++` and `/usr/bin/ar`. The Buck2 C++
-  toolchain uses these absolute paths.
+  toolchain uses these absolute paths. On Linux, Buck2 also links with `lld` (on Debian and
+  Ubuntu, `apt install clang lld`).
+- **Python 3.12 or later**: the Buck2 prelude runs Python tools during the build.
 - **PostgreSQL build tools**: `make`, `bison`, `flex`, `perl` and libxml2 (on Debian and Ubuntu,
   `libxml2-dev`). The tests build the pinned PostgreSQL releases (see
   [The PostgreSQL builds](#the-postgresql-builds)). They do not need a PostgreSQL server or
