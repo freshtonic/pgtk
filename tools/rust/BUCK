@@ -1,0 +1,4 @@
+export_file(
+    name = "run_build_script.py",
+    visibility = ["PUBLIC"],
+)

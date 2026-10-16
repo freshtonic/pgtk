@@ -1,0 +1,39 @@
+# Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
+#
+# Buck builds the default Grammar Version (pg17). See docs/adr/0001-dual-buck2-cargo-build.md.
+
+PGTK_ANALYZE_FEATURES = [
+    "default",
+    "pg17",
+    "since-pg15",
+    "since-pg16",
+    "since-pg17",
+]
+
+PGTK_ANALYZE_DEPS = [
+    "//packages/pgtk-catalog:pgtk-catalog",
+    "//packages/pgtk-sql:pgtk-sql",
+    "//third-party/rust:recursa",
+    "//third-party/rust:thiserror",
+]
+
+rust_library(
+    name = "pgtk-analyze",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pgtk_analyze",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    features = PGTK_ANALYZE_FEATURES,
+    deps = PGTK_ANALYZE_DEPS,
+    visibility = ["PUBLIC"],
+)
+
+rust_test(
+    name = "pgtk-analyze-test",
+    srcs = glob(["src/**/*.rs"]),
+    crate = "pgtk_analyze",
+    crate_root = "src/lib.rs",
+    edition = "2024",
+    features = PGTK_ANALYZE_FEATURES,
+    deps = PGTK_ANALYZE_DEPS,
+)

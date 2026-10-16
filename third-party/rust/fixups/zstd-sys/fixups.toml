@@ -1,0 +1,6 @@
+# The build script compiles the bundled zstd C sources with the cc crate, which needs
+# OPT_LEVEL, DEBUG and PROFILE. Rustc must link the static library that it makes.
+[buildscript.run]
+env = { OPT_LEVEL = "3", DEBUG = "false", PROFILE = "release" }
+rustc_link_lib = true
+rustc_link_search = true

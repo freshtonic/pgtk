@@ -1,0 +1,1632 @@
+#![deny(missing_docs, clippy::missing_docs_in_private_items)]
+
+//! LR(0) item sets, LALR(1) lookaheads and conflict detection.
+//!
+//! The construction is the one bison uses: LR(0) states from every start rule, then lookaheads
+//! by DeRemer and Pennello's `reads`, `includes` and `lookback` relations over the digraph
+//! algorithm. Shift/reduce conflicts go through a [`ConflictResolver`] seam, which declared
+//! precedence implements; a resolved conflict is recorded, not reported. Without a resolution a
+//! shift/reduce conflict keeps the shift and a reduce/reduce conflict keeps the lowest rule, as
+//! bison does, and both are reported.
+//!
+//! Prefix acceptance shapes two details. The synthetic start rule `S'(T) -> T` has the end marker
+//! as its only lookahead, and the end marker means "no other action applies" at runtime; the
+//! state's default reduction therefore prefers the reduce whose lookahead holds the end marker,
+//! so a root ends when the next token has no shift action, as the design's prefix acceptance
+//! requires.
+//!
+//! One start rule per grammar type puts the end marker in the FOLLOW of every nonterminal that
+//! can end some root. That never makes a shift/reduce conflict, because no rule shifts the end
+//! marker; it makes reduce/reduce conflicts on the end marker alone between rules that can each
+//! end a root, merged into one LALR(1) state by their shared LR(0) core. When every such rule
+//! wraps one thing — a token wrapper (`ColIdText -> IDENT .` beside
+//! `TypeFunctionNameText -> IDENT .`) or a unit rule of a grammar type
+//! (`Expr -> SelectWithParens .` beside `SelectClause -> SelectWithParens .`) — and the end
+//! marker is the one cell of the state those rules still contest, the construction takes the
+//! earliest-declared rule, as bison does, records an [`EndMarkerResolution`], and does not count
+//! a conflict; see [`EndMarkerResolution`] for why that is safe and where its limit is.
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::fmt;
+
+use super::grammar::{
+    LrGrammar, NonterminalId, NonterminalOrigin, RuleAction, RuleId, Symbol, TerminalId,
+};
+use crate::profile::Span;
+use crate::{LrConflictAction, LrConflictResolution, LrRuleOwner, TypeId};
+
+#[cfg(test)]
+std::thread_local! {
+    /// Per-test observation of canonical LR(1) collection builds.
+    static CANONICAL_BUILD_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+/// Resets the current test thread's canonical LR(1) collection build count.
+pub(super) fn reset_canonical_build_count() {
+    CANONICAL_BUILD_COUNT.set(0);
+}
+
+#[cfg(test)]
+/// Returns the current test thread's canonical LR(1) collection build count.
+pub(super) fn canonical_build_count() -> usize {
+    CANONICAL_BUILD_COUNT.get()
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// Dense automaton state identity in construction order; start states come first.
+pub struct StateId(u32);
+
+impl StateId {
+    /// Creates a state identity from its dense index.
+    pub const fn new(index: u32) -> Self {
+        Self(index)
+    }
+
+    /// Returns the identity as a collection index.
+    pub const fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// One LR(0) item: a rule with a dot position in its right-hand side.
+pub struct Item {
+    /// The rule.
+    pub rule: RuleId,
+    /// How many right-hand-side symbols precede the dot.
+    pub dot: u32,
+}
+
+impl Item {
+    /// Returns the symbol after the dot, or `None` for a complete item.
+    pub fn next_symbol(self, grammar: &LrGrammar) -> Option<Symbol> {
+        grammar.rule(self.rule).rhs.get(self.dot as usize).copied()
+    }
+
+    /// Reports whether the dot is at the end of the rule.
+    pub fn is_complete(self, grammar: &LrGrammar) -> bool {
+        self.next_symbol(grammar).is_none()
+    }
+
+    /// Renders the item bison-style, for example `S -> i S . e S`.
+    pub fn render(self, grammar: &LrGrammar) -> String {
+        let rule = grammar.rule(self.rule);
+        let mut text = grammar.nonterminal(rule.lhs).name.clone();
+        text.push_str(" ->");
+        for (index, symbol) in rule.rhs.iter().enumerate() {
+            if index == self.dot as usize {
+                text.push_str(" .");
+            }
+            text.push(' ');
+            text.push_str(grammar.symbol_name(*symbol));
+        }
+        if self.dot as usize == rule.rhs.len() {
+            text.push_str(" .");
+        }
+        text
+    }
+}
+
+#[derive(Clone, Eq, Hash, PartialEq)]
+/// A set of terminals as a fixed-width bitset over the grammar's terminals.
+pub struct TerminalSet {
+    /// Bit words, least significant bit first.
+    words: Vec<u64>,
+    /// Number of terminals the set ranges over.
+    width: usize,
+}
+
+impl TerminalSet {
+    /// Creates an empty set over `width` terminals.
+    pub fn empty(width: usize) -> Self {
+        Self {
+            words: vec![0; width.div_ceil(64)],
+            width,
+        }
+    }
+
+    /// Adds one terminal.
+    pub fn insert(&mut self, terminal: TerminalId) {
+        debug_assert!(terminal.index() < self.width);
+        self.words[terminal.index() / 64] |= 1 << (terminal.index() % 64);
+    }
+
+    /// Reports whether the set holds a terminal.
+    pub fn contains(&self, terminal: TerminalId) -> bool {
+        self.words[terminal.index() / 64] & (1 << (terminal.index() % 64)) != 0
+    }
+
+    /// Removes one terminal.
+    pub fn remove(&mut self, terminal: TerminalId) {
+        debug_assert!(terminal.index() < self.width);
+        self.words[terminal.index() / 64] &= !(1 << (terminal.index() % 64));
+    }
+
+    /// Returns the terminals both sets hold.
+    pub fn intersection(&self, other: &Self) -> Self {
+        debug_assert_eq!(self.width, other.width);
+        Self {
+            words: self
+                .words
+                .iter()
+                .zip(&other.words)
+                .map(|(left, right)| left & right)
+                .collect(),
+            width: self.width,
+        }
+    }
+
+    /// Reports whether the set is empty.
+    pub fn is_empty(&self) -> bool {
+        self.words.iter().all(|word| *word == 0)
+    }
+
+    /// Adds every terminal of another set of the same width; returns whether anything changed.
+    pub fn union_assign(&mut self, other: &Self) -> bool {
+        debug_assert_eq!(self.width, other.width);
+        let mut changed = false;
+        for (left, right) in self.words.iter_mut().zip(&other.words) {
+            let merged = *left | *right;
+            changed |= merged != *left;
+            *left = merged;
+        }
+        changed
+    }
+
+    /// Reports whether the two sets share a terminal.
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.words
+            .iter()
+            .zip(&other.words)
+            .any(|(left, right)| left & right != 0)
+    }
+
+    /// Iterates member terminals in ascending order.
+    pub fn iter(&self) -> impl Iterator<Item = TerminalId> + '_ {
+        (0..self.width)
+            .map(|index| TerminalId::new(index as u32))
+            .filter(move |terminal| self.contains(*terminal))
+    }
+
+    /// Counts the members.
+    pub fn len(&self) -> usize {
+        self.words
+            .iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+}
+
+impl fmt::Debug for TerminalSet {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_set().entries(self.iter()).finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A resolved parser action on one lookahead.
+pub enum Action {
+    /// Shift the lookahead and go to the state.
+    Shift(StateId),
+    /// Reduce by the rule; reducing a start rule accepts the parse.
+    Reduce(RuleId),
+    /// An explicit syntax error, as a non-associative precedence produces.
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One complete item of a state together with its LALR(1) lookahead set.
+pub struct Reduction {
+    /// The complete rule.
+    pub rule: RuleId,
+    /// The terminals on which the rule reduces.
+    pub lookaheads: TerminalSet,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One automaton state after lookahead computation and conflict resolution.
+pub struct State {
+    /// The state's identity.
+    id: StateId,
+    /// Kernel items in ascending order; the closure is recomputed on demand.
+    kernel: Vec<Item>,
+    /// Kernel plus closure items in ascending order.
+    items: Vec<Item>,
+    /// Transitions in ascending symbol order: terminals first, then nonterminals.
+    transitions: Vec<(Symbol, StateId)>,
+    /// Complete items with their lookaheads, in ascending rule order.
+    reductions: Vec<Reduction>,
+    /// The resolved action on every terminal that has one, in ascending terminal order.
+    actions: BTreeMap<TerminalId, Action>,
+    /// The reduce taken when the lookahead has no explicit action; see the module notes.
+    default_reduction: Option<RuleId>,
+}
+
+impl State {
+    /// Returns the state's identity.
+    pub fn id(&self) -> StateId {
+        self.id
+    }
+
+    /// Returns the kernel items.
+    pub fn kernel(&self) -> &[Item] {
+        &self.kernel
+    }
+
+    /// Returns kernel plus closure items.
+    pub fn items(&self) -> &[Item] {
+        &self.items
+    }
+
+    /// Returns the transitions in ascending symbol order.
+    pub fn transitions(&self) -> &[(Symbol, StateId)] {
+        &self.transitions
+    }
+
+    /// Returns the terminal transitions.
+    pub fn shifts(&self) -> impl Iterator<Item = (TerminalId, StateId)> + '_ {
+        self.transitions
+            .iter()
+            .filter_map(|(symbol, target)| match symbol {
+                Symbol::Terminal(terminal) => Some((*terminal, *target)),
+                Symbol::Nonterminal(_) => None,
+            })
+    }
+
+    /// Returns the nonterminal transitions.
+    pub fn gotos(&self) -> impl Iterator<Item = (NonterminalId, StateId)> + '_ {
+        self.transitions
+            .iter()
+            .filter_map(|(symbol, target)| match symbol {
+                Symbol::Nonterminal(nonterminal) => Some((*nonterminal, *target)),
+                Symbol::Terminal(_) => None,
+            })
+    }
+
+    /// Returns the complete items with their lookaheads.
+    pub fn reductions(&self) -> &[Reduction] {
+        &self.reductions
+    }
+
+    /// Returns the resolved actions.
+    pub fn actions(&self) -> &BTreeMap<TerminalId, Action> {
+        &self.actions
+    }
+
+    /// Returns the default reduction.
+    pub fn default_reduction(&self) -> Option<RuleId> {
+        self.default_reduction
+    }
+
+    /// Returns the target of the transition on a symbol.
+    pub fn transition(&self, symbol: Symbol) -> Option<StateId> {
+        self.transitions
+            .binary_search_by_key(&symbol, |(symbol, _)| *symbol)
+            .ok()
+            .map(|index| self.transitions[index].1)
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// The competing actions of one conflict.
+pub enum ConflictKind {
+    /// A shift and a reduce compete on the lookahead.
+    ShiftReduce {
+        /// The shift target.
+        shift: StateId,
+        /// The competing rule.
+        reduce: RuleId,
+    },
+    /// Two or more reduces compete on the lookahead.
+    ReduceReduce {
+        /// The competing rules in ascending order.
+        rules: Vec<RuleId>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One unresolved conflict; every one is a hard build error for the table-driven style.
+pub struct Conflict {
+    /// The state in which the conflict occurs.
+    pub state: StateId,
+    /// The lookahead on which the actions compete.
+    pub lookahead: TerminalId,
+    /// The competing actions.
+    pub kind: ConflictKind,
+    /// The action the tables carry, chosen by bison's default policy.
+    pub resolution: Action,
+    /// Whether the conflict is an LALR merge artefact: absent in every canonical LR(1) state
+    /// that merged into this state. Only a reduce/reduce conflict can be one.
+    pub merge_artefact: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// A resolver's verdict on a shift/reduce conflict.
+pub enum Resolution {
+    /// Keep the shift.
+    Shift,
+    /// Keep the reduce.
+    Reduce,
+    /// Neither: the lookahead is a syntax error, as for non-associative operators.
+    Error,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One shift/reduce conflict a [`ConflictResolver`] settled. It is not a conflict: the tables
+/// carry the resolution and the dump records it the way bison's `.output` does.
+pub struct ResolvedConflict {
+    /// The state in which the actions competed.
+    pub state: StateId,
+    /// The lookahead on which they competed.
+    pub lookahead: TerminalId,
+    /// The shift target that competed.
+    pub shift: StateId,
+    /// The rule that competed.
+    pub reduce: RuleId,
+    /// The resolver's verdict.
+    pub resolution: Resolution,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One conflict cell settled by an authored, source-stable scoped declaration.
+pub struct ScopedConflictResolution {
+    /// The state containing the cell; retained for the automaton dump, never used as a selector.
+    pub state: StateId,
+    /// The cell's lookahead.
+    pub lookahead: TerminalId,
+    /// Source-order index of the authored declaration.
+    pub declaration: u32,
+    /// The competing rules in ascending order; one rule for a shift/reduce conflict.
+    pub rules: Vec<RuleId>,
+    /// The explicit verdict.
+    pub resolution: Resolution,
+    /// The selected reducing rule for a reduce verdict.
+    pub reduced: Option<RuleId>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// One reduce/reduce conflict on the end marker between wrapping rules that declaration order
+/// settled (`docs/table-driven-parsing.md`, "End-marker reduce/reduce"). It is not a conflict:
+/// the tables carry the earliest-declared rule and the dump records the choice.
+///
+/// The rule applies when the end marker is the one lookahead of the state still contested
+/// between the competitors, and every competing reduction wraps one thing
+/// (`settles_on_the_end_marker`):
+///
+/// - a **token-wrapper rule**, a [`RuleAction::Token`] rule (an admission-set member or a
+///   content token, whose reduce yields the token just popped); or
+/// - a **unit rule** `A -> B` of a grammar type: one right-hand-side symbol, that symbol a
+///   value-carrying nonterminal, so the reduce pops exactly the value `B` built and wraps it as
+///   an `A`.
+///
+/// The safety argument is one argument for both shapes. Every complete item of such a state has
+/// its dot at position one, so the symbol that reached the state is the whole right-hand side of
+/// every competitor: the competitors differ in their left-hand side alone, never in what they
+/// pop. The end marker is the lookahead only when the parse is ending: at the end of input, or
+/// at a token no continuation of any competitor accepts, where every choice fails at that same
+/// token. So the choice decides only which wrapper a prefix parse yields when the input stops
+/// after the wrapped symbol; the explicit action of every continuation terminal is untouched, so
+/// a root that continues past the wrapper still reduces the right one — a continuation terminal
+/// one root accepts and another does not keeps its own action, and the end-marker cell is the
+/// only cell this rule writes.
+///
+/// What the argument asks of every other lookahead is an explicit action, which is why the guard
+/// (`settled_by_declaration_order`) reads the conflicts that remain rather than the raw
+/// lookahead sets. A cell that precedence or an authored scoped `lr_conflict` declaration
+/// settled carries one; a cell those two leave contested is a hard error, and the whole
+/// reduce/reduce is then reported on every cell it occupies, the end marker included. That is
+/// also how the rule meets its consumer: pg-sql's `Expr -> SelectWithParens` beside
+/// `SelectClause -> SelectWithParens` compete on `RPAREN`, `RPAREN_SELECT_LA` and `RETURNING`
+/// too, and those three a declaration can name. The end marker is the one it cannot, because a
+/// scoped lookahead may only be a token or a merged kind.
+///
+/// The choice is exact for each root context in which the earliest-declared rule can end the
+/// parse. A root context that can end only in a later-declared rule is an LALR(1) merge artefact
+/// of the per-type start rules, and its remedy is declaration order.
+///
+/// Two consequences of that shared right-hand side are worth naming. A **mixed** competition
+/// between a token wrapper and a unit rule cannot arise: a token wrapper's one symbol is a
+/// terminal and a unit rule's is a nonterminal, so the two can never be complete in one state.
+/// `settles_on_the_end_marker` admits each competitor on its own merits all the same, so a
+/// mixed state would be settled if the construction ever produced one. A **chain** of unit rules
+/// (`A -> B` with `B -> C`) likewise never competes with itself, for the same reason: the two
+/// rules complete in different states. It does produce successive resolutions — the goto taken
+/// after the chosen reduce can land in another state whose one contested cell is the end marker,
+/// and that state settles by declaration order in its own right.
+///
+/// The left-hand side of a unit rule must be a grammar type, so a helper nonterminal's
+/// reduce/reduce stays reported and the per-site helper copy pass
+/// ([`NonterminalOrigin::HelperCopy`]) still sees it; a helper copy and a declared restriction
+/// are excluded for the same reason.
+pub struct EndMarkerResolution {
+    /// The state in which the reductions competed.
+    pub state: StateId,
+    /// The competing wrapper rules in ascending order.
+    pub rules: Vec<RuleId>,
+    /// The earliest-declared rule, which the tables carry.
+    pub chosen: RuleId,
+}
+
+/// The precedence seam: [`PrecedenceResolver`](super::precedence::PrecedenceResolver)
+/// implements it over the `precedence { ... }` declaration; [`NoPrecedence`] reports every conflict.
+pub trait ConflictResolver {
+    /// Resolves a shift/reduce conflict between `reduce` and the shift items on `lookahead`,
+    /// or returns `None` to report the conflict.
+    fn resolve(
+        &self,
+        grammar: &LrGrammar,
+        reduce: RuleId,
+        lookahead: TerminalId,
+        shift_items: &[Item],
+    ) -> Option<Resolution>;
+}
+
+/// The resolver with no precedence table: every conflict is reported.
+pub struct NoPrecedence;
+
+impl ConflictResolver for NoPrecedence {
+    fn resolve(
+        &self,
+        _grammar: &LrGrammar,
+        _reduce: RuleId,
+        _lookahead: TerminalId,
+        _shift_items: &[Item],
+    ) -> Option<Resolution> {
+        None
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Construction options.
+pub struct AutomatonOptions {
+    /// Whether to build the canonical LR(1) automaton to classify reduce/reduce conflicts as
+    /// merge artefacts. It runs only when such a conflict exists.
+    pub check_merge_artefacts: bool,
+    /// Upper bound on canonical LR(1) states before the check gives up.
+    pub lr1_state_budget: usize,
+}
+
+impl Default for AutomatonOptions {
+    fn default() -> Self {
+        Self {
+            check_merge_artefacts: true,
+            lr1_state_budget: 2_000_000,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+/// What the merge-artefact check did.
+pub enum MergeArtefactCheck {
+    /// No reduce/reduce conflict exists, so nothing needed classifying.
+    NotNeeded,
+    /// The check was disabled by [`AutomatonOptions`].
+    Disabled,
+    /// The canonical LR(1) automaton was built and every reduce/reduce conflict classified.
+    Verified {
+        /// How many canonical LR(1) states the check built.
+        lr1_states: usize,
+    },
+    /// The canonical LR(1) automaton exceeded its budget; no conflict is marked an artefact.
+    BudgetExceeded {
+        /// The budget that was exceeded.
+        budget: usize,
+    },
+}
+
+#[derive(Clone, Debug)]
+/// The LALR(1) automaton of one grammar.
+pub struct Automaton {
+    /// States in construction order.
+    states: Vec<State>,
+    /// Start state per start rule, in the grammar's start-rule order.
+    start_states: Vec<(TypeId, StateId)>,
+    /// Conflicts in ascending (state, lookahead) order.
+    conflicts: Vec<Conflict>,
+    /// Shift/reduce conflicts the resolver settled, in ascending (state, lookahead, rule) order.
+    resolved: Vec<ResolvedConflict>,
+    /// Conflict cells settled by authored scoped declarations.
+    scoped_resolutions: Vec<ScopedConflictResolution>,
+    /// Reduce/reduce conflicts on the end marker that declaration order settled, in ascending
+    /// state order.
+    end_resolutions: Vec<EndMarkerResolution>,
+    /// What the merge-artefact check did.
+    merge_check: MergeArtefactCheck,
+}
+
+impl Automaton {
+    /// Builds the LALR(1) automaton, resolving conflicts through `resolver`.
+    ///
+    /// The phases stay together because each consumes the previous one's dense indices: LR(0)
+    /// states, nonterminal transitions, the DeRemer–Pennello relations, per-reduction lookaheads,
+    /// actions with conflict resolution, and finally the merge-artefact classification.
+    pub fn build(
+        grammar: &LrGrammar,
+        resolver: &dyn ConflictResolver,
+        options: AutomatonOptions,
+    ) -> Self {
+        let _profile = Span::enter("lr.automaton");
+        let nullable = {
+            let _stage = Span::enter("nullable");
+            grammar.nullable_nonterminals()
+        };
+        let lr0 = {
+            let _stage = Span::enter("lr0");
+            Lr0Automaton::build(grammar)
+        };
+        let lookaheads = {
+            let _stage = Span::enter("lalr-lookaheads");
+            compute_lookaheads(grammar, &lr0, &nullable)
+        };
+
+        let _stage = Span::enter("actions");
+        let mut states = Vec::with_capacity(lr0.states.len());
+        let mut conflicts = Vec::new();
+        let mut resolved = Vec::new();
+        for (index, built) in lr0.states.iter().enumerate() {
+            let id = StateId::new(index as u32);
+            let reductions: Vec<Reduction> = built
+                .items
+                .iter()
+                .filter(|item| item.is_complete(grammar))
+                .map(|item| Reduction {
+                    rule: item.rule,
+                    lookaheads: lookaheads[&(id, item.rule)].clone(),
+                })
+                .collect();
+            let resolved_state = resolve_actions(grammar, resolver, id, built, &reductions);
+            conflicts.extend(resolved_state.conflicts);
+            resolved.extend(resolved_state.resolved);
+            let actions = resolved_state.actions;
+            let default_reduction = choose_default_reduction(grammar, &actions);
+            states.push(State {
+                id,
+                kernel: built.kernel.clone(),
+                items: built.items.clone(),
+                transitions: built.transitions.iter().map(|(s, t)| (*s, *t)).collect(),
+                reductions,
+                actions,
+                default_reduction,
+            });
+        }
+
+        let start_states = grammar
+            .starts()
+            .iter()
+            .zip(&lr0.start_states)
+            .map(|(start, state)| (start.type_id, *state))
+            .collect();
+
+        let mut automaton = Self {
+            states,
+            start_states,
+            conflicts,
+            resolved,
+            scoped_resolutions: Vec::new(),
+            end_resolutions: Vec::new(),
+            merge_check: MergeArtefactCheck::Disabled,
+        };
+        automaton.settle_end_marker_conflicts(grammar);
+        drop(_stage);
+        if options.check_merge_artefacts {
+            automaton.classify_merge_artefacts(grammar, options);
+        }
+        automaton
+    }
+
+    /// Runs the merge-artefact check of `options` over the reduce/reduce conflicts, replacing
+    /// the previous outcome. [`build`](Self::build) runs it once when the options enable it; the
+    /// helper-copy loop builds its intermediate automata with the check disabled and runs it on
+    /// the last one.
+    pub fn classify_merge_artefacts(&mut self, grammar: &LrGrammar, options: AutomatonOptions) {
+        let _stage = Span::enter("merge-artefact-classification");
+        self.merge_check =
+            classify_merge_artefacts(grammar, &self.states, &mut self.conflicts, options);
+    }
+
+    /// Returns the states in construction order.
+    pub fn states(&self) -> &[State] {
+        &self.states
+    }
+
+    /// Returns the start state of a grammar type, when the type has a start rule.
+    pub fn start_state(&self, type_id: TypeId) -> Option<StateId> {
+        self.start_states
+            .iter()
+            .find(|(candidate, _)| *candidate == type_id)
+            .map(|(_, state)| *state)
+    }
+
+    /// Returns every start state with its grammar type, in start-rule order.
+    pub fn start_states(&self) -> &[(TypeId, StateId)] {
+        &self.start_states
+    }
+
+    /// Returns the shift/reduce conflicts the resolver settled, in ascending (state, lookahead,
+    /// rule) order; none of them counts as a conflict.
+    pub fn resolved_conflicts(&self) -> &[ResolvedConflict] {
+        &self.resolved
+    }
+
+    /// Returns conflict cells settled by authored scoped declarations, in conflict order.
+    pub fn scoped_resolutions(&self) -> &[ScopedConflictResolution] {
+        &self.scoped_resolutions
+    }
+
+    /// Returns the reduce/reduce conflicts on the end marker that declaration order settled, in
+    /// ascending state order; none of them counts as a conflict.
+    pub fn end_marker_resolutions(&self) -> &[EndMarkerResolution] {
+        &self.end_resolutions
+    }
+
+    /// Returns the conflicts in ascending (state, lookahead) order.
+    pub fn conflicts(&self) -> &[Conflict] {
+        &self.conflicts
+    }
+
+    /// Returns what the merge-artefact check did.
+    pub fn merge_check(&self) -> &MergeArtefactCheck {
+        &self.merge_check
+    }
+
+    /// Applies source-stable declarations to conflicts left unresolved by precedence.
+    ///
+    /// Validation is atomic: every declaration must match each named lookahead, match exactly its
+    /// expected number of cells, select a compatible action, and be the only declaration for each
+    /// cell. On any error the automaton is unchanged. State numbers are deliberately absent from
+    /// the interface and appear only in diagnostics and the dump.
+    pub fn apply_scoped_resolutions(
+        &mut self,
+        grammar: &LrGrammar,
+        declarations: &[LrConflictResolution],
+    ) -> Result<(), Vec<String>> {
+        if declarations.is_empty() {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        let mut selected_by = BTreeMap::<usize, usize>::new();
+        let mut plans = Vec::<(usize, Action, ScopedConflictResolution)>::new();
+        for (declaration_index, declaration) in declarations.iter().enumerate() {
+            let lookaheads = declaration
+                .lookaheads
+                .iter()
+                .map(|kind| TerminalId::new(u32::from(kind.get())))
+                .collect::<BTreeSet<_>>();
+            let mut per_lookahead = BTreeMap::<TerminalId, usize>::new();
+            let mut matched = 0usize;
+            for (conflict_index, conflict) in self.conflicts.iter().enumerate() {
+                if !lookaheads.contains(&conflict.lookahead) {
+                    continue;
+                }
+                let selected = selected_rules(grammar, conflict, &declaration.owners);
+                if selected.len() != 1 {
+                    continue;
+                }
+                let selected_rule = selected[0];
+                let against_matches = match &conflict.kind {
+                    ConflictKind::ShiftReduce { reduce, .. } => {
+                        *reduce == selected_rule
+                            && self.states[conflict.state.index()]
+                                .items
+                                .iter()
+                                .any(|item| {
+                                    item.rule != selected_rule
+                                        && rule_matches_any_owner(
+                                            grammar,
+                                            item.rule,
+                                            &declaration.against,
+                                        )
+                                })
+                    }
+                    ConflictKind::ReduceReduce { rules } => {
+                        let others = rules.iter().copied().filter(|rule| *rule != selected_rule);
+                        let mut count = 0usize;
+                        let exact = others.clone().all(|rule| {
+                            count += 1;
+                            rule_matches_any_owner(grammar, rule, &declaration.against)
+                        });
+                        exact && count > 0
+                    }
+                };
+                if !against_matches {
+                    continue;
+                }
+                matched += 1;
+                *per_lookahead.entry(conflict.lookahead).or_default() += 1;
+                if let Some(previous) = selected_by.insert(conflict_index, declaration_index) {
+                    errors.push(format!(
+                        "scoped LR declarations {previous} and {declaration_index} both select \
+                         state {} on lookahead `{}`",
+                        conflict.state.index(),
+                        grammar.terminal_name(conflict.lookahead)
+                    ));
+                    continue;
+                }
+                let (action, resolution, reduced, rules) =
+                    match (&conflict.kind, declaration.action) {
+                        (ConflictKind::ShiftReduce { shift, reduce }, LrConflictAction::Shift) => (
+                            Action::Shift(*shift),
+                            Resolution::Shift,
+                            None,
+                            vec![*reduce],
+                        ),
+                        (ConflictKind::ShiftReduce { reduce, .. }, LrConflictAction::Reduce) => (
+                            Action::Reduce(*reduce),
+                            Resolution::Reduce,
+                            Some(*reduce),
+                            vec![*reduce],
+                        ),
+                        (ConflictKind::ShiftReduce { reduce, .. }, LrConflictAction::Error) => {
+                            (Action::Error, Resolution::Error, None, vec![*reduce])
+                        }
+                        (ConflictKind::ReduceReduce { rules }, LrConflictAction::Reduce) => (
+                            Action::Reduce(selected_rule),
+                            Resolution::Reduce,
+                            Some(selected_rule),
+                            rules.clone(),
+                        ),
+                        (ConflictKind::ReduceReduce { .. }, action) => {
+                            errors.push(format!(
+                                "scoped LR declaration {declaration_index} selects a reduce/reduce \
+                             conflict in state {} on `{}`, but action `{}` cannot resolve it",
+                                conflict.state.index(),
+                                grammar.terminal_name(conflict.lookahead),
+                                match action {
+                                    LrConflictAction::Shift => "shift",
+                                    LrConflictAction::Error => "error",
+                                    LrConflictAction::Reduce => unreachable!(),
+                                }
+                            ));
+                            continue;
+                        }
+                    };
+                plans.push((
+                    conflict_index,
+                    action,
+                    ScopedConflictResolution {
+                        state: conflict.state,
+                        lookahead: conflict.lookahead,
+                        declaration: declaration_index as u32,
+                        rules,
+                        resolution,
+                        reduced,
+                    },
+                ));
+            }
+            for lookahead in &lookaheads {
+                if !per_lookahead.contains_key(lookahead) {
+                    errors.push(format!(
+                        "scoped LR declaration {declaration_index} matched no conflict on \
+                         lookahead `{}`",
+                        grammar.terminal_name(*lookahead)
+                    ));
+                }
+            }
+            if matched != declaration.expected as usize {
+                errors.push(format!(
+                    "scoped LR declaration {declaration_index} expected {} conflict cell(s) but \
+                     matched {matched}",
+                    declaration.expected
+                ));
+            }
+        }
+        if !errors.is_empty() {
+            return Err(errors);
+        }
+        plans.sort_by_key(|(conflict, _, _)| *conflict);
+        for (_, action, resolution) in &plans {
+            self.states[resolution.state.index()]
+                .actions
+                .insert(resolution.lookahead, *action);
+        }
+        let selected = plans
+            .iter()
+            .map(|(conflict, _, _)| *conflict)
+            .collect::<BTreeSet<_>>();
+        self.conflicts = self
+            .conflicts
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, conflict)| (!selected.contains(&index)).then_some(conflict))
+            .collect();
+        self.scoped_resolutions = plans
+            .into_iter()
+            .map(|(_, _, resolution)| resolution)
+            .collect();
+        // A declaration that settles a cell makes the end marker the only lookahead left
+        // contested in its state, which declaration order can then take.
+        self.settle_end_marker_conflicts(grammar);
+        for state in &mut self.states {
+            state.default_reduction = choose_default_reduction(grammar, &state.actions);
+        }
+        Ok(())
+    }
+
+    /// Settles every end-marker reduce/reduce that declaration order can take, recording an
+    /// [`EndMarkerResolution`] for each and dropping it from the reported conflicts.
+    ///
+    /// It runs once the whole automaton exists, and again after
+    /// [`Self::apply_scoped_resolutions`] has removed the cells authored declarations settle,
+    /// because a settled cell is an explicit action rather than a shared conflict.
+    fn settle_end_marker_conflicts(&mut self, grammar: &LrGrammar) {
+        let end = grammar.end_marker();
+        let mut settled = BTreeSet::new();
+        let mut resolutions = Vec::new();
+        for (index, conflict) in self.conflicts.iter().enumerate() {
+            if conflict.lookahead != end {
+                continue;
+            }
+            let ConflictKind::ReduceReduce { rules } = &conflict.kind else {
+                continue;
+            };
+            let others: Vec<&Conflict> = self
+                .conflicts
+                .iter()
+                .filter(|other| other.state == conflict.state && other.lookahead != end)
+                .collect();
+            if !settled_by_declaration_order(grammar, rules, &others) {
+                continue;
+            }
+            let mut rules = rules.clone();
+            rules.sort_unstable();
+            let chosen = rules[0];
+            resolutions.push(EndMarkerResolution {
+                state: conflict.state,
+                rules,
+                chosen,
+            });
+            settled.insert(index);
+        }
+        if settled.is_empty() {
+            return;
+        }
+        for resolution in resolutions {
+            let state = &mut self.states[resolution.state.index()];
+            state.actions.insert(end, Action::Reduce(resolution.chosen));
+            state.default_reduction = choose_default_reduction(grammar, &state.actions);
+            self.end_resolutions.push(resolution);
+        }
+        self.conflicts = self
+            .conflicts
+            .drain(..)
+            .enumerate()
+            .filter_map(|(index, conflict)| (!settled.contains(&index)).then_some(conflict))
+            .collect();
+        self.end_resolutions
+            .sort_by_key(|resolution| resolution.state);
+    }
+}
+
+/// Returns the conflict's reducing rules selected by an authored owner set.
+fn selected_rules(grammar: &LrGrammar, conflict: &Conflict, owners: &[LrRuleOwner]) -> Vec<RuleId> {
+    match &conflict.kind {
+        ConflictKind::ShiftReduce { reduce, .. } => {
+            rule_matches_any_owner(grammar, *reduce, owners)
+                .then_some(*reduce)
+                .into_iter()
+                .collect()
+        }
+        ConflictKind::ReduceReduce { rules } => rules
+            .iter()
+            .copied()
+            .filter(|rule| rule_matches_any_owner(grammar, *rule, owners))
+            .collect(),
+    }
+}
+
+/// Reports whether a lowered rule came from any selected source owner.
+fn rule_matches_any_owner(grammar: &LrGrammar, rule: RuleId, owners: &[LrRuleOwner]) -> bool {
+    owners
+        .iter()
+        .any(|owner| match (owner, &grammar.rule(rule).action) {
+            (LrRuleOwner::Type(owner), RuleAction::Construct { type_id, .. }) => owner == type_id,
+            (
+                LrRuleOwner::Variant(owner),
+                RuleAction::Construct {
+                    variant: Some(variant),
+                    ..
+                },
+            ) => owner == variant,
+            _ => false,
+        })
+}
+
+/// One LR(0) state under construction.
+struct Lr0State {
+    /// Kernel items in ascending order.
+    kernel: Vec<Item>,
+    /// Kernel plus closure items in ascending order.
+    items: Vec<Item>,
+    /// Transitions in ascending symbol order.
+    transitions: BTreeMap<Symbol, StateId>,
+}
+
+/// The LR(0) automaton: states, transitions and the start state per start rule.
+struct Lr0Automaton {
+    /// States in construction order.
+    states: Vec<Lr0State>,
+    /// Start state per start rule.
+    start_states: Vec<StateId>,
+}
+
+impl Lr0Automaton {
+    /// Builds the canonical LR(0) collection from every start rule, breadth first, so that state
+    /// numbering depends only on the grammar.
+    fn build(grammar: &LrGrammar) -> Self {
+        let mut states: Vec<Lr0State> = Vec::new();
+        let mut index: HashMap<Vec<Item>, StateId> = HashMap::new();
+        let mut queue = VecDeque::new();
+        let mut start_states = Vec::new();
+
+        let mut intern = |kernel: Vec<Item>,
+                          states: &mut Vec<Lr0State>,
+                          queue: &mut VecDeque<StateId>|
+         -> StateId {
+            if let Some(id) = index.get(&kernel) {
+                return *id;
+            }
+            let id = StateId::new(states.len() as u32);
+            index.insert(kernel.clone(), id);
+            let items = closure(grammar, &kernel);
+            states.push(Lr0State {
+                kernel,
+                items,
+                transitions: BTreeMap::new(),
+            });
+            queue.push_back(id);
+            id
+        };
+
+        for start in grammar.starts() {
+            let kernel = vec![Item {
+                rule: start.rule,
+                dot: 0,
+            }];
+            start_states.push(intern(kernel, &mut states, &mut queue));
+        }
+
+        while let Some(id) = queue.pop_front() {
+            let mut successors: BTreeMap<Symbol, Vec<Item>> = BTreeMap::new();
+            for item in &states[id.index()].items {
+                if let Some(symbol) = item.next_symbol(grammar) {
+                    successors.entry(symbol).or_default().push(Item {
+                        rule: item.rule,
+                        dot: item.dot + 1,
+                    });
+                }
+            }
+            for (symbol, mut kernel) in successors {
+                kernel.sort_unstable();
+                let target = intern(kernel, &mut states, &mut queue);
+                states[id.index()].transitions.insert(symbol, target);
+            }
+        }
+
+        Self {
+            states,
+            start_states,
+        }
+    }
+}
+
+/// Computes the closure of a kernel: kernel items plus a dot-zero item for every rule of every
+/// nonterminal that follows a dot, in ascending item order.
+fn closure(grammar: &LrGrammar, kernel: &[Item]) -> Vec<Item> {
+    let mut items = kernel.to_vec();
+    let mut added = vec![false; grammar.nonterminal_count()];
+    let mut cursor = 0;
+    while cursor < items.len() {
+        if let Some(Symbol::Nonterminal(nonterminal)) = items[cursor].next_symbol(grammar)
+            && !added[nonterminal.index()]
+        {
+            added[nonterminal.index()] = true;
+            for rule in grammar.rules_of(nonterminal) {
+                items.push(Item {
+                    rule: *rule,
+                    dot: 0,
+                });
+            }
+        }
+        cursor += 1;
+    }
+    items.sort_unstable();
+    items.dedup();
+    items
+}
+
+/// Computes the LALR(1) lookahead set of every complete item by DeRemer and Pennello.
+///
+/// The nonterminal transitions are the nodes of both digraphs; `reads` seeds `Read` from the
+/// direct-read sets, `includes` seeds `Follow` from `Read`, and `lookback` distributes `Follow`
+/// to the complete items. Start rules take the end marker directly.
+fn compute_lookaheads(
+    grammar: &LrGrammar,
+    lr0: &Lr0Automaton,
+    nullable: &[bool],
+) -> BTreeMap<(StateId, RuleId), TerminalSet> {
+    let width = grammar.terminal_count();
+    let end = grammar.end_marker();
+
+    // Nonterminal transitions in (state, nonterminal) order.
+    let mut transitions: Vec<(StateId, NonterminalId, StateId)> = Vec::new();
+    let mut transition_index: HashMap<(StateId, NonterminalId), usize> = HashMap::new();
+    for (index, state) in lr0.states.iter().enumerate() {
+        let id = StateId::new(index as u32);
+        for (symbol, target) in &state.transitions {
+            if let Symbol::Nonterminal(nonterminal) = symbol {
+                transition_index.insert((id, *nonterminal), transitions.len());
+                transitions.push((id, *nonterminal, *target));
+            }
+        }
+    }
+
+    // Direct reads, and the `reads` relation.
+    let mut direct_reads = Vec::with_capacity(transitions.len());
+    let mut reads: Vec<Vec<u32>> = vec![Vec::new(); transitions.len()];
+    for (index, (_, _, target)) in transitions.iter().enumerate() {
+        let target_state = &lr0.states[target.index()];
+        let mut set = TerminalSet::empty(width);
+        for symbol in target_state.transitions.keys() {
+            match symbol {
+                Symbol::Terminal(terminal) => set.insert(*terminal),
+                Symbol::Nonterminal(nonterminal) => {
+                    if nullable[nonterminal.index()] {
+                        reads[index].push(transition_index[&(*target, *nonterminal)] as u32);
+                    }
+                }
+            }
+        }
+        if target_state
+            .items
+            .iter()
+            .any(|item| grammar.is_start_rule(item.rule) && item.is_complete(grammar))
+        {
+            set.insert(end);
+        }
+        direct_reads.push(set);
+    }
+    let read = digraph(&reads, &direct_reads);
+
+    // The `includes` relation and the `lookback` relation, both found by walking each rule's
+    // right-hand side from every state that has a transition on its left-hand side.
+    let mut includes: Vec<Vec<u32>> = vec![Vec::new(); transitions.len()];
+    let mut lookback: BTreeMap<(StateId, RuleId), Vec<usize>> = BTreeMap::new();
+    for (index, (origin, nonterminal, _)) in transitions.iter().enumerate() {
+        for rule_id in grammar.rules_of(*nonterminal) {
+            let rule = grammar.rule(*rule_id);
+            let mut nullable_suffix = vec![true; rule.rhs.len() + 1];
+            for position in (0..rule.rhs.len()).rev() {
+                nullable_suffix[position] = nullable_suffix[position + 1]
+                    && matches!(rule.rhs[position], Symbol::Nonterminal(id) if nullable[id.index()]);
+            }
+            let mut state = *origin;
+            for (position, symbol) in rule.rhs.iter().enumerate() {
+                if let Symbol::Nonterminal(inner) = symbol
+                    && nullable_suffix[position + 1]
+                {
+                    let inner_index = transition_index[&(state, *inner)];
+                    includes[inner_index].push(index as u32);
+                }
+                state = lr0.states[state.index()].transitions[symbol];
+            }
+            lookback.entry((state, *rule_id)).or_default().push(index);
+        }
+    }
+    for edges in &mut includes {
+        edges.sort_unstable();
+        edges.dedup();
+    }
+    let follow = digraph(&includes, &read);
+
+    let mut lookaheads = BTreeMap::new();
+    for (index, state) in lr0.states.iter().enumerate() {
+        let id = StateId::new(index as u32);
+        for item in &state.items {
+            if !item.is_complete(grammar) {
+                continue;
+            }
+            let mut set = TerminalSet::empty(width);
+            if grammar.is_start_rule(item.rule) {
+                set.insert(end);
+            } else if let Some(sources) = lookback.get(&(id, item.rule)) {
+                for source in sources {
+                    set.union_assign(&follow[*source]);
+                }
+            }
+            lookaheads.insert((id, item.rule), set);
+        }
+    }
+    lookaheads
+}
+
+/// DeRemer and Pennello's digraph algorithm: the least solution of
+/// `F(x) = init(x) ∪ ⋃ { F(y) | x R y }`, computed iteratively so deep relations cannot overflow
+/// the thread stack.
+fn digraph(relation: &[Vec<u32>], init: &[TerminalSet]) -> Vec<TerminalSet> {
+    /// One in-progress traversal frame.
+    struct Frame {
+        /// The node being traversed.
+        node: usize,
+        /// The node's stack depth when it was entered.
+        depth: usize,
+        /// The next successor to visit.
+        next: usize,
+    }
+
+    let count = relation.len();
+    let mut result: Vec<TerminalSet> = init.to_vec();
+    let mut number = vec![0usize; count];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut frames: Vec<Frame> = Vec::new();
+
+    for root in 0..count {
+        if number[root] != 0 {
+            continue;
+        }
+        stack.push(root);
+        number[root] = stack.len();
+        frames.push(Frame {
+            node: root,
+            depth: stack.len(),
+            next: 0,
+        });
+        while let Some(frame) = frames.last_mut() {
+            let node = frame.node;
+            if frame.next < relation[node].len() {
+                let successor = relation[node][frame.next] as usize;
+                frame.next += 1;
+                if number[successor] == 0 {
+                    stack.push(successor);
+                    number[successor] = stack.len();
+                    frames.push(Frame {
+                        node: successor,
+                        depth: stack.len(),
+                        next: 0,
+                    });
+                } else {
+                    number[node] = number[node].min(number[successor]);
+                    let merged = result[successor].clone();
+                    result[node].union_assign(&merged);
+                }
+            } else {
+                let depth = frame.depth;
+                frames.pop();
+                if let Some(parent) = frames.last() {
+                    let parent = parent.node;
+                    number[parent] = number[parent].min(number[node]);
+                    let merged = result[node].clone();
+                    result[parent].union_assign(&merged);
+                }
+                if number[node] == depth {
+                    loop {
+                        let top = stack.pop().expect("node is on the stack");
+                        number[top] = usize::MAX;
+                        if top == node {
+                            break;
+                        }
+                        result[top] = result[node].clone();
+                    }
+                }
+            }
+        }
+    }
+    result
+}
+
+/// The actions of one state with what their resolution recorded.
+struct ResolvedActions {
+    /// The resolved action on every terminal that has one.
+    actions: BTreeMap<TerminalId, Action>,
+    /// The conflicts that stand, in ascending lookahead order.
+    conflicts: Vec<Conflict>,
+    /// The shift/reduce conflicts the resolver settled.
+    resolved: Vec<ResolvedConflict>,
+}
+
+/// Resolves the actions of one state and records its conflicts and its resolved conflicts.
+///
+/// The reduce/reduce conflict on the end marker is left standing here; whether declaration order
+/// settles it is decided once the whole automaton exists, by
+/// [`Automaton::settle_end_marker_conflicts`].
+fn resolve_actions(
+    grammar: &LrGrammar,
+    resolver: &dyn ConflictResolver,
+    id: StateId,
+    state: &Lr0State,
+    reductions: &[Reduction],
+) -> ResolvedActions {
+    let mut actions: BTreeMap<TerminalId, Action> = BTreeMap::new();
+    for (symbol, target) in &state.transitions {
+        if let Symbol::Terminal(terminal) = symbol {
+            actions.insert(*terminal, Action::Shift(*target));
+        }
+    }
+    let mut conflicts: BTreeMap<TerminalId, Conflict> = BTreeMap::new();
+    let mut resolved: Vec<ResolvedConflict> = Vec::new();
+    for reduction in reductions {
+        for lookahead in reduction.lookaheads.iter() {
+            match actions.get(&lookahead).copied() {
+                None => {
+                    actions.insert(lookahead, Action::Reduce(reduction.rule));
+                }
+                Some(Action::Shift(shift)) => {
+                    let shift_items: Vec<Item> = state
+                        .items
+                        .iter()
+                        .filter(|item| {
+                            item.next_symbol(grammar) == Some(Symbol::Terminal(lookahead))
+                        })
+                        .copied()
+                        .collect();
+                    match resolver.resolve(grammar, reduction.rule, lookahead, &shift_items) {
+                        Some(resolution) => {
+                            match resolution {
+                                Resolution::Shift => {}
+                                Resolution::Reduce => {
+                                    actions.insert(lookahead, Action::Reduce(reduction.rule));
+                                }
+                                Resolution::Error => {
+                                    actions.insert(lookahead, Action::Error);
+                                }
+                            }
+                            resolved.push(ResolvedConflict {
+                                state: id,
+                                lookahead,
+                                shift,
+                                reduce: reduction.rule,
+                                resolution,
+                            });
+                        }
+                        None => {
+                            conflicts.entry(lookahead).or_insert(Conflict {
+                                state: id,
+                                lookahead,
+                                kind: ConflictKind::ShiftReduce {
+                                    shift,
+                                    reduce: reduction.rule,
+                                },
+                                resolution: Action::Shift(shift),
+                                merge_artefact: false,
+                            });
+                        }
+                    }
+                }
+                Some(Action::Reduce(existing)) => {
+                    let conflict = conflicts.entry(lookahead).or_insert(Conflict {
+                        state: id,
+                        lookahead,
+                        kind: ConflictKind::ReduceReduce {
+                            rules: vec![existing],
+                        },
+                        resolution: Action::Reduce(existing),
+                        merge_artefact: false,
+                    });
+                    match &mut conflict.kind {
+                        ConflictKind::ReduceReduce { rules } => rules.push(reduction.rule),
+                        ConflictKind::ShiftReduce { .. } => {
+                            // A precedence-resolved reduce meeting another reduce is still a
+                            // reduce/reduce conflict; the earlier shift/reduce record stands.
+                        }
+                    }
+                }
+                Some(Action::Error) => {}
+            }
+        }
+    }
+    resolved.sort_by_key(|conflict| (conflict.lookahead, conflict.reduce));
+    ResolvedActions {
+        actions,
+        conflicts: conflicts.into_values().collect(),
+        resolved,
+    }
+}
+
+/// Reports whether one competing reduction may be settled by declaration order on the end
+/// marker (see [`EndMarkerResolution`]): a token-wrapper rule, or a unit rule of a grammar type.
+///
+/// A unit rule is `A -> B`: one right-hand-side symbol, that symbol a nonterminal, and that
+/// nonterminal value-carrying, so reducing pops exactly the value `B` built and wraps it as an
+/// `A`. The left-hand side must be a grammar type, so a helper's own reduce/reduce stays
+/// reported and the per-site helper copy pass still sees it; a helper copy and a declared
+/// restriction are excluded for the same reason.
+fn settles_on_the_end_marker(grammar: &LrGrammar, rule: RuleId) -> bool {
+    let rule = grammar.rule(rule);
+    if matches!(rule.action, RuleAction::Token { .. }) {
+        return true;
+    }
+    matches!(rule.rhs.as_slice(), [Symbol::Nonterminal(_)])
+        && rule.value_pops == 1
+        && matches!(
+            grammar.nonterminal(rule.lhs).origin,
+            NonterminalOrigin::Type(_)
+        )
+}
+
+/// Reports whether an end-marker reduce/reduce between `rules` is settled by declaration order
+/// (see [`EndMarkerResolution`]): every competitor wraps one symbol, and no other lookahead of
+/// the same state still holds a reduce/reduce between two or more of them.
+///
+/// `others` are the conflicts of that state that stand on another lookahead. The guard reads the
+/// conflicts that remain rather than the raw lookahead sets, because a cell that precedence or an
+/// authored scoped declaration settled carries an explicit action, which is exactly what the
+/// safety argument asks of every lookahead but the end marker. A cell those two leave contested
+/// is a hard error, and the whole reduce/reduce is then reported on every cell it occupies.
+fn settled_by_declaration_order(
+    grammar: &LrGrammar,
+    rules: &[RuleId],
+    others: &[&Conflict],
+) -> bool {
+    rules
+        .iter()
+        .all(|rule| settles_on_the_end_marker(grammar, *rule))
+        && !others.iter().any(|conflict| match &conflict.kind {
+            ConflictKind::ReduceReduce { rules: competing } => {
+                competing
+                    .iter()
+                    .filter(|rule| rules.contains(rule))
+                    .take(2)
+                    .count()
+                    == 2
+            }
+            ConflictKind::ShiftReduce { .. } => false,
+        })
+}
+
+/// Chooses the default reduction: the reduce whose lookahead holds the end marker if any, else
+/// the most frequent reduce, ties broken by the lowest rule.
+fn choose_default_reduction(
+    grammar: &LrGrammar,
+    actions: &BTreeMap<TerminalId, Action>,
+) -> Option<RuleId> {
+    let end = grammar.end_marker();
+    if let Some(Action::Reduce(rule)) = actions.get(&end) {
+        return Some(*rule);
+    }
+    let mut counts: BTreeMap<RuleId, usize> = BTreeMap::new();
+    for action in actions.values() {
+        if let Action::Reduce(rule) = action {
+            *counts.entry(*rule).or_default() += 1;
+        }
+    }
+    counts
+        .into_iter()
+        .max_by(|(left_rule, left), (right_rule, right)| {
+            left.cmp(right).then(right_rule.cmp(left_rule))
+        })
+        .map(|(rule, _)| rule)
+}
+
+/// Marks the reduce/reduce conflicts that no canonical LR(1) state exhibits.
+fn classify_merge_artefacts(
+    grammar: &LrGrammar,
+    states: &[State],
+    conflicts: &mut [Conflict],
+    options: AutomatonOptions,
+) -> MergeArtefactCheck {
+    for conflict in conflicts.iter_mut() {
+        conflict.merge_artefact = false;
+    }
+    let has_reduce_reduce = conflicts
+        .iter()
+        .any(|conflict| matches!(conflict.kind, ConflictKind::ReduceReduce { .. }));
+    if !has_reduce_reduce {
+        return MergeArtefactCheck::NotNeeded;
+    }
+    if !options.check_merge_artefacts {
+        return MergeArtefactCheck::Disabled;
+    }
+    let Some(canonical) = CanonicalLr1::build(grammar, options.lr1_state_budget) else {
+        return MergeArtefactCheck::BudgetExceeded {
+            budget: options.lr1_state_budget,
+        };
+    };
+    for conflict in conflicts.iter_mut() {
+        let ConflictKind::ReduceReduce { rules } = &conflict.kind else {
+            continue;
+        };
+        let core = states[conflict.state.index()].kernel();
+        conflict.merge_artefact = !canonical.exhibits(core, rules, conflict.lookahead);
+    }
+    MergeArtefactCheck::Verified {
+        lr1_states: canonical.states.len(),
+    }
+}
+
+/// One canonical LR(1) state: its complete items with their lookaheads, keyed by LR(0) core.
+struct Lr1State {
+    /// Lookaheads of every complete item, in ascending rule order.
+    reductions: Vec<(RuleId, TerminalSet)>,
+}
+
+/// The canonical LR(1) collection, built only to classify merge artefacts.
+struct CanonicalLr1 {
+    /// States in construction order.
+    states: Vec<Lr1State>,
+    /// LR(1) states grouped by their LR(0) kernel core.
+    by_core: HashMap<Vec<Item>, Vec<usize>>,
+}
+
+impl CanonicalLr1 {
+    /// Builds the collection, or returns `None` once the state budget is exceeded.
+    fn build(grammar: &LrGrammar, budget: usize) -> Option<Self> {
+        #[cfg(test)]
+        CANONICAL_BUILD_COUNT.set(CANONICAL_BUILD_COUNT.get().saturating_add(1));
+        let _profile = Span::enter("canonical-lr1");
+        let width = grammar.terminal_count();
+        let end = grammar.end_marker();
+        let nullable = grammar.nullable_nonterminals();
+        let first = first_sets(grammar, &nullable);
+
+        let mut states = Vec::new();
+        let mut by_core: HashMap<Vec<Item>, Vec<usize>> = HashMap::new();
+        let mut index: HashMap<Vec<(Item, Vec<u64>)>, usize> = HashMap::new();
+        let mut queue: VecDeque<(usize, Vec<(Item, TerminalSet)>)> = VecDeque::new();
+
+        let mut intern = |kernel: Vec<(Item, TerminalSet)>,
+                          states: &mut Vec<Lr1State>,
+                          queue: &mut VecDeque<(usize, Vec<(Item, TerminalSet)>)>|
+         -> usize {
+            let key: Vec<(Item, Vec<u64>)> = kernel
+                .iter()
+                .map(|(item, set)| (*item, set.words.clone()))
+                .collect();
+            if let Some(id) = index.get(&key) {
+                return *id;
+            }
+            let id = states.len();
+            index.insert(key, id);
+            let core: Vec<Item> = kernel.iter().map(|(item, _)| *item).collect();
+            by_core.entry(core).or_default().push(id);
+            states.push(Lr1State {
+                reductions: Vec::new(),
+            });
+            queue.push_back((id, kernel));
+            id
+        };
+
+        for start in grammar.starts() {
+            let mut set = TerminalSet::empty(width);
+            set.insert(end);
+            let kernel = vec![(
+                Item {
+                    rule: start.rule,
+                    dot: 0,
+                },
+                set,
+            )];
+            intern(kernel, &mut states, &mut queue);
+        }
+
+        while let Some((id, kernel)) = queue.pop_front() {
+            if states.len() > budget {
+                return None;
+            }
+            let items = lr1_closure(grammar, &nullable, &first, kernel);
+            let mut reductions = Vec::new();
+            let mut successors: BTreeMap<Symbol, Vec<(Item, TerminalSet)>> = BTreeMap::new();
+            for (item, set) in items {
+                match item.next_symbol(grammar) {
+                    None => reductions.push((item.rule, set)),
+                    Some(symbol) => successors.entry(symbol).or_default().push((
+                        Item {
+                            rule: item.rule,
+                            dot: item.dot + 1,
+                        },
+                        set,
+                    )),
+                }
+            }
+            states[id].reductions = reductions;
+            for (_, kernel) in successors {
+                intern(kernel, &mut states, &mut queue);
+            }
+        }
+
+        Some(Self { states, by_core })
+    }
+
+    /// Reports whether some LR(1) state with the given core has every listed rule reducing on
+    /// the lookahead, which is what makes the LALR conflict genuine.
+    fn exhibits(&self, core: &[Item], rules: &[RuleId], lookahead: TerminalId) -> bool {
+        let Some(states) = self.by_core.get(core) else {
+            return false;
+        };
+        states.iter().any(|id| {
+            let state = &self.states[*id];
+            rules.iter().all(|rule| {
+                state
+                    .reductions
+                    .iter()
+                    .any(|(candidate, set)| candidate == rule && set.contains(lookahead))
+            })
+        })
+    }
+}
+
+/// Computes FIRST of every nonterminal.
+pub(crate) fn first_sets(grammar: &LrGrammar, nullable: &[bool]) -> Vec<TerminalSet> {
+    let width = grammar.terminal_count();
+    let mut first = vec![TerminalSet::empty(width); grammar.nonterminal_count()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for rule in grammar.rules() {
+            for symbol in &rule.rhs {
+                match symbol {
+                    Symbol::Terminal(terminal) => {
+                        if !first[rule.lhs.index()].contains(*terminal) {
+                            first[rule.lhs.index()].insert(*terminal);
+                            changed = true;
+                        }
+                        break;
+                    }
+                    Symbol::Nonterminal(inner) => {
+                        let inner_first = first[inner.index()].clone();
+                        changed |= first[rule.lhs.index()].union_assign(&inner_first);
+                        if !nullable[inner.index()] {
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    first
+}
+
+/// Computes the LR(1) closure of a kernel: every item with the union of the lookaheads that
+/// reach it, in ascending item order.
+fn lr1_closure(
+    grammar: &LrGrammar,
+    nullable: &[bool],
+    first: &[TerminalSet],
+    kernel: Vec<(Item, TerminalSet)>,
+) -> Vec<(Item, TerminalSet)> {
+    let width = grammar.terminal_count();
+    let mut items: BTreeMap<Item, TerminalSet> = kernel.into_iter().collect();
+    let mut queue: VecDeque<Item> = items.keys().copied().collect();
+    let mut queued: BTreeSet<Item> = queue.iter().copied().collect();
+    while let Some(item) = queue.pop_front() {
+        queued.remove(&item);
+        let Some(Symbol::Nonterminal(nonterminal)) = item.next_symbol(grammar) else {
+            continue;
+        };
+        let rule = grammar.rule(item.rule);
+        let mut lookahead = TerminalSet::empty(width);
+        let mut suffix_nullable = true;
+        for symbol in &rule.rhs[item.dot as usize + 1..] {
+            match symbol {
+                Symbol::Terminal(terminal) => {
+                    lookahead.insert(*terminal);
+                    suffix_nullable = false;
+                    break;
+                }
+                Symbol::Nonterminal(inner) => {
+                    lookahead.union_assign(&first[inner.index()]);
+                    if !nullable[inner.index()] {
+                        suffix_nullable = false;
+                        break;
+                    }
+                }
+            }
+        }
+        if suffix_nullable {
+            let own = items[&item].clone();
+            lookahead.union_assign(&own);
+        }
+        for rule in grammar.rules_of(nonterminal) {
+            let successor = Item {
+                rule: *rule,
+                dot: 0,
+            };
+            let entry = items
+                .entry(successor)
+                .or_insert_with(|| TerminalSet::empty(width));
+            if entry.union_assign(&lookahead) && queued.insert(successor) {
+                queue.push_back(successor);
+            }
+        }
+    }
+    items.into_iter().collect()
+}

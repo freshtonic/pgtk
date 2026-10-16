@@ -8,8 +8,16 @@ load("@prelude//toolchains:python.bzl", "system_python_bootstrap_toolchain")
 load("@prelude//toolchains:remote_test_execution.bzl", "remote_test_execution_toolchain")
 load("@prelude//toolchains:rust.bzl", "system_rust_toolchain")
 
+# Absolute tool paths: the shims that the prelude gives to Rust build scripts (CC, CXX, LD, AR)
+# start the tool with os.execl, which does not search PATH. The paths are the same on macOS and
+# on the GitHub Ubuntu runners.
 system_cxx_toolchain(
     name = "cxx",
+    archiver = "/usr/bin/ar",
+    compiler = "/usr/bin/clang",
+    compiler_type = "clang",
+    cxx_compiler = "/usr/bin/clang++",
+    linker = "/usr/bin/clang++",
     visibility = ["PUBLIC"],
 )
 
