@@ -12,7 +12,9 @@ API.
   reproduces. It is pinned to one exact release: the latest minor release of
   that major, or a named commit for a pre-release major. A build has exactly
   one target version, and the psql document and the SQL in it always come
-  from that same release.
+  from that same release. `pgtk-analyze` calls it the Grammar Version; its
+  own Target Version is the version of the server a Statement will run on,
+  which the caller chooses for each Analysis.
 - **Version feature**: the Cargo feature that selects the target version:
   `pg14`, `pg15`, `pg16`, `pg17`, `pg18` or `pg19-beta`. They are mutually
   exclusive, and `pg17` is the default. `pg19-beta` becomes `pg19` when
