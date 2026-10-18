@@ -146,6 +146,10 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
+Every package must pass both. The CI job `Cargo fmt and clippy` runs these commands. The code that
+recursa-codegen generates for pgtk-sql has some clippy findings, so `packages/pgtk-sql/src/lib.rs`
+allows those lints for the crate. Do not add a lint to that list for hand-written code.
+
 ## Buck2
 
 Run these commands from the repository root.

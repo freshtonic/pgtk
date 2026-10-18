@@ -795,7 +795,7 @@ fn every_document_matches_its_pinned_outcome() {
     );
 
     // No gap may be recorded without a reason the crate documents.
-    for (_, (class, _)) in &expected {
+    for (class, _) in expected.values() {
         assert!(
             [
                 "unmodelled-meta-command",
