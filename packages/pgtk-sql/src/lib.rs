@@ -10,6 +10,17 @@
 //! version feature (`pg14` ... `pg19-beta`, default `pg17`). [`TARGET_VERSION`]
 //! reports it.
 
+// The grammar! invocations below include the code that recursa-codegen generates in OUT_DIR. That
+// code has these findings, and a lint attribute on the invocation does not apply to it. Remove
+// them when recursa-codegen marks its own output.
+#![allow(
+    clippy::borrow_deref_ref,
+    clippy::collapsible_match,
+    clippy::large_enum_variant,
+    clippy::redundant_closure,
+    clippy::single_match
+)]
+
 // Keep the optional sampling recipe aligned with the facade capability.
 #[cfg(feature = "arbitrary")]
 recursa::grammar! {

@@ -406,7 +406,7 @@ fn read_event(event: &RawEvent, source_len: usize) -> Event {
             },
             bound: event.bound != 0,
             output_start: event.output_start as usize,
-            output_end: (event.output_end >= 0).then(|| event.output_end as usize),
+            output_end: (event.output_end >= 0).then_some(event.output_end as usize),
         },
         2 => Event::Terminator {
             source: source(event.source_start, event.source_end),
