@@ -5,7 +5,8 @@ edition = "2024"
 rust-version = "1.88"
 description = "PostgreSQL SQL parser built with recursa"
 license = "MIT"
-publish = false
+repository.workspace = true
+publish = true
 
 # The library carries no unit tests and no doctests: the embedded test bodies
 # compile as the `embedded` integration target, so `cargo test` builds the
@@ -20,18 +21,18 @@ doctest = false
 # consumer and pgtk-sql uses `default-features = false` on pgtk-sql and forwards
 # these features. `postgres-oracle` builds the oracle of the same version.
 default = ["pg17"]
-pg14 = ["pgtk-oracle?/pg14"]
-pg15 = ["since-pg15", "pgtk-oracle?/pg15"]
-pg16 = ["since-pg15", "since-pg16", "pgtk-oracle?/pg16"]
-pg17 = ["since-pg15", "since-pg16", "since-pg17", "pgtk-oracle?/pg17"]
-pg18 = ["since-pg15", "since-pg16", "since-pg17", "since-pg18", "pgtk-oracle?/pg18"]
+pg14 = ["pgtk-oracle/pg14"]
+pg15 = ["since-pg15", "pgtk-oracle/pg15"]
+pg16 = ["since-pg15", "since-pg16", "pgtk-oracle/pg16"]
+pg17 = ["since-pg15", "since-pg16", "since-pg17", "pgtk-oracle/pg17"]
+pg18 = ["since-pg15", "since-pg16", "since-pg17", "since-pg18", "pgtk-oracle/pg18"]
 pg19-beta = [
     "since-pg15",
     "since-pg16",
     "since-pg17",
     "since-pg18",
     "since-pg19",
-    "pgtk-oracle?/pg19-beta",
+    "pgtk-oracle/pg19-beta",
 ]
 # Cumulative helpers for version gates: "added in N" is
 # `feature = "since-pgN"`, "removed in N" is `not(feature = "since-pgN")`.
@@ -42,7 +43,7 @@ since-pg17 = []
 since-pg18 = []
 since-pg19 = []
 arbitrary = ["dep:arbitrary", "recursa/arbitrary"]
-postgres-oracle = ["dep:pgtk-oracle"]
+postgres-oracle = ["pgtk-oracle/parser"]
 spans = ["recursa/spans", "recursa-codegen/spans"]
 
 [dependencies]
@@ -52,9 +53,11 @@ regex.workspace = true
 derive_more = { workspace = true, features = ["deref"] }
 arbitrary = { workspace = true, features = ["derive"], optional = true }
 vec1.workspace = true
-pgtk-oracle = { path = "../pgtk-oracle", optional = true, default-features = false }
 
 [dev-dependencies]
+# The oracle is a dev-dependency, so a published pgtk-sql does not need it. The version features
+# select its release, and `postgres-oracle` turns on its parser.
+pgtk-oracle = { path = "../pgtk-oracle", default-features = false }
 sqlparser.workspace = true
 tempfile.workspace = true
 serde_json.workspace = true

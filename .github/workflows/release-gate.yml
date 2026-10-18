@@ -1,0 +1,52 @@
+name: Release gate
+
+# The release gate builds and tests each Target Version (packages/pgtk-sql ADR 0011). It runs
+# before a release, not on each merge: start it from the Actions tab. It also runs on a pull
+# request that changes the gate scripts or this workflow.
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release-gate.yml
+      - .github/actions/gate-setup/**
+      - packages/pgtk-sql/scripts/release-gate
+      - packages/pgtk-sql/scripts/gate-lib.sh
+      - packages/pgtk-analyze/scripts/gate-versions
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  pgtk-sql:
+    name: pgtk-sql ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [pg14, pg15, pg16, pg17, pg18, pg19-beta]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-setup
+        with:
+          version: ${{ matrix.version }}
+      - run: packages/pgtk-sql/scripts/release-gate ${{ matrix.version }}
+
+  pgtk-analyze:
+    name: pgtk-analyze ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: [pg14, pg15, pg16, pg17, pg18, pg19-beta]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - uses: ./.github/actions/gate-setup
+        with:
+          version: ${{ matrix.version }}
+      - run: packages/pgtk-analyze/scripts/gate-versions ${{ matrix.version }}

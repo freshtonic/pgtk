@@ -197,6 +197,10 @@ fn main() {
     // The tests compare these with the pin of their baseline.
     println!("cargo:rustc-env=PG_ORACLE_POSTGRES_REF={}", pin.reference);
     println!("cargo:rustc-env=PG_ORACLE_POSTGRES_COMMIT={}", pin.commit);
+    // Without the `parser` feature the crate has only the pin constants.
+    if std::env::var_os("CARGO_FEATURE_PARSER").is_none() {
+        return;
+    }
     let tree = pg_tree_dir(&pin);
     verify_pg_built(&pin, major, &tree);
 

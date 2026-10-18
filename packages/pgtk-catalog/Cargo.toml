@@ -10,7 +10,7 @@ keywords = ["postgresql", "catalog", "types", "schema"]
 categories = ["database"]
 repository.workspace = true
 readme = "README.md"
-publish = false
+publish = true
 
 [features]
 default = []
