@@ -52,7 +52,9 @@ jobs:
         with:
           path: ~/.cache/pgtk-sql/postgres
           key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
-      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      # One job at a time: two checks of the generated grammar crates at the same time use all of
+      # the 8 GB of the runner, and the runner stops.
+      - run: cargo clippy --locked --workspace --all-targets -j 1 -- -D warnings
 
   buck2:
     name: Buck2 build and test
