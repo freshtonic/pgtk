@@ -10,6 +10,11 @@ pgtk builds with Cargo and with Buck2. See `docs/adr/0001-dual-buck2-cargo-build
 - Buck2: `tools/buck2 build //...` and `tools/buck2 test //...`. `tools/buck2` needs
   [dotslash](https://dotslash-cli.com) (`cargo install dotslash`).
 
+### CI
+
+The GitHub Actions jobs run on Linux runners only. Do not add a macOS runner. Run the macOS
+builds locally.
+
 ### Third-party dependencies
 
 1. Add the version to the root `[workspace.dependencies]`. Use `dep.workspace = true` in the crate.
