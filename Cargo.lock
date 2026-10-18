@@ -645,10 +645,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pgtk-proto"
-version = "0.1.0"
-
-[[package]]
 name = "pgtk-psql"
 version = "0.1.0"
 dependencies = [
