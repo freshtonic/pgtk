@@ -1,7 +1,7 @@
 # pgtk-catalog
 
 `pgtk-catalog` is a Rust model of one PostgreSQL database's system catalog. It
-exists so that a consumer, first `pg-type-check`, can resolve the names in a
+exists so that a consumer, first `pgtk-analyze`, can resolve the names in a
 SQL statement and reason about PostgreSQL types without a live connection at
 the point of use.
 
@@ -27,7 +27,9 @@ _Avoid_: Driver, client, connection
 
 **Diagnostic**:
 A note produced by the Loader about an Entity it could not fully represent
-and either kept as opaque or skipped. Diagnostics never abort a load.
+and either kept as opaque or skipped. Diagnostics never abort a load. This is
+a different concept from `pgtk-analyze`'s Diagnostic, which is the error
+PostgreSQL would raise for a Statement.
 _Avoid_: Warning, error (a load error is fatal; a Diagnostic is not)
 
 **Fixture**:

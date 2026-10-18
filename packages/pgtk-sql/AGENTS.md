@@ -1,13 +1,25 @@
-## Agent skills
+# pgtk-sql Development Guidelines
 
-### Issue tracker
+## Principles
 
-Issues are tracked in GitHub Issues. See `docs/agents/issue-tracker.md`.
+1. **NEVER manually implement Parse/Pretty/Visit/VisitMut/Debug** They MUST be derived. When encountering a piece of SQL syntax that seems to make derivation with `recursa` impossible STOP what you are doing, explain the problem and ask for feedback.
 
-### Triage labels
+2. **All AST nodes MUST derive `recursa::Node, Debug, Clone`.** `Parse`, `Pretty`, `Visit` and `VisitMut` come from the `Node` derive and the root `grammar!` `derives(...)` list, never from a per-node derive. Add `PartialEq`, `Eq`, `Hash` only where a consumer needs them.
 
-The default five-label triage vocabulary is used. See `docs/agents/triage-labels.md`.
+3. **`Arbitrary` is a recursa configured trait.** Enable it through the root `grammar!` `derives(...)` list under the `arbitrary` cargo feature; never add per-node `cfg_attr` derives for it.
 
-### Domain docs
+4. **Use method syntax, not UFCS.** Write `T::parse(input)` not `<T as Parse>::parse(input)`.
 
-This repository uses a single-context layout. See `docs/agents/domain.md`.
+5. **Test against the target version's oracles.** `pgtk-oracle` links the raw parser of the pinned release of the build's target version (`pgtk-oracle/pins.tsv`), and the differential suite compares pgtk-sql with it (`--features postgres-oracle`). `pgtk-psql-oracle` links `psqlscan.l` and `psqlscanslash.l` of the same release, and `pgtk-psql/tests/psql_oracle.rs` compares pgtk-psql with it (`--features psql-oracle`, `docs/psql-oracle.md`). Both read the one pin table. There are no testcontainers and no running server. A statement that the raw-parser oracle of the target version accepts must parse; one that it rejects must not. A psql document that disagrees with the psql oracle is an expected psql gap with a recorded class, never an unexplained one.
+
+6. **Grow the grammar incrementally.** Each new test file drives new token/AST additions. Don't build grammar that isn't tested.
+
+7. **Newtype-style AST nodes MUST implement `Deref` for the type that they wrap**
+
+8. **A new embedded test needs three edits, not one.** Adding a test under `embedded-tests/` also requires a row in `embedded-tests/inventory.tsv`, an `introduced` row in `embedded-tests/reconciliation.tsv` (rationale `issue-9-generated-expression` under `shared/expr.tests.rs`, otherwise `issue-9-generated-statement`), and the pinned count in `tests/embedded_inventory.rs` bumped. The inventory row ends with the version range of the test: `14-` without a version gate, `17-` for `feature = "since-pg17"`, `14-16` for `not(feature = "since-pg17")`. The range must agree with the test's `cfg`, and `ROWS_PER_TARGET_VERSION` pins one count per target version: bump each version the test runs for. Every other suite stays green while those ledgers are wrong, so run `cargo test -p pgtk-sql --test embedded_inventory` before calling the change done. The contract behind the ledgers is `docs/deterministic-migration.md`.
+
+9. **An admission set must mirror the `gram.y` nonterminal it stands for.** Widening one to make a case parse is how both over-acceptance and larger LR tables arrive: a qualifier declared as a label set rather than `ColId` propagated through `Expr`, which heads every target list, and made the select head's FIRST set 485 word kinds wide — `union.a` parsed as a column reference and the affected LR states gained needless actions. When PostgreSQL says `ColId`, write `ColId`. These stay invisible until someone hits an `RCA0400` unresolved shift/reduce conflict or profiles the generated parser.
+
+10. **A crate between a consumer and pgtk-sql uses `default-features = false` on pgtk-sql and forwards the version features.** The version features `pg14` … `pg19-beta` are mutually exclusive (ADR 0009), and the default is `pg17`. An intermediate crate that keeps pgtk-sql's default features adds `pg17` to every build through Cargo feature unification, so a consumer that selects another version gets the "more than one target version" build error. Give the crate its own `pg14` … `pg19-beta` and `since-pg15` … `since-pg19` features (default `pg17`) that forward to pgtk-sql, and call `build-support/target_version.rs` from its build script if it has one. `pgtk-psql` is the model.
+
+11. **Write a version gate as a `#[config]` declaration, and cite its source.** Inside an `ast_node!` or `tokens!` body, "added in N" is `#[config(since = pgN)]` and "removed in N" is `#[config(before = pgN)]`; `#[config_attr(since = pgN, tok(...))]` gates an attribute. A gate that recursa never sees — on a macro invocation, a module, an `impl` block or a statement — stays `#[cfg(feature = "since-pgN")]`. Never gate on a version feature (`pg16`) itself: the helpers are cumulative, the version features are not. `since` both removes the element and records that it needs `pgN`, which `pgtk_sql::minimum_version` reports (ADR 0010, `docs/minimum-version.md`). So use `since` only for what the newer version **adds**. A widening, where the newer type accepts everything the older one does, keeps a plain `#[cfg]` on the field and puts the `config` gate on the shape that the newer type adds; a `since` on the field itself reports a version that is too high. Put a comment on each gate that cites its entry in `docs/research/postgres-14-19-sql-syntax-changes.md` (or `docs/research/psql-14-19-syntax-changes.md`), or the `gram.y`/`scan.l` change; a gate that carries `code`, `message` or `hint` cites the `gram.y` line of the `ereport` in its `cite`. A "removed in N" change also gets a negative test. The local edit loop is `cargo loop` (pg17 with `spans`, `arbitrary` and the oracles), and `scripts/merge-gate` proves that same configuration before a merge. The other five versions are the release gate's, `scripts/release-gate` (ADR 0011): run it before a release, and run `scripts/release-gate pgN` for the oldest affected version before merging a change that adds or edits a version gate, because main no longer proves the other versions on every merge.

@@ -11,7 +11,7 @@ If any of these files don't exist, **proceed silently**. Don't flag their absenc
 
 ## File structure
 
-This repo is a multi-context Cargo workspace. Each package is one context:
+This repo is a multi-context Cargo workspace. A package that has its own domain language is one context, and `CONTEXT-MAP.md` lists them. A package that uses the glossary of another package, and the tooling crates, have no `CONTEXT.md`:
 
 ```
 /
@@ -36,6 +36,10 @@ This repo is a multi-context Cargo workspace. Each package is one context:
 When your output names a domain concept (in an issue title, a refactor proposal, a hypothesis, a test name), use the term as defined in the relevant `CONTEXT.md`. Don't drift to synonyms the glossary explicitly avoids.
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing language the project doesn't use (reconsider) or there's a real gap (note it for `/domain-modeling`).
+
+## Cite ADRs with their package
+
+The root and each package number their ADRs separately, so more than one ADR has the number 0001. In a document inside a package, "ADR 0009" means that package's ADR. Everywhere else — the root, another package, an issue, a PR, a commit message — name the owner: "pgtk-sql ADR 0009", or "workspace ADR 0001" for one in `docs/adr/`. Never renumber an ADR.
 
 ## Flag ADR conflicts
 
