@@ -83,7 +83,7 @@ fn install(feature: &str) -> Installation {
     let bin = stdout
         .lines()
         .filter_map(|line| line.strip_prefix("PGTK_PG_BIN="))
-        .last()
+        .next_back()
         .unwrap_or_else(|| {
             panic!(
                 "{} did not name the bin directory:\n{stdout}",
@@ -232,6 +232,10 @@ impl Drop for Server {
 
 /// Start a process that stops the server on `data` and removes `root` when
 /// this process ends.
+#[expect(
+    clippy::zombie_processes,
+    reason = "the watcher must outlive this process, so this process does not wait for it"
+)]
 fn watch(installation: &Installation, root: &Path, data: &Path) {
     let script = r#"while kill -0 "$1" 2>/dev/null; do sleep 1; done
 "$2" -D "$3" -m immediate stop >/dev/null 2>&1

@@ -64,7 +64,7 @@ rust_library(
         "//third-party/rust:derive_more",
         "//third-party/rust:recursa",
     ],
-    visibility = ["PUBLIC"],
+    visibility = ["//packages/..."],
 )
 
 rust_test(

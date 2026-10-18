@@ -12,7 +12,9 @@ pgtk builds with Cargo and with Buck2. Both builds use the same `Cargo.lock`. Fo
   yourself. Always run buck2 through `tools/buck2`, because it also writes the build settings
   (see [The remote cache](#the-remote-cache)).
 - **C toolchain**: `/usr/bin/clang`, `/usr/bin/clang++` and `/usr/bin/ar`. The Buck2 C++
-  toolchain uses these absolute paths.
+  toolchain uses these absolute paths. On Linux, Buck2 also links with `lld` (on Debian and
+  Ubuntu, `apt install clang lld`).
+- **Python 3.12 or later**: the Buck2 prelude runs Python tools during the build.
 - **PostgreSQL build tools**: `make`, `bison`, `flex`, `perl` and libxml2 (on Debian and Ubuntu,
   `libxml2-dev`). The tests build the pinned PostgreSQL releases (see
   [The PostgreSQL builds](#the-postgresql-builds)). They do not need a PostgreSQL server or
@@ -107,6 +109,12 @@ start them from any directory.
 | `packages/pgtk-sql/scripts/release-gate [pgN...]` | Each Target Version (all six if you give none). Run it before a release, and for the oldest affected version when you change a version gate. |
 | `packages/pgtk-analyze/scripts/gate-versions [pgN...]` | clippy and the tests of pgtk-analyze for each Grammar Version. |
 
+The CI workflow `Release gate` (`.github/workflows/release-gate.yml`) runs `release-gate` and
+`gate-versions` for each version, one job for each script and version. It does not run on each
+pull request. Start it from the Actions tab before a release
+(`gh workflow run release-gate.yml --ref <branch>`). It also runs on a pull request that changes
+a gate script.
+
 In `packages/pgtk-sql`, `cargo loop` runs the merge gate configuration of pgtk-sql. Use it as the
 edit loop:
 
@@ -137,6 +145,10 @@ socket in a directory of its own, so the tests run in parallel and use no TCP po
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 ```
+
+Every package must pass both. The CI job `Cargo fmt and clippy` runs these commands. The code that
+recursa-codegen generates for pgtk-sql has some clippy findings, so `packages/pgtk-sql/src/lib.rs`
+allows those lints for the crate. Do not add a lint to that list for hand-written code.
 
 ## Buck2
 

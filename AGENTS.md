@@ -37,6 +37,11 @@ tests. If you gate a new test behind a feature, add that feature to
 `packages/pgtk-test-features/Cargo.toml`. A test that needs a PostgreSQL server uses
 `pgtk-test-server`, never a server that the developer must supply.
 
+### Formatting and lints
+
+Every package must pass `cargo fmt --all --check` and
+`cargo clippy --workspace --all-targets -- -D warnings`. CI runs both.
+
 ## Agent skills
 
 ### Issue tracker

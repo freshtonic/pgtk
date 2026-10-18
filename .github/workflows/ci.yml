@@ -21,6 +21,8 @@ jobs:
           fetch-depth: 0
       # rustup reads rust-toolchain.toml and installs the pinned toolchain.
       - run: rustup show active-toolchain || rustup toolchain install
+      # The pgtk-sql import checkpoint and its records are not changed.
+      - run: packages/pgtk-sql/scripts/tests/verify-import-provenance.sh
       # The oracle crates link the pinned PostgreSQL releases, and the live tests run servers of
       # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
@@ -31,6 +33,28 @@ jobs:
           key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       - run: cargo build --locked --workspace
       - run: cargo test --locked --workspace
+
+  lint:
+    name: Cargo fmt and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 0
+      - run: rustup show active-toolchain || rustup toolchain install
+      - run: rustup component add clippy rustfmt
+      - run: cargo fmt --all --check
+      # clippy runs the build scripts, so the oracle crates need the PostgreSQL builds.
+      - run: packages/pgtk-sql/scripts/fetch-postgres-pins
+      - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/pgtk-sql/postgres
+          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+      # One job at a time: two checks of the generated grammar crates at the same time use all of
+      # the 8 GB of the runner, and the runner stops.
+      - run: cargo clippy --locked --workspace --all-targets -j 1 -- -D warnings
 
   buck2:
     name: Buck2 build and test
@@ -43,6 +67,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: facebook/install-dotslash@v2
+      # The Buck2 C++ toolchain uses /usr/bin/clang, and the prelude links with lld on Linux.
+      - run: sudo apt-get update && sudo apt-get install --yes clang lld
       # One job at a time: Buck2 compiles the large generated grammar crates more than once (for
       # metadata, diagnostics and the rlib), and two such compiles at the same time use all of the
       # 8 GB of the runner. The remote cache supplies most actions after the first run.

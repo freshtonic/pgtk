@@ -1,6 +1,8 @@
 [package]
 name = "pgtk-proto"
 version = "0.1.0"
+description = "A placeholder crate of the pgtk workspace"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = true

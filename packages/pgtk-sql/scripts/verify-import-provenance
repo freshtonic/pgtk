@@ -27,19 +27,23 @@ verify_manifest_identity() {
   [[ "$actual" == "$expected" ]] || fail "$key is ${actual:-missing}, expected $expected"
 }
 
-readonly repo_root="$(git rev-parse --show-toplevel)"
-readonly manifest="$repo_root/docs/import-provenance.tsv"
-readonly legacy_commit_record="$repo_root/docs/import-provenance.legacy-commit"
-readonly legacy_tree_record="$repo_root/docs/import-provenance.legacy-tree"
+# The records are in the pgtk-sql package. The checkpoint is a commit of the pg-sql repository
+# before its import into pgtk, so its paths are relative to the root of its own tree. The git
+# commands run from the pgtk root, where the paths of HEAD (vendor/postgres) are also relative.
+readonly package_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly manifest="$package_root/docs/import-provenance.tsv"
+readonly legacy_commit_record="$package_root/docs/import-provenance.legacy-commit"
+readonly legacy_tree_record="$package_root/docs/import-provenance.legacy-tree"
+cd "$(git rev-parse --show-toplevel)"
 
-[[ -f "$manifest" ]] || fail "missing docs/import-provenance.tsv"
+[[ -f "$manifest" ]] || fail "missing $manifest"
 [[ -f "$legacy_commit_record" ]] || fail "missing legacy commit record"
 [[ -f "$legacy_tree_record" ]] || fail "missing legacy tree record"
 
 verify_manifest_identity "legacy-commit" "$EXPECTED_LEGACY_COMMIT"
 verify_manifest_identity "legacy-tree" "$EXPECTED_LEGACY_TREE"
-verify_manifest_identity "pgtk-sql-tree" "$EXPECTED_PG_SQL_TREE"
-verify_manifest_identity "pgtk-oracle-tree" "$EXPECTED_PG_ORACLE_TREE"
+verify_manifest_identity "pg-sql-tree" "$EXPECTED_PG_SQL_TREE"
+verify_manifest_identity "pg-oracle-tree" "$EXPECTED_PG_ORACLE_TREE"
 verify_manifest_identity "postgres-gitlink" "$EXPECTED_POSTGRES_GITLINK"
 verify_manifest_identity "source-checkpoint" "$EXPECTED_SOURCE_CHECKPOINT"
 
@@ -70,8 +74,8 @@ while IFS=$'\t' read -r section expected_mode expected_oid path; do
   [[ -n "$section" && "${section:0:1}" != "#" ]] || continue
 
   case "$section" in
-    pgtk-sql) ((pg_sql_count += 1)) ;;
-    pgtk-oracle) ((pg_oracle_count += 1)) ;;
+    pg-sql) ((pg_sql_count += 1)) ;;
+    pg-oracle) ((pg_oracle_count += 1)) ;;
     bootstrap) ((bootstrap_count += 1)) ;;
     *) fail "unknown manifest section $section" ;;
   esac
@@ -91,18 +95,18 @@ while IFS=$'\t' read -r section expected_mode expected_oid path; do
 
 done < "$manifest"
 
-[[ "$pg_sql_count" -eq 136 ]] || fail "manifest has $pg_sql_count pgtk-sql entries, expected 136"
-[[ "$pg_oracle_count" -eq 7 ]] || fail "manifest has $pg_oracle_count pgtk-oracle entries, expected 7"
+[[ "$pg_sql_count" -eq 136 ]] || fail "manifest has $pg_sql_count pg-sql entries, expected 136"
+[[ "$pg_oracle_count" -eq 7 ]] || fail "manifest has $pg_oracle_count pg-oracle entries, expected 7"
 [[ "$bootstrap_count" -eq 1 ]] || fail "manifest has $bootstrap_count bootstrap entries, expected 1"
 
 actual_pg_sql_count="$(git ls-tree -r "$EXPECTED_SOURCE_CHECKPOINT" -- \
   .gitattributes CLAUDE.md Cargo.toml README.md benches fixtures src tests vendor | wc -l | tr -d ' ')"
-actual_pg_oracle_count="$(git ls-tree -r "$EXPECTED_SOURCE_CHECKPOINT" -- pgtk-oracle | wc -l | tr -d ' ')"
+actual_pg_oracle_count="$(git ls-tree -r "$EXPECTED_SOURCE_CHECKPOINT" -- pg-oracle | wc -l | tr -d ' ')"
 
 [[ "$actual_pg_sql_count" -eq 136 ]] ||
-  fail "source checkpoint has $actual_pg_sql_count pgtk-sql entries, expected 136"
+  fail "source checkpoint has $actual_pg_sql_count pg-sql entries, expected 136"
 [[ "$actual_pg_oracle_count" -eq 7 ]] ||
-  fail "source checkpoint has $actual_pg_oracle_count pgtk-oracle entries, expected 7"
+  fail "source checkpoint has $actual_pg_oracle_count pg-oracle entries, expected 7"
 
 # The import checkpoint pins PostgreSQL 17.9. HEAD can pin a later release
 # (17.11 since #71), so check the checkpoint's gitlink, not HEAD's.
@@ -113,6 +117,6 @@ git diff --quiet HEAD -- vendor/postgres ||
   fail "vendor/postgres differs from the committed gitlink"
 
 echo "Verified immutable import checkpoint $EXPECTED_SOURCE_CHECKPOINT"
-echo "  pgtk-sql: 136 entries ($EXPECTED_PG_SQL_TREE)"
-echo "  pgtk-oracle: 7 entries ($EXPECTED_PG_ORACLE_TREE)"
+echo "  pg-sql: 136 entries ($EXPECTED_PG_SQL_TREE)"
+echo "  pg-oracle: 7 entries ($EXPECTED_PG_ORACLE_TREE)"
 echo "  PostgreSQL: $EXPECTED_POSTGRES_GITLINK"
