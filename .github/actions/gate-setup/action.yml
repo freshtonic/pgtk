@@ -16,6 +16,9 @@ runs:
     # rustup reads rust-toolchain.toml and installs the pinned toolchain.
     - shell: bash
       run: rustup show active-toolchain || rustup toolchain install
+    # gate-versions runs clippy.
+    - shell: bash
+      run: rustup component add clippy
     - shell: bash
       run: packages/pgtk-sql/scripts/fetch-postgres-pins
     - shell: bash
