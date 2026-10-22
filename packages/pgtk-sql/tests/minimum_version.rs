@@ -329,7 +329,7 @@ fn the_minimum_and_the_first_construct_above_a_floor_can_differ() {
 }
 
 /// A gate that carries message text cites the `gram.y` line the text comes
-/// from (`CLAUDE.md` principle 11).
+/// from (`AGENTS.md` principle 11).
 #[cfg(feature = "since-pg16")]
 #[test]
 fn every_gate_that_carries_a_message_cites_its_source() {
