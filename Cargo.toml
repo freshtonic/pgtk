@@ -13,8 +13,8 @@ cc = "1"
 clap = "4"
 derive_more = "2.1.1"
 postgres = "0.19"
-recursa = { version = "0.1.1", default-features = false }
-recursa-codegen = { version = "0.1.1", default-features = false }
+recursa = { version = "0.1.2", default-features = false }
+recursa-codegen = { version = "0.1.2", default-features = false }
 regex = "1"
 serde = "1"
 serde_json = "1"
@@ -42,7 +42,7 @@ split-debuginfo = "unpacked"
 
 # recursa-codegen runs a CPU-bound grammar analysis in the build scripts of
 # pgtk-sql and pgtk-psql; at the default build-override opt-level of 0 that run
-# takes ~55s versus ~7s at 3 (recursa 0.1.1).
+# takes ~54s versus ~7s at 3 (recursa 0.1.2).
 [profile.dev.build-override]
 opt-level = 3
 
