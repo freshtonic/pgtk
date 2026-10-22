@@ -16,11 +16,10 @@ Postgres-flavoured SQL parser based on `recursa`.
 
 ## Build time
 
-The build script of pgtk-sql generates the parser with `recursa-codegen`, and
-the grammar analysis of `recursa-codegen` uses much CPU. Cargo compiles a build
-script and its dependencies with `opt-level = 0` by default, and at that level
-the analysis is very slow (more than 15 minutes on an Apple M-series CPU). Add
-this to the `Cargo.toml` of your workspace root:
+The build script of pgtk-sql generates the parser with `recursa-codegen`.
+Cargo compiles a build script and its dependencies with `opt-level = 0` by
+default. At that level, the build script runs for approximately one minute.
+To make it faster, add this to the `Cargo.toml` of your workspace root:
 
 ```toml
 [profile.dev.build-override]
@@ -30,10 +29,10 @@ opt-level = 3
 opt-level = 3
 ```
 
-With this setting, the analysis takes approximately 14 seconds. The setting
-changes only how Cargo compiles build scripts and procedural macros, not your
-code. Cargo reads profiles only from the workspace root, so pgtk-sql cannot set
-it for you. The pgtk workspace has the same setting.
+With this setting, the build script takes approximately 7 seconds. The
+setting changes only how Cargo compiles build scripts and procedural macros,
+not your code. Cargo reads profiles only from the workspace root, so pgtk-sql
+cannot set it for you. The pgtk workspace has the same setting.
 
 ## Target versions
 
