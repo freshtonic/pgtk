@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # The release gate (ADR 0011): what main passes before a release, and what a
 # change to a version gate passes for its oldest affected version before it
-# merges (CLAUDE.md principle 11).
+# merges (AGENTS.md principle 11).
 #
 # Usage: scripts/release-gate [FEATURE...]
 #

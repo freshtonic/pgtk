@@ -5,7 +5,7 @@ Status: accepted
 psql is a client program, not a SQL dialect. It scans its input, substitutes
 variable interpolations textually, and sends the resulting string to the
 server. PostgreSQL's `gram.y` therefore contains no psql construct at all,
-and `pgtk-sql`'s goal is to mirror `gram.y` (CLAUDE.md principle 9).
+and `pgtk-sql`'s goal is to mirror `gram.y` (AGENTS.md principle 9).
 
 psql moves into its own crate, `pgtk-psql`, with its own grammar and AST. A
 psql document is parsed by that grammar first, substituted, rendered back to

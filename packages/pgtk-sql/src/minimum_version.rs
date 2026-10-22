@@ -92,7 +92,7 @@ use crate::{FlatAst, FlatRequires, TargetVersion};
 /// It names the version, the construct, and, where `gram.y` raises a specific
 /// `ereport` in the older version, the SQLSTATE, message and hint that server
 /// gives. A gate that carries message text also cites the `gram.y` line the
-/// text comes from (`CLAUDE.md` principle 11), which
+/// text comes from (`AGENTS.md` principle 11), which
 /// [`citation`](Self::citation) reports.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VersionRequirement {
