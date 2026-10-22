@@ -84,10 +84,32 @@ fn first_missing_generated(tree: &Path) -> Option<&'static str> {
 /// File in the tree that records the PostgreSQL commit it was extracted from.
 const SOURCE_COMMIT_STAMP: &str = "pgtk-oracle-source-commit";
 
+/// File in the tree that `build-pg.sh` writes after it configures the tree.
+const OPTIONS_STAMP: &str = "pgtk-configure-options";
+
+/// Whether `build-pg.sh` must run again before the tree can be used. A tree with no options stamp
+/// is older than the stamp. A tree that was moved (for example from the cache of the old name,
+/// `pg-sql`) holds absolute links to its old place in `src/include`. `build-pg.sh` repairs both.
+fn tree_needs_repair(tree: &Path) -> bool {
+    !tree.join(OPTIONS_STAMP).is_file() || has_dangling_link(&tree.join("src/include"))
+}
+
+/// Whether `dir` or a directory below it holds a symbolic link to a path that does not exist.
+fn has_dangling_link(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|entry| match entry.file_type() {
+        Ok(kind) if kind.is_symlink() => !entry.path().exists(),
+        Ok(kind) if kind.is_dir() => has_dangling_link(&entry.path()),
+        _ => false,
+    })
+}
+
 fn verify_pg_built(pin: &Pin, tree: &Path) {
     let stamp = std::fs::read_to_string(tree.join(SOURCE_COMMIT_STAMP)).ok();
     let same_commit = stamp.as_deref().map(str::trim) == Some(pin.commit.as_str());
-    if same_commit && first_missing_generated(tree).is_none() {
+    if same_commit && first_missing_generated(tree).is_none() && !tree_needs_repair(tree) {
         return;
     }
 
