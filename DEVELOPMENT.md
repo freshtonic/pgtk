@@ -144,9 +144,10 @@ socket in a directory of its own, so the tests run in parallel and use no TCP po
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
+RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
 ```
 
-Every package must pass both. The CI job `Cargo fmt and clippy` runs these commands. The code that
+Every package must pass all three. The CI job `Cargo fmt and clippy` runs these commands. The code that
 recursa-codegen generates for pgtk-sql has some clippy findings, so `packages/pgtk-sql/src/lib.rs`
 allows those lints for the crate. Do not add a lint to that list for hand-written code.
 
