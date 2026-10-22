@@ -1,5 +1,10 @@
 # Deterministic migration proof
 
+> [!NOTE]
+> This is a historical record of the port. The migration tool and the
+> `migration/` records that it made were retired in the move to the pgtk
+> monorepo, so the commands and the links to `migration/` no longer work.
+
 The migration tool publishes a new tree and never edits the imported legacy
 tree. It plans and validates every file before staging the complete result next
 to the destination; a single rename publishes the result. Any unsupported
