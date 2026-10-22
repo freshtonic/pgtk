@@ -169,8 +169,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum PublicationForClause {
         /// Removed in 19: gram.y replaces `FOR ALL TABLES` by `FOR
-        /// pub_all_obj_type_list` (b73d13c:10781), which
-        /// [`PublicationForClause::AllObjects`] models.
+        /// pub_all_obj_type_list` (b73d13c:10781), which the `AllObjects`
+        /// variant models. That variant exists only in a pg19 build, so this
+        /// comment does not link to it.
         // A widening, not an addition (ADR 0010, `docs/minimum-version.md`):
         // `FOR ALL TABLES` parses in every version, so both arms only remove
         // and neither records. The gate for what 19 adds sits on the `EXCEPT`

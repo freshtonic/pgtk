@@ -111,10 +111,10 @@ recursa::ast_node! {
     /// `select_no_parens`, and its `select_clause` admits a further
     /// `SelectWithParens`, so `((SELECT 1))` reduces through this one rule.
     ///
-    /// This is the single nonterminal that [`SelectClause`] and [`SimpleSelect`]
-    /// share. gram.y factors it for the same reason (gram.y:12658): spelling the
-    /// parenthesized query once is what stops the two from carrying duplicate
-    /// copies of every production below them.
+    /// This is the single nonterminal that [`SelectClause`] and gram.y's
+    /// `simple_select` share. gram.y factors it for the same reason
+    /// (gram.y:12658): spelling the parenthesized query once is what stops the
+    /// two from carrying duplicate copies of every production below them.
     #[derive(Debug)]
     pub struct SelectWithParens {
         pub open: crate::ast::shared::expr::ParenthesizedOpen,
