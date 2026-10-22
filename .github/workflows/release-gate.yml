@@ -13,6 +13,13 @@ on:
       - packages/pgtk-sql/scripts/gate-lib.sh
       - packages/pgtk-analyze/scripts/gate-versions
 
+# A new push to a pull request cancels the older run of that pull request. Each other run (a push
+# to main, or a run started by hand) has a group of its own commit, so it is not cancelled and each
+# merge is tested.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 

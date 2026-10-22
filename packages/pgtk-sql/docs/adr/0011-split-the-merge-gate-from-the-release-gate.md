@@ -28,7 +28,7 @@ other versions rarely fail.
 ## Consequences
 
 - A branch can merge to main with a version gate that is wrong for an older
-  version. CLAUDE.md principle 11 therefore asks for `scripts/release-gate
+  version. AGENTS.md principle 11 therefore asks for `scripts/release-gate
   pgN` on the oldest affected version before merging a change to a
   `#[config(since/before)]` gate, and the release gate catches the rest.
 - Both gates take one machine-wide lock, so gates from several sessions queue
