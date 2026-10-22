@@ -142,6 +142,9 @@ recursa::ast_node! {
     /// Variant ordering: DoUpdate (`DO UPDATE SET`) is longer than
     /// DoNothing (`DO NOTHING`), but both start with `DO` and diverge
     /// at the next keyword, so the regex disambiguates.
+    // A large variant in some target versions: boxing it would change the AST of a published
+    // crate.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug)]
     pub enum ConflictAction {
         DoUpdate(boxed!(DoUpdateAction)),

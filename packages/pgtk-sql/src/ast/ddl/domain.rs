@@ -265,6 +265,9 @@ recursa::ast_node! {
     ///   distinct.
     /// - `RenameConstraint` (two-token `RENAME CONSTRAINT`) must precede the
     ///   single-keyword `Rename` (`RENAME TO`) since both start with `RENAME`.
+    // A large variant in some target versions: boxing it would change the AST of a published
+    // crate.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug)]
     pub enum AlterDomainAction {
         Add(AlterDomainAdd),

@@ -640,6 +640,8 @@ recursa::ast_node! {
     /// ALWAYS AS` and parts at `IDENTITY` or `(`.
     ///
     /// Variant ordering: `BY` and `ALWAYS` part the two after `GENERATED`.
+    // A large variant: boxing it would change the AST of a published crate.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug)]
     pub enum GeneratedConstraint {
         Always(GeneratedAlwaysConstraint),
