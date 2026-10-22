@@ -44,8 +44,9 @@ tests. If you gate a new test behind a feature, add that feature to
 
 ### Formatting and lints
 
-Every package must pass `cargo fmt --all --check` and
-`cargo clippy --workspace --all-targets -- -D warnings`. CI runs both.
+Every package must pass `cargo fmt --all --check`,
+`cargo clippy --workspace --all-targets -- -D warnings` and
+`RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`. CI runs all three.
 
 ## Agent skills
 
