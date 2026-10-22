@@ -657,6 +657,8 @@ recursa::ast_node! {
     /// column literally named `nested` would also match `Valued`'s
     /// keyword-permissive `AliasName`, so `Nested` is tried first and falls
     /// through on non-NESTED syntax.
+    // A large variant: boxing it would change the AST of a published crate.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug)]
     pub enum JsonTableColumn {
         Nested(JsonTableNestedColumn),
@@ -1679,6 +1681,8 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// PostgreSQL's `select_fetch_first_value`: `c_expr`, or a signed
     /// constant (REL_17_11 gram.y 13248).
+    // A large variant: boxing it would change the AST of a published crate.
+    #[allow(clippy::large_enum_variant)]
     #[derive(Debug)]
     pub enum FetchFirstValue {
         Signed(SignedFetchConst),
