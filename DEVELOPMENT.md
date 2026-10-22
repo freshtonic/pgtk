@@ -147,9 +147,10 @@ cargo clippy --workspace --all-targets -- -D warnings
 RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps
 ```
 
-Every package must pass all three. The CI job `Cargo fmt and clippy` runs these commands. The code that
-recursa-codegen generates for pgtk-sql has some clippy findings, so `packages/pgtk-sql/src/lib.rs`
-allows those lints for the crate. Do not add a lint to that list for hand-written code.
+Every package must pass all three. The CI job `Cargo fmt and clippy` runs these commands.
+recursa-codegen allows the lints that fire only on the code that it generates. A lint that fires
+on an AST type that you declare, such as `clippy::large_enum_variant`, is yours: fix it, or allow
+it on that type. recursa copies the attribute to the generated type.
 
 ## Buck2
 
