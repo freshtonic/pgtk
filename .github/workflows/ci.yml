@@ -105,6 +105,7 @@ jobs:
       - run: cargo +1.88.0 check --locked -j 1 -p pgtk-sql --lib --features spans,arbitrary
       - run: cargo +1.88.0 check --locked -j 1 -p pgtk-catalog --lib --all-features
       - run: cargo +1.88.0 check --locked -j 1 -p pgtk-analyze --lib
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-psql --lib
 
   licenses:
     name: Licences of the published dependencies
@@ -122,6 +123,12 @@ jobs:
           manifest-path: packages/pgtk-analyze/Cargo.toml
           command: check licenses
           arguments: --all-features
+      # pgtk-psql: its version features are mutually exclusive, so the default version is the
+      # check. deny.toml leaves out the dev-dependencies, the psql oracle among them.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-psql/Cargo.toml
+          command: check licenses
 
   buck2:
     name: Buck2 build and test
