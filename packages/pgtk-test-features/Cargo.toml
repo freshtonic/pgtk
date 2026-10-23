@@ -5,6 +5,7 @@ description = "Turns on the test-only features of the pgtk crates in a workspace
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 publish = false
 
 # Cargo unifies the features of a package across the packages of one build.

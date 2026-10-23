@@ -3,9 +3,12 @@ name = "pgtk-analyze"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "PostgreSQL parse analysis over pgtk-sql and pgtk-catalog"
+description = "PostgreSQL parse analysis in Rust: the types, columns and errors of a statement, with no server"
 license = "MIT"
 repository.workspace = true
+keywords = ["postgresql", "postgres", "sql", "type-checker", "analysis"]
+categories = ["database", "development-tools"]
+readme = "README.md"
 publish = true
 
 [features]

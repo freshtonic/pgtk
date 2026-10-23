@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.88"
 description = "psql client-side grammar: variable interpolation, substitution and rendering to server SQL"
 license = "MIT"
+readme = "README.md"
 publish = false
 build = "build.rs"
 
