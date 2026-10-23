@@ -170,6 +170,10 @@ fn main() {
         "cargo:rustc-env=PG_PSQL_ORACLE_POSTGRES_COMMIT={}",
         pin.commit
     );
+    // Without the `scanner` feature the crate has only the pin constants.
+    if std::env::var_os("CARGO_FEATURE_SCANNER").is_none() {
+        return;
+    }
     let tree = pg_tree_dir(&pin);
     verify_pg_built(&pin, &tree);
 
