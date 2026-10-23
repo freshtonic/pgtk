@@ -21,8 +21,11 @@ all-features = true
 default = []
 # Serialize and deserialize a Catalog.
 serde = ["dep:serde"]
-# Embed a stock PostgreSQL 17 Catalog as a Fixture. Implies `serde`.
+# Embed a stock Catalog of each supported version as a Fixture. Implies `serde`.
 fixture = ["serde", "dep:serde_json", "dep:zstd"]
+# Accept a PostgreSQL 19 server, and add its fixture with `fixture`. The 19
+# catalog can still change before 19.0. Additive: it changes no other version.
+pg19-beta = []
 # Async `Executor` trait.
 async = []
 # Sync adapter for the `postgres` crate.

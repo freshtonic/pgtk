@@ -66,6 +66,7 @@ impl Typmod {
 /// The meaning of a type modifier, for a type that has one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum TypmodDetail {
     /// The declared length of a `bpchar` or a `varchar`, in characters.
     CharLength(u32),

@@ -88,6 +88,7 @@ impl Function {
 /// The kind of a function, from `prokind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum FunctionKind {
     /// A plain function. `prokind` is `f`.
     Function,
@@ -114,6 +115,7 @@ pub struct Argument {
 /// The mode of an argument, from `proargmodes`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum ArgMode {
     /// An input argument. The letter is `i`. A missing mode means this.
     In,
@@ -130,6 +132,7 @@ pub enum ArgMode {
 /// How the planner may treat a function, from `provolatile`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum Volatility {
     /// The result never changes for the same arguments. The letter is `i`.
     Immutable,
@@ -152,6 +155,7 @@ pub struct AggregateDetail {
 /// The kind of an aggregate, from `aggkind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum AggregateKind {
     /// An ordinary aggregate. The letter is `n`.
     Normal,

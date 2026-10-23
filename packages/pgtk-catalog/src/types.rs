@@ -87,6 +87,7 @@ pub struct BtreeOperators {
 /// The kind of a type, with the detail that belongs to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum TypeKind {
     /// A base type. The server implements it in C or in SQL.
     Base,
@@ -170,6 +171,7 @@ pub struct RangeDetail {
 /// `Other` holds a letter that PostgreSQL does not document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum TypeCategory {
     /// Array types. Letter `A`.
     Array,
@@ -257,10 +259,11 @@ impl TypeCategory {
 
 /// A type that stands for a family of types or for a special value.
 ///
-/// The model keeps the 26 pseudo-types of PostgreSQL 14 through 17. `Other`
+/// The model keeps the 26 pseudo-types of PostgreSQL 14 through 19. `Other`
 /// holds the name of a pseudo-type that a later server adds.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum PseudoType {
     /// `any`.
     Any,
