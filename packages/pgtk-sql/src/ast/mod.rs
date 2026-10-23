@@ -77,6 +77,38 @@ use self::{
 recursa::ast_node! {
     /// Top-level SQL statement.
     ///
+    /// Each variant is one kind of statement, and the type in it holds the
+    /// clauses of that statement. A `match` on the variants handles each kind
+    /// of statement that PostgreSQL accepts.
+    ///
+    /// # Parsing
+    ///
+    /// [`lex`](crate::lex) the text, then give the token input to
+    /// `Statement::parse`. The input must hold exactly one statement, with no
+    /// final `;`. For a text of more than one statement, use
+    /// `pgtk_sql::document::parse_sql`, which needs the `spans` feature.
+    ///
+    /// ```
+    /// use pgtk_sql::ast::Statement;
+    ///
+    /// let lexed = pgtk_sql::lex("UPDATE accounts SET plan = 'pro' WHERE id = $1");
+    /// let mut input = lexed.input();
+    /// let parsed = Statement::parse(&mut input).expect("PostgreSQL accepts it");
+    ///
+    /// match parsed.ast() {
+    ///     Statement::Update(update) => assert!(update.where_clause.is_some()),
+    ///     other => panic!("not an UPDATE: {other:?}"),
+    /// }
+    ///
+    /// // A statement that PostgreSQL rejects is an error, with its location.
+    /// let lexed = pgtk_sql::lex("SELECT FROM WHERE");
+    /// let mut input = lexed.input();
+    /// assert!(Statement::parse(&mut input).is_err());
+    /// ```
+    ///
+    /// The other entry points are `parse_without_spans`, which keeps no
+    /// source spans and is faster, and `parse_flat`, which gives the Flat AST.
+    ///
     /// Variant ordering matters for disambiguation. More specific (longer leading
     /// keyword sequences) must come before less specific:
     /// - `Explain` wraps a Statement, so it must come before `Query`.

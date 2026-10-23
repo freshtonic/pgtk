@@ -127,6 +127,23 @@ To know what a statement means (its types, its columns, its errors), give it to
 [`pgtk-analyze`](https://crates.io/crates/pgtk-analyze). To parse a psql script, give it to
 `pgtk-psql` first.
 
+## Examples
+
+The `examples/` folder has programs that you can copy and change. Each one needs the `spans`
+feature.
+
+| Example | What it does |
+|---|---|
+| `parse` | Parses a SQL file, and prints the kind and the location of each statement. It shows the location and the message when PostgreSQL rejects the SQL. |
+| `version_check` | Prints the oldest PostgreSQL version that accepts each statement, and the clause that needs it. It fails when a statement needs a newer server than `--server`. |
+| `migration_lint` | A linter for migrations, written as a visitor: `CREATE INDEX` without `CONCURRENTLY`, `ADD COLUMN ... NOT NULL` with no default, `DROP COLUMN`, `ALTER COLUMN ... TYPE`, and `UPDATE` or `DELETE` with no `WHERE`. |
+
+```sh
+cargo run -p pgtk-sql --features spans --example parse -- migrations/0001.sql
+cargo run -p pgtk-sql --features spans --example version_check -- --server 15 migrations/*.sql
+cargo run -p pgtk-sql --features spans --example migration_lint -- migrations/*.sql
+```
+
 ## Features
 
 | Feature | What it does |
