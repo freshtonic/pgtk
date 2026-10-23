@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "FFI oracle for psql's own client lexer, built from the pinned PostgreSQL release of the target version"
+readme = "README.md"
 publish = false
 
 [features]

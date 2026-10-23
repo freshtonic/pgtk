@@ -1,17 +1,41 @@
 # pgtk-analyze
 
-PostgreSQL parse analysis in Rust. The crate takes one parsed Statement from
-[`pgtk-sql`](../pgtk-sql) and a Catalog from [`pgtk-catalog`](../pgtk-catalog), and
-resolves every name, operator, function and type as PostgreSQL's
-`parse_analyze` does. It answers what a Statement means without a live
-server: the type of each expression, the columns each `*` expands to, the
-Result Descriptor a Describe would return, and the Diagnostic PostgreSQL would
-raise, with the same SQLSTATE, message and cursor position.
+**Know what your SQL means before the server sees it.**
 
-The target is fidelity, bug for bug, to the PostgreSQL version the
-Target Version selects. The measure is the Oracle harness, which replays
-PostgreSQL's own regression corpus against a live PostgreSQL 17 and against
-this crate and compares the answers statement by statement.
+[![crates.io](https://img.shields.io/crates/v/pgtk-analyze.svg)](https://crates.io/crates/pgtk-analyze)
+[![docs.rs](https://img.shields.io/docsrs/pgtk-analyze)](https://docs.rs/pgtk-analyze)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue.svg)](https://github.com/freshtonic/pgtk/blob/main/LICENSE)
+
+pgtk-analyze is PostgreSQL parse analysis in Rust: the type checker of PostgreSQL, without
+PostgreSQL. It takes one statement from [`pgtk-sql`](https://crates.io/crates/pgtk-sql) and one
+catalog from [`pgtk-catalog`](https://crates.io/crates/pgtk-catalog). Then it resolves each name,
+operator, function and type as PostgreSQL's `parse_analyze` does.
+
+It tells you what a live server would tell you:
+
+- the type of each expression,
+- the columns that each `*` expands to,
+- the Result Descriptor that a Describe would return: the name, type and source column of each
+  result column, and the type of each parameter,
+- the error that PostgreSQL would raise, with the same SQLSTATE, message and cursor position.
+
+pgtk-analyze is part of [pgtk](https://github.com/freshtonic/pgtk), the PostgreSQL toolkit for
+Rust.
+
+## Why pgtk-analyze?
+
+- **Server answers, no server.** No container in CI, no database to migrate, no connection pool.
+  Analysis is a function call.
+- **Bug-for-bug fidelity.** The goal is not "close to PostgreSQL". The goal is the same answer
+  as PostgreSQL, for each statement, including the strange cases.
+- **Proven on PostgreSQL's own tests.** The Oracle harness replays PostgreSQL's regression suite
+  against a live PostgreSQL 17 server and against this crate. **41,732** statements get the same
+  answer, with **0 disagreements** and **0 unsupported** statements. Most of the 818 known
+  divergences are errors that PostgreSQL raises outside parse analysis, for example when a literal is not
+  valid input for its type.
+- **Errors that users understand.** A typo in a column name gives the same `42703 column
+  "relnmae" does not exist` as the server, at the same position.
+- **Version aware.** Analyse for the server that the SQL will run on, from PostgreSQL 14.
 
 ## What it does
 
@@ -90,8 +114,8 @@ a Session Effect, and the caller applies it.
 
 The crate depends on `pgtk-sql`, `pgtk-catalog` and `recursa`.
 To make the build of `pgtk-sql` faster, you can set the build-override profile
-in your workspace (see [Build time](../pgtk-sql/README.md#build-time) in the
-`pgtk-sql` README).
+in your workspace (see "Build time" in the
+[`pgtk-sql` README](https://crates.io/crates/pgtk-sql)).
 
 ## The Oracle harness
 

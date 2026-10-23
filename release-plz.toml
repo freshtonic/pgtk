@@ -1,0 +1,83 @@
+# release-plz configuration (https://release-plz.dev/docs/config).
+#
+# Releases are run by hand, from this machine with scripts/release.sh or from
+# the Actions tab: .github/workflows/release-plz.yml has only a
+# workflow_dispatch trigger, so a merge to main never opens a release PR.
+# `release-pr` opens the PR that bumps the versions and the changelogs.
+# `release` publishes to crates.io, pushes the tags and makes the GitHub
+# releases after that PR has merged.
+#
+# Before a release, the Release gate (.github/workflows/release-gate.yml, or
+# packages/pgtk-sql/scripts/release-gate and packages/pgtk-analyze/scripts/gate-versions
+# for each version) must pass on the commit that is released (ADR 0011 of pgtk-sql).
+
+[workspace]
+changelog_update = true
+dependencies_update = false
+git_release_enable = true
+git_tag_enable = true
+publish = true
+pr_labels = ["release"]
+pr_draft = false
+# Publish only from the merged release PR, never from an arbitrary main commit.
+release_always = false
+# Before 1.0, and much of the public API of pgtk-sql is generated. Semver checks
+# give noise.
+semver_check = false
+
+[changelog]
+# Leave out the merge commits and the release commits. The other commits go in
+# by their conventional-commit type, or under "Other".
+commit_parsers = [
+  { message = "^Merge ", skip = true },
+  { message = "^chore: release", skip = true },
+  { message = "^feat", group = "added" },
+  { message = "^changed", group = "changed" },
+  { message = "^deprecated", group = "deprecated" },
+  { message = "^fix", group = "fixed" },
+  { message = "^security", group = "security" },
+  { message = "^.*", group = "other" },
+]
+
+# The published crates. Each has its own version: pgtk-analyze depends on
+# pgtk-sql and pgtk-catalog with caret requirements, and release-plz updates
+# them when it bumps a dependency. Tags are `<crate>-v<version>`.
+[[package]]
+name = "pgtk-sql"
+
+[[package]]
+name = "pgtk-catalog"
+
+[[package]]
+name = "pgtk-analyze"
+
+# Never released: the crates with `publish = false`.
+[[package]]
+name = "pgtk-psql"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-oracle"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-psql-oracle"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-test-server"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-test-features"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-catalog-xtask"
+release = false
+publish = false

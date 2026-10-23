@@ -3,9 +3,12 @@ name = "pgtk-sql"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "PostgreSQL SQL parser built with recursa"
+description = "A PostgreSQL SQL parser that accepts and rejects exactly what PostgreSQL 14 to 19 beta do"
 license = "MIT"
 repository.workspace = true
+keywords = ["postgresql", "postgres", "sql", "parser", "ast"]
+categories = ["parser-implementations", "database"]
+readme = "README.md"
 publish = true
 
 # The library carries no unit tests and no doctests: the embedded test bodies
