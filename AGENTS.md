@@ -29,7 +29,7 @@ If reindeer reports a missing fixup, write `third-party/rust/fixups/<crate>/fixu
 Each crate in `packages/` needs a hand-written `BUCK` file with a `rust_library` and a `rust_test`.
 Keep its deps the same as the `[dependencies]` in its `Cargo.toml`. The Cargo-only crates
 (`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
-`pgtk-catalog-xtask`) have no `BUCK` file. See the ADR.
+`pgtk-catalog-xtask`, `pgtk-skills`) have no `BUCK` file. See the ADR.
 
 If the crate has a build script that uses recursa-codegen, run it with
 `first_party_build_script` from `tools/rust/build_script.bzl`. `packages/pgtk-sql/BUCK` is the
@@ -46,6 +46,12 @@ gate the `include_str!` for doctests (see `packages/pgtk-sql/src/lib.rs`). Do no
 lines in a README, because GitHub and crates.io show them. If you gate a new test behind a feature, add that feature to
 `packages/pgtk-test-features/Cargo.toml`. A test that needs a PostgreSQL server uses
 `pgtk-test-server`, never a server that the developer must supply.
+
+### Agent skills for users
+
+`skills/` holds the agent skills for the users of the published crates (see `skills/README.md`).
+`packages/pgtk-skills` compiles and runs their Rust code blocks as doctests. When you change an
+API that a skill uses, update the skill in the same change.
 
 ### Formatting and lints
 
