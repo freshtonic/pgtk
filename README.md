@@ -22,16 +22,30 @@ server and no network round trip.
 ## Why pgtk?
 
 Linters, migration checkers, query builders, language servers, proxies and code generators must
-all know what a SQL statement means. Today, a tool gets this answer in one of three ways:
+all know what a SQL statement means. Today, a tool gets this answer in one of four ways:
 
 - **Regular expressions and string checks.** These are fast, but they fail on a comment or a
   dollar-quoted string at the wrong position.
-- **A generic SQL parser.** It parses "most" PostgreSQL. It does not parse all of it, and it can
-  accept SQL that PostgreSQL rejects.
+- **A generic SQL parser.** It parses "most" PostgreSQL. It does not parse all of it, and its
+  AST, shared by all SQL dialects, can hold SQL that PostgreSQL rejects.
+- **Bindings to PostgreSQL's C parser** (pg_query). The parse is exact, but you build and link
+  C, and the tree is one large enum where any node can hold any other node. There is no type
+  information and no analysis.
 - **A live server.** It gives the correct answer, but you must start, migrate and connect to a
   database for each check.
 
-pgtk gives a fourth way: **the answer of the server, without the server.**
+pgtk gives a fifth way: **the answer of the server, without the server.**
+
+| | pgtk | pg_query.rs | sqlparser-rs |
+|---|---|---|---|
+| Accepts exactly what PostgreSQL accepts | ✅ for each version, 14 to 19 beta | ✅ for one version | ❌ |
+| Pure Rust | ✅ | ❌ links C | ✅ |
+| AST types that match the PostgreSQL grammar | ✅ | ❌ one node enum | ❌ shared by all dialects |
+| Visitor | ✅ | ❌ a flat list of nodes | ✅ |
+| `Arbitrary` values that are always valid SQL | ✅ | ❌ | ❌ |
+| Minimum PostgreSQL version of a statement | ✅ | ❌ | ❌ |
+| Types, result columns and errors (parse analysis) | ✅ | ❌ | ❌ |
+| Fingerprinting and normalisation | ❌ not yet | ✅ | ❌ |
 
 ## The proof is in the numbers
 
@@ -56,11 +70,14 @@ A PostgreSQL SQL parser that agrees with PostgreSQL on each statement. It accept
 `gram.y` accepts, and it rejects what `gram.y` rejects. A Cargo feature selects the PostgreSQL
 version, from 14 to 19 beta.
 
-- **A typed AST**, with a source span on each node.
+- **The AST is the grammar.** A struct is a sequence of grammar parts, an enum is a choice
+  between them, and each list says if it can be empty. A value that PostgreSQL cannot parse
+  cannot exist, so `Arbitrary` gives only valid SQL, and `match` covers each form.
+- **Source spans** on each node, and a visitor for each AST type.
 - **A flat AST**: one contiguous store for each parse, for tools that must be fast.
 - **A minimum version for each statement.** pgtk-sql tells you that a statement needs
   PostgreSQL 16, and it shows the clause that causes this.
-- **A formatter, railroad diagrams and `Arbitrary` support**, for fuzz tests and property tests.
+- **A formatter and railroad diagrams** of the grammar.
 
 ### 🗂️ [`pgtk-catalog`](packages/pgtk-catalog): the catalog
 

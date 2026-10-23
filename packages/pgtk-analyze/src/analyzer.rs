@@ -7356,15 +7356,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         target_exprs: &mut Vec<Option<Handle<FlatExpr>>>,
         grouping: &mut Grouping,
     ) -> Result<Vec<usize>> {
-        let elements = match self.get(expr) {
-            FlatExpr::Parenthesized(p)
-                if self.list(self.get(*p).indirection).is_empty()
-                    && let FlatParenContent::Exprs(list) = self.get(self.get(*p).content)
-                    && self.list1(*list).len() > 1 =>
-            {
-                self.list1(*list).to_vec()
-            }
-            _ => vec![expr],
+        // An `if let` chain, not an `if let` guard: the guards need a Rust newer than the
+        // rust-version of the crate.
+        let elements = if let FlatExpr::Parenthesized(p) = self.get(expr)
+            && self.list(self.get(*p).indirection).is_empty()
+            && let FlatParenContent::Exprs(list) = self.get(self.get(*p).content)
+            && self.list1(*list).len() > 1
+        {
+            self.list1(*list).to_vec()
+        } else {
+            vec![expr]
         };
         let mut refs = Vec::new();
         for e in elements {
@@ -14239,23 +14240,25 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Typed> {
         let node = self.get(handle);
         let operands = fixed_operands(node);
+        // An `if let` chain, not an `if let` guard on the match below: the guards need a Rust
+        // newer than the rust-version of the crate.
+        if let Some((Some(l), r)) = operands
+            && self.row_elements(l).is_some()
+            && let FlatExpr::SubSelect(q) = self.get(r)
+        {
+            // transformAExprOp: "row op subselect" is a ROWCOMPARE sublink.
+            let sub = self.get(*q).inner;
+            let (name, op_location) = self.operator_text(self.span(l).end, self.span(r).start);
+            return self.sublink_comparison(
+                scope,
+                handle,
+                l,
+                ObjectName { schema: None, name },
+                op_location,
+                sub,
+            );
+        }
         match operands {
-            Some((Some(l), r))
-                if self.row_elements(l).is_some()
-                    && let FlatExpr::SubSelect(q) = self.get(r) =>
-            {
-                // transformAExprOp: "row op subselect" is a ROWCOMPARE sublink.
-                let sub = self.get(*q).inner;
-                let (name, op_location) = self.operator_text(self.span(l).end, self.span(r).start);
-                self.sublink_comparison(
-                    scope,
-                    handle,
-                    l,
-                    ObjectName { schema: None, name },
-                    op_location,
-                    sub,
-                )
-            }
             Some((Some(l), r)) => {
                 let lt = self.expr(scope, l)?;
                 let rt = self.expr(scope, r)?;

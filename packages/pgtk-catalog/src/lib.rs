@@ -1,9 +1,9 @@
-//! `pgtk-catalog` is a semantic Rust model of one PostgreSQL database's system
-//! catalog: schemas, types, relations, columns, functions, operators, casts,
-//! and extensions, loaded from a live server into an immutable [`Catalog`].
-//!
-//! The vocabulary is defined in `CONTEXT.md`; the design in `docs/design.md`
-//! and `docs/adr/`; the implementation contract in `docs/spec.md`.
+// The README examples need the `fixture` and `postgres` features, so other builds do not run them
+// as doctests. The rendered documentation always includes the README.
+#![cfg_attr(
+    any(not(doctest), all(feature = "fixture", feature = "postgres")),
+    doc = include_str!("../README.md")
+)]
 //!
 //! # Shape of the model
 //!

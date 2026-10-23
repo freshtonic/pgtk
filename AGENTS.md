@@ -38,7 +38,12 @@ model.
 ### Tests
 
 `cargo test --workspace` runs every test. `pgtk-test-features` turns on the features that gate
-tests. If you gate a new test behind a feature, add that feature to
+tests.
+
+The README of each crate is its crate documentation (`#![doc = include_str!("../README.md")]`), and
+its Rust examples are doctests. Keep them compiling. If an example needs a feature or a version,
+gate the `include_str!` for doctests (see `packages/pgtk-sql/src/lib.rs`). Do not put hidden `# `
+lines in a README, because GitHub and crates.io show them. If you gate a new test behind a feature, add that feature to
 `packages/pgtk-test-features/Cargo.toml`. A test that needs a PostgreSQL server uses
 `pgtk-test-server`, never a server that the developer must supply.
 
@@ -47,6 +52,10 @@ tests. If you gate a new test behind a feature, add that feature to
 Every package must pass `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings` and
 `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`. CI runs all three.
+
+CI also checks the published crates with Rust 1.88, their `rust-version`, and the licences of
+their dependencies against `deny.toml`. A new dependency of a published crate must have a licence
+that `deny.toml` permits.
 
 ## Agent skills
 

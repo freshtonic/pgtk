@@ -1,5 +1,4 @@
-//! Repository tasks: `cargo xtask gen-builtins <pg_type.dat>` and
-//! `cargo xtask fixture <postgres-url> [--out <file>]`. See `docs/spec.md`.
+#![doc = include_str!("../README.md")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

@@ -11,12 +11,15 @@ categories = ["parser-implementations", "database"]
 readme = "README.md"
 publish = true
 
-# The library carries no unit tests and no doctests: the embedded test bodies
-# compile as the `embedded` integration target, so `cargo test` builds the
-# generated crate once and skips the rustdoc pass over it.
+# The library carries no unit tests: the embedded test bodies compile as the
+# `embedded` integration target, so `cargo test` builds the generated crate
+# once. The doctests are the examples of README.md.
 [lib]
 test = false
-doctest = false
+
+# docs.rs builds the default version (pg17). `spans` adds the document interface.
+[package.metadata.docs.rs]
+features = ["spans"]
 
 [features]
 # Target version (ADR 0009). Enable exactly one version feature; the build

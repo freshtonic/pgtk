@@ -1,0 +1,30 @@
+# cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
+#
+# CI checks the licences of the dependencies of pgtk-catalog and pgtk-analyze (and thus of
+# pgtk-sql, which pgtk-analyze depends on), with all features of the crate:
+#
+#   cargo deny --manifest-path packages/pgtk-catalog/Cargo.toml --all-features check licenses
+#   cargo deny --manifest-path packages/pgtk-analyze/Cargo.toml --all-features check licenses
+#
+# The development crates are not published, so they are not checked.
+
+[graph]
+# A consumer does not get the dev-dependencies, so their licences do not apply.
+exclude-dev = true
+
+[licenses]
+# The licences that a dependency of a published crate can have. Each one is compatible with the
+# MIT licence of pgtk. Add a licence here only after you examine it.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+# The list is a policy, not an inventory: a licence that no dependency has yet is not an error.
+unused-allowed-license = "allow"

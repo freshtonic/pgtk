@@ -66,6 +66,38 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  msrv:
+    name: Rust 1.88 (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The published crates declare rust-version = "1.88". rust-toolchain.toml pins a newer
+      # toolchain for development, so give the version to each command.
+      - run: rustup toolchain install 1.88.0 --profile minimal
+      # The version features of pgtk-sql are mutually exclusive, so --all-features is not
+      # possible for it. The default version (pg17) with its other features is the check. One job
+      # at a time, for the memory of the runner (see the lint job).
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-sql --lib --features spans,arbitrary
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-catalog --lib --all-features
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-analyze --lib
+
+  licenses:
+    name: Licences of the published dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # deny.toml gives the permitted licences. pgtk-analyze includes pgtk-sql and pgtk-catalog.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-catalog/Cargo.toml
+          command: check licenses
+          arguments: --all-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-analyze/Cargo.toml
+          command: check licenses
+          arguments: --all-features
+
   buck2:
     name: Buck2 build and test
     runs-on: ubuntu-latest

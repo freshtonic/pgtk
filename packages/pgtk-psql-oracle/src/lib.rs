@@ -1,3 +1,7 @@
+#![doc = include_str!("../README.md")]
+//!
+//! # Details
+//!
 //! An oracle for psql's own client lexer.
 //!
 //! `pgtk-oracle` links PostgreSQL's raw parser so that pgtk-sql can be compared
