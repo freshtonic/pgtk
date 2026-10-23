@@ -13,21 +13,75 @@ statement that `gram.y` rejects. You select the release with a Cargo feature: Po
 
 pgtk-sql is part of [pgtk](https://github.com/freshtonic/pgtk), the PostgreSQL toolkit for Rust.
 
+## The AST is the grammar
+
+Most SQL ASTs are loose. pg_query.rs gives one enum with a variant for each of the hundreds of
+node kinds of PostgreSQL, and a child is a `Node` that can be any of them. sqlparser-rs gives one
+AST for all SQL dialects, so its values can hold syntax that PostgreSQL does not accept. With
+these ASTs, the compiler cannot tell you that a value is valid SQL. Your code must check.
+
+pgtk-sql uses algebraic data types to make the AST match the grammar exactly:
+
+- **A struct is a sequence.** Its fields are the parts of a grammar rule, in order.
+- **An enum is a choice.** Its variants are the alternatives of a grammar rule.
+- **Cardinality is exact.** `Option<T>` is zero or one, `zero_or_many!(T)` is zero or more, and
+  `one_or_many!(T)` is one or more: a list type that cannot be empty. An empty list exists only
+  where the grammar permits one.
+- **Versions are in the types.** A field that PostgreSQL 17 added exists only in the builds for
+  PostgreSQL 17 and later.
+
+This is `MERGE`, from the source of pgtk-sql:
+
+```rust,ignore
+recursa::ast_node! {
+    pub struct MergeStmt {
+        #[tok(MERGE, INTO, this)]
+        pub target: boxed!(MergeTarget),
+        #[tok(USING, this)]
+        pub source: boxed!(TableRef),
+        #[tok(ON, this)]
+        pub condition: boxed!(Expr),
+        /// PostgreSQL's `merge_when_list` is one-or-more.
+        pub when_clauses: one_or_many!(WhenClause),
+        #[config(since = pg17)]
+        pub returning: Option<boxed!(ReturningClause)>,
+    }
+}
+```
+
+The declaration is the grammar: [recursa](https://crates.io/crates/recursa) generates the lexer
+and the LR parser from these types. A `MERGE` with no `WHEN` clause cannot exist, because the
+type has no value for it. The goal is that each value that you can make is a statement that
+PostgreSQL can parse. Where a value is not, the type is too loose, and that is a bug in pgtk-sql.
+
+The design gives three results:
+
+- **Your `match` is the specification.** When you handle each variant, you handle each form
+  that PostgreSQL accepts, and the compiler tells you when you forget one.
+- **Generated SQL is almost always valid.** With the `arbitrary` feature, each AST type
+  derives `arbitrary::Arbitrary`, so a fuzz test or a property test gets typed statements, not
+  random bytes. Today, PostgreSQL accepts about 80% of the random statements. Each of the other
+  20% shows a place where a type permits more than PostgreSQL does. A test measures this on each
+  run, and issues
+  [#50 to #61](https://github.com/freshtonic/pgtk/issues?q=is%3Aissue+label%3Abug+%22pgtk-sql+accepts%22)
+  record the gaps that remain.
+- **Traversal is free.** Each AST type derives `Visit` and `VisitMut`, so a lint or a rewrite
+  is a visitor, not a recursive function for each node type.
+
 ## Why pgtk-sql?
 
 - **Proven parity.** On PostgreSQL's own regression suite, pgtk-sql and the raw parser of
   PostgreSQL agree on all **43,474** statements, for each of the six versions. The test suite
   links the real PostgreSQL parser and compares again on each run.
+- **Pure Rust.** No C library to build or link, unlike the bindings to PostgreSQL's parser.
 - **Fast.** On the same statements, pgtk-sql parses at **35 MiB/s**, more than **2×** the speed
   of `sqlparser`. The flat AST is faster again, at **40 MiB/s**.
-- **A typed AST.** Each statement is a Rust value with a type for each construct. With the
-  `spans` feature, each node also knows its location in the source text.
+- **Spans.** With the `spans` feature, each node knows its location in the source text.
 - **A flat AST.** One contiguous store for each parse, with handles in place of pointers. It is
   fast to make and fast to drop.
 - **Version answers.** pgtk-sql tells you the oldest PostgreSQL version that accepts a
   statement, and which clause needs it.
-- **More than a parser.** A formatter, railroad diagrams of the grammar, and `Arbitrary`
-  support for fuzz tests and property tests.
+- **More than a parser.** A formatter and railroad diagrams of the grammar.
 
 ## Quick start
 
@@ -38,7 +92,7 @@ pgtk-sql = "0.1"
 
 Parse one statement:
 
-```rust,ignore
+```rust
 use pgtk_sql::{ast::Statement, lex};
 
 let lexed = lex("SELECT id, name FROM users WHERE id = $1");
@@ -46,23 +100,27 @@ let mut input = lexed.input();
 let statement = Statement::parse(&mut input).expect("PostgreSQL accepts it");
 ```
 
-Parse a document of statements:
+Parse a document of statements (this needs the `spans` feature):
 
-```rust,ignore
-let document = pgtk_sql::document::parse_sql("SELECT 1; INSERT INTO t VALUES (2);")?;
+```rust
+let document = pgtk_sql::document::parse_sql("SELECT 1; INSERT INTO t VALUES (2);")
+    .expect("PostgreSQL accepts both statements");
 assert_eq!(document.statements().len(), 2);
 ```
 
 Find the oldest PostgreSQL version that accepts a statement:
 
-```rust,ignore
-use pgtk_sql::{MinimumVersion, TargetVersion};
+```rust
+use pgtk_sql::{MinimumVersion, TargetVersion, ast::Statement, lex};
+
+let lexed = lex("SELECT * FROM (SELECT 1)");
+let mut input = lexed.input();
+let statement = Statement::parse(&mut input).expect("PostgreSQL 16 accepts it");
 
 // PostgreSQL 15 needs an alias on a subquery in FROM. PostgreSQL 16 does not.
-if let Some(found) = statement.minimum_version_above(TargetVersion::Pg15) {
-    println!("{:?}: {:?} at {:?}", found.version(), found.message(), found.span());
-    // Pg16: Some("subquery in FROM must have an alias") at Some(Span { start: 14, end: 24 })
-}
+let found = statement.minimum_version_above(TargetVersion::Pg15).unwrap();
+assert_eq!(found.version(), TargetVersion::Pg16);
+assert_eq!(found.message(), Some("subquery in FROM must have an alias"));
 ```
 
 To know what a statement means (its types, its columns, its errors), give it to
@@ -74,7 +132,7 @@ To know what a statement means (its types, its columns, its errors), give it to
 | Feature | What it does |
 |---|---|
 | `pg14` ... `pg19-beta` | Selects the PostgreSQL version. Use exactly one. The default is `pg17`. |
-| `spans` | Keeps the source span of each node. |
+| `spans` | Keeps the source span of each node. The generated `parse_without_spans` entry points skip that cost in any build. |
 | `arbitrary` | Derives `arbitrary::Arbitrary` for the AST. |
 | `postgres-oracle` | Development only: builds PostgreSQL's raw parser for the differential tests. |
 
@@ -139,8 +197,12 @@ version whose grammar accepts it, and the first construct that a given older
 version rejects. Where `gram.y` raises a specific `ereport` in that older
 version, the answer carries its SQLSTATE, message and hint.
 
-```rust,ignore
-use pgtk_sql::{MinimumVersion, TargetVersion};
+```rust
+use pgtk_sql::{MinimumVersion, TargetVersion, ast::Statement, lex};
+
+let lexed = lex("SELECT * FROM (SELECT 1)");
+let mut input = lexed.input();
+let parsed = Statement::parse(&mut input).expect("PostgreSQL 16 accepts it");
 
 if let Some(found) = parsed.minimum_version_above(TargetVersion::Pg15) {
     // "subquery in FROM must have an alias", 42601, needs PostgreSQL 16,

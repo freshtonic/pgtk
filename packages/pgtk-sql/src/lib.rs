@@ -1,14 +1,9 @@
-//! PostgreSQL grammar backed by Recursa's sole LR parser.
-//!
-//! The `spans` Cargo feature retains occurrence provenance during ordinary
-//! parsing. Generated `parse_without_spans` entry points always provide
-//! semantic values without that provenance cost. Without the feature,
-//! ordinary parsing also skips provenance and the exact-source document
-//! interface is unavailable.
-//!
-//! Each build targets one PostgreSQL major version, selected with exactly one
-//! version feature (`pg14` ... `pg19-beta`, default `pg17`). [`TARGET_VERSION`]
-//! reports it.
+// The README examples need a grammar of PostgreSQL 16 or later and the `spans` feature, so other
+// builds do not run them as doctests. The rendered documentation always includes the README.
+#![cfg_attr(
+    any(not(doctest), all(feature = "since-pg16", feature = "spans")),
+    doc = include_str!("../README.md")
+)]
 
 // Keep the optional sampling recipe aligned with the facade capability.
 #[cfg(feature = "arbitrary")]
@@ -80,7 +75,9 @@ pub use target_version::TargetVersion;
 ///
 /// ```
 /// // With the default features, pgtk-sql targets PostgreSQL 17.
+/// # #[cfg(feature = "pg17")] {
 /// assert_eq!(pgtk_sql::TARGET_VERSION.major(), 17);
+/// # }
 /// ```
 #[cfg(feature = "pg14")]
 pub const TARGET_VERSION: TargetVersion = TargetVersion::Pg14;

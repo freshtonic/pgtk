@@ -41,9 +41,10 @@ pgtk-catalog = { version = "0.1", features = ["postgres"] }
 
 Load a catalog from a live server:
 
-```rust,ignore
-let mut client = postgres::Client::connect(url, postgres::NoTls)?;
-let loaded = pgtk_catalog::load(&mut client)?;
+```rust,no_run
+let url = "postgresql://postgres@localhost/postgres";
+let mut client = postgres::Client::connect(url, postgres::NoTls).expect("connect");
+let loaded = pgtk_catalog::load(&mut client).expect("load the catalog");
 let catalog = loaded.catalog;
 ```
 
@@ -52,15 +53,16 @@ stock database, the list is empty.
 
 Or use the built-in PostgreSQL 17 catalog (the `fixture` feature), with no server:
 
-```rust,ignore
+```rust
 let catalog = pgtk_catalog::fixture::pg17();
 ```
 
 Look up a type by name, then read it:
 
-```rust,ignore
+```rust
 use pgtk_catalog::{Builtin, QualifiedName, SearchPath};
 
+let catalog = pgtk_catalog::fixture::pg17();
 let name = QualifiedName::new("pg_catalog", "int4");
 let int4 = catalog.type_named(&name).unwrap();
 assert_eq!(catalog.as_builtin(int4), Some(Builtin::Int4));
@@ -84,13 +86,15 @@ cargo run -p pgtk-catalog --features fixture --example inspect -- information_sc
 Implement `Executor` for your client, and give it to `load`. With the `async` feature,
 `AsyncExecutor` and `load_async` do the same for an async client.
 
-```rust,ignore
+```rust
+struct MyClient;
+
 impl pgtk_catalog::Executor for MyClient {
-    type Error = MyError;
+    type Error = std::io::Error;
 
     // Rows is Vec<Vec<Option<String>>>: each value in text format, None for NULL.
     fn query(&mut self, sql: &str) -> Result<pgtk_catalog::Rows, Self::Error> {
-        todo!("run the SQL text and give back each row")
+        todo!("run {sql} with your driver, and give back each row")
     }
 }
 ```
