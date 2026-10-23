@@ -73,6 +73,20 @@ syn = { workspace = true, features = ["full"] }
 name = "gen-stress"
 path = "src/bin/gen_stress.rs"
 
+# The examples. Each one that uses the `document` module needs `spans`. CI builds them with
+# `cargo build --workspace --examples`.
+[[example]]
+name = "parse"
+required-features = ["spans"]
+
+[[example]]
+name = "version_check"
+required-features = ["spans"]
+
+[[example]]
+name = "migration_lint"
+required-features = ["spans"]
+
 [[bench]]
 name = "parse"
 harness = false

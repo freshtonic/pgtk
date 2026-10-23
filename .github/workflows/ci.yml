@@ -39,6 +39,11 @@ jobs:
           path: ~/.cache/pgtk-sql/postgres
           key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       - run: cargo build --locked --workspace
+      # The examples. Each example names the features that it needs in `required-features`, and
+      # pgtk-test-features turns all of them on in a workspace build, so this step builds each
+      # example and uses the build of the step before. No example runs here: the examples that
+      # load a catalog from a server need a server.
+      - run: cargo build --locked --workspace --examples
       - run: cargo test --locked --workspace
 
   lint:
