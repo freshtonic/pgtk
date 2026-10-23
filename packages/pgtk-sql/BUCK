@@ -39,6 +39,8 @@ filegroup(
     name = "pgtk-sql.crate",
     srcs = glob(["src/**/*.rs"]) + [
         "Cargo.toml",
+        # src/lib.rs includes the README as the crate documentation.
+        "README.md",
         "build-support/target_version.rs",
         "build.rs",
     ],
