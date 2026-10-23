@@ -140,6 +140,77 @@ cargo.rust_library(
     visibility = [],
 )
 
+alias(
+    name = "arbitrary",
+    actual = ":arbitrary-1.5.0",
+    visibility = ["PUBLIC"],
+)
+
+cargo.rust_library(
+    name = "arbitrary-1.5.0",
+    srcs = [
+        "vendor/arbitrary-1.5.0/src/error.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/borrow.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/boxed.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/binary_heap.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/btree_map.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/btree_set.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/linked_list.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/collections/vec_deque.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/ffi/c_str.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/ffi/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/rc.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/string.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/sync.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/alloc/vec.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/array.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/bool.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/cell.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/char.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/cmp.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/iter.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/marker.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/num.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/ops.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/option.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/result.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/slice.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/str.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/sync/atomic.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/sync/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/time.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/tuple.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/core/unit.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/collections/hash_map.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/collections/hash_set.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/collections/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/ffi/c_str.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/ffi/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/ffi/os_str.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/mod.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/net.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/path.rs",
+        "vendor/arbitrary-1.5.0/src/foreign/std/sync.rs",
+        "vendor/arbitrary-1.5.0/src/lib.rs",
+        "vendor/arbitrary-1.5.0/src/size_hint.rs",
+        "vendor/arbitrary-1.5.0/src/tests.rs",
+        "vendor/arbitrary-1.5.0/src/unstructured.rs",
+    ],
+    crate = "arbitrary",
+    crate_root = "vendor/arbitrary-1.5.0/src/lib.rs",
+    edition = "2021",
+    features = [
+        "derive",
+        "derive_arbitrary",
+    ],
+    visibility = [],
+    deps = [":derive_arbitrary-1.5.0"],
+)
+
 cargo.rust_library(
     name = "async-trait-0.1.92",
     srcs = [
@@ -747,6 +818,26 @@ cargo.rust_library(
     edition = "2024",
     visibility = [],
     deps = [":cmov-0.5.4"],
+)
+
+cargo.rust_library(
+    name = "derive_arbitrary-1.5.0",
+    srcs = [
+        "vendor/derive_arbitrary-1.5.0/src/container_attributes.rs",
+        "vendor/derive_arbitrary-1.5.0/src/field_attributes.rs",
+        "vendor/derive_arbitrary-1.5.0/src/lib.rs",
+        "vendor/derive_arbitrary-1.5.0/src/variant_attributes.rs",
+    ],
+    crate = "derive_arbitrary",
+    crate_root = "vendor/derive_arbitrary-1.5.0/src/lib.rs",
+    edition = "2021",
+    proc_macro = True,
+    visibility = [],
+    deps = [
+        ":proc-macro2-1.0.107",
+        ":quote-1.0.47",
+        ":syn-3.0.9",
+    ],
 )
 
 alias(
@@ -3625,6 +3716,7 @@ cargo.rust_library(
     crate_root = "vendor/recursa-0.1.2/src/lib.rs",
     edition = "2024",
     features = [
+        "arbitrary",
         "diagrams",
         "explorer",
         "spans",
@@ -3885,6 +3977,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION": "0.1.2",
     },
     features = [
+        "arbitrary",
         "default",
         "diagrams",
         "explorer",
@@ -3893,6 +3986,7 @@ cargo.rust_library(
     ],
     visibility = [],
     deps = [
+        ":arbitrary-1.5.0",
         ":bumpalo-3.20.3",
         ":logos-0.16.1",
         ":phf-0.11.3",
@@ -3926,6 +4020,7 @@ cargo.rust_library(
         "CARGO_PKG_VERSION": "0.1.2",
     },
     features = [
+        "arbitrary",
         "default",
         "diagrams",
         "explorer",
@@ -4903,6 +4998,7 @@ cargo.rust_library(
         "clone-impls",
         "default",
         "derive",
+        "extra-traits",
         "full",
         "parsing",
         "printing",
