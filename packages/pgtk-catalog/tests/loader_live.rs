@@ -16,14 +16,22 @@ use pgtk_test_server::Server;
 use std::sync::OnceLock;
 
 /// The version features of the PostgreSQL releases that the loader supports.
-/// Each test runs against each of them.
-const VERSIONS: [&str; 4] = ["pg14", "pg15", "pg16", "pg17"];
+/// Each test runs against each of them. The `pg19-beta` feature adds 19 beta.
+#[cfg(not(feature = "pg19-beta"))]
+const VERSIONS: &[&str] = &["pg14", "pg15", "pg16", "pg17", "pg18"];
+
+/// The version features of the PostgreSQL releases that the loader supports.
+/// Each test runs against each of them. The `pg19-beta` feature adds 19 beta.
+#[cfg(feature = "pg19-beta")]
+const VERSIONS: &[&str] = &["pg14", "pg15", "pg16", "pg17", "pg18", "pg19-beta"];
+
+/// The highest major version that the loader supports.
+const MAX_MAJOR: u16 = if cfg!(feature = "pg19-beta") { 19 } else { 18 };
 
 /// A connection string for a new, empty database named after `test`, on the
 /// server of each supported release.
 fn databases(test: &str) -> Vec<String> {
-    static SERVERS: [OnceLock<Server>; VERSIONS.len()] =
-        [const { OnceLock::new() }; VERSIONS.len()];
+    static SERVERS: [OnceLock<Server>; 6] = [const { OnceLock::new() }; 6];
     VERSIONS
         .iter()
         .zip(&SERVERS)
@@ -39,8 +47,8 @@ fn databases(test: &str) -> Vec<String> {
 mod sync_tests {
     use super::databases;
     use pgtk_catalog::{
-        ArgMode, Builtin, CastMethod, Catalog, ConstraintKind, FiresWhen, FunctionKind, Identity,
-        Loaded, Name, ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent,
+        ArgMode, Builtin, CastMethod, Catalog, ConstraintKind, FiresWhen, FunctionKind, Generated,
+        Identity, Loaded, Name, ParameterKind, PrimaryKey, QualifiedName, RelationKind, RuleEvent,
         SearchPath, TriggerTiming, TypeKind,
     };
     use postgres::{Client, NoTls};
@@ -94,7 +102,7 @@ mod sync_tests {
 
             let version = catalog.metadata().server_version;
             assert!(
-                (14..=17).contains(&version.major),
+                (14..=super::MAX_MAJOR).contains(&version.major),
                 "version {version} is in range"
             );
             assert!(!catalog.metadata().search_path.is_empty());
@@ -243,6 +251,69 @@ mod sync_tests {
         }
     }
 
+    /// The facts that PostgreSQL 18 added: a virtual generated column, a
+    /// `NOT NULL` constraint, a `NOT ENFORCED` constraint, and a temporal
+    /// key. A server older than 18 cannot make them, so the test skips it.
+    #[test]
+    fn it_loads_the_facts_that_postgresql_18_added() {
+        for url in databases("it_loads_the_facts_that_postgresql_18_added") {
+            let mut client =
+                Client::connect(&url, NoTls).expect("the server accepts the connection");
+            let number: String = client
+                .query_one("SELECT current_setting('server_version_num')", &[])
+                .expect("the server gives its version")
+                .get(0);
+            if number.parse::<u32>().expect("a number") < 180_000 {
+                continue;
+            }
+            client
+                .batch_execute(
+                    "CREATE TABLE public.reservation (
+                         room int4range,
+                         during tstzrange,
+                         seats int4 CONSTRAINT reservation_seats_named NOT NULL,
+                         price int4 GENERATED ALWAYS AS (seats * 10) VIRTUAL,
+                         tax int4 GENERATED ALWAYS AS (seats * 2) STORED,
+                         CONSTRAINT reservation_key PRIMARY KEY (room, during WITHOUT OVERLAPS),
+                         CONSTRAINT reservation_lax CHECK (seats < 100) NOT ENFORCED,
+                         CONSTRAINT reservation_strict CHECK (seats > 0)
+                     );",
+                )
+                .expect("the setup runs");
+            let loaded = load(&mut client);
+            assert_eq!(loaded.diagnostics, Vec::new(), "the load has no diagnostic");
+            let catalog = &loaded.catalog;
+            let path = SearchPath::new(catalog, ["public"]);
+            let handle = catalog
+                .relation_visible(&path, "reservation")
+                .expect("the table is there");
+            let table = &catalog[handle];
+
+            let column = |name: &str| table.column(name).expect("the column is there");
+            assert_eq!(column("price").generated, Some(Generated::Virtual));
+            assert_eq!(column("tax").generated, Some(Generated::Stored));
+            assert_eq!(column("seats").generated, None);
+            assert!(column("seats").not_null);
+
+            let constraint = |name: &str| table.constraint(name).expect("the constraint is there");
+            let named = constraint("reservation_seats_named");
+            assert_eq!(named.kind, ConstraintKind::NotNull);
+            assert_eq!(named.columns, vec![3]);
+            assert!(!named.kind.has_index());
+
+            let key = constraint("reservation_key");
+            assert_eq!(key.kind, ConstraintKind::PrimaryKey);
+            assert!(key.period);
+            assert!(key.enforced);
+
+            let lax = constraint("reservation_lax");
+            assert_eq!(lax.kind, ConstraintKind::Check);
+            assert!(!lax.enforced);
+            assert!(!lax.period);
+            assert!(constraint("reservation_strict").enforced);
+        }
+    }
+
     #[test]
     fn it_loads_the_temporary_schema_of_the_session() {
         for url in databases("it_loads_the_temporary_schema_of_the_session") {
@@ -352,8 +423,9 @@ mod sync_tests {
             assert_eq!(column("by_default").identity, Some(Identity::ByDefault));
             assert_eq!(column("plain").identity, None);
             assert_eq!(column("doubled").identity, None);
-            assert!(column("doubled").generated);
-            assert!(!column("always").generated);
+            assert_eq!(column("doubled").generated, Some(Generated::Stored));
+            assert!(column("doubled").is_generated());
+            assert_eq!(column("always").generated, None);
 
             // A table with no column loads, and has a row type with no field.
             let nocols = catalog
@@ -686,12 +758,29 @@ mod sync_tests {
         );
         assert_eq!(catalog[int4].collation, None);
 
-        // A relation has its constraints by name. NOT NULL is not a
-        // constraint on PostgreSQL 14 to 17.
+        // A relation has its constraints by name. NOT NULL is a constraint
+        // only on PostgreSQL 18 and later.
+        let major = catalog.metadata().server_version.major;
         let booked = &catalog[relation("booked")];
+        let not_null: Vec<_> = booked
+            .constraints
+            .iter()
+            .filter(|c| c.kind == ConstraintKind::NotNull)
+            .map(|c| (c.name.as_str(), c.columns.clone()))
+            .collect();
+        if major >= 18 {
+            assert!(
+                not_null.contains(&("booked_room_not_null", vec![2])),
+                "{not_null:?}"
+            );
+        } else {
+            assert_eq!(not_null, Vec::new());
+        }
+        assert!(booked.constraints.iter().all(|c| c.enforced && !c.period));
         let kinds: Vec<_> = booked
             .constraints
             .iter()
+            .filter(|c| c.kind != ConstraintKind::NotNull)
             .map(|c| (c.name.as_str(), c.kind, c.deferrable, c.columns.clone()))
             .collect();
         assert_eq!(
