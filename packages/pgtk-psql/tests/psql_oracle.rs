@@ -13,9 +13,10 @@
 //! The outcome of every document is pinned in
 //! `baselines/psql-oracle/<feature>.json`. A document that does not agree
 //! with psql is an **expected psql gap** with a recorded reason, and the
-//! reasons are the deliberate limits of what pgtk-psql models (ADR 0007): it
-//! models `psqlscan.l` lexing and the send commands, and keeps every other
-//! backslash command as one unparsed token (freshtonic/pg-sql#11, #12, #13).
+//! reasons are the deliberate limits of what pgtk-psql models (ADR 0007, ADR
+//! 0013): it models `psqlscan.l` lexing, the meta-commands as
+//! `psqlscanslash.l` reads them, `\set`, `\unset` and the `\if` blocks, but not
+//! COPY data and not the error path of an unknown command.
 //!
 //! Regenerate after a change of pin, of oracle or of the psql grammar:
 //!
@@ -28,7 +29,7 @@ use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::PathBuf;
 
-use pgtk_psql::{PsqlItem, Terminator, Variables};
+use pgtk_psql::{Command as PsqlCommand, MetaCommand, PsqlItem, Terminator, Variables};
 use pgtk_psql_oracle::{Command, Event};
 
 // --- The corpus -------------------------------------------------------------
@@ -193,11 +194,92 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         ("name/gsetfoo", "SELECT 1 \\gsetfoo".into()),
         ("name/gexecx", "SELECT 1 \\gexecx".into()),
         ("name/getenv", "\\getenv abs_srcdir".into()),
-        // Unmodelled meta-commands.
+        // Meta-commands and their arguments.
         ("meta/set", "\\set foo 1".into()),
         ("meta/d", "\\d users".into()),
         ("meta/timing", "\\timing on".into()),
         ("meta/bare-backslash", "SELECT 1 \\".into()),
+        (
+            "meta/quoted-arguments",
+            "\\echo 'a b' \"c d\" 'it''s' 'x\\'y' e".into(),
+        ),
+        ("meta/separator", "\\pset null x \\\\ SELECT 1;".into()),
+        ("meta/chained", "\\x \\a \\t\nSELECT 1;".into()),
+        ("meta/after-sql", "SELECT 1 \\echo x\nFROM t;".into()),
+        (
+            "meta/whole-line",
+            "\\copy t to stdout \\\\ SELECT 1;\nSELECT 2;".into(),
+        ),
+        ("meta/shell", "\\! echo a \\\\ b\nSELECT 1;".into()),
+        (
+            "meta/file-pipe",
+            "\\o |cat \\\\ x\n\\o out \\\\ SELECT 1;".into(),
+        ),
+        (
+            "meta/g-options",
+            "SELECT 1 \\g (format=csv) |cat\nSELECT 2;".into(),
+        ),
+        ("meta/g-file", "SELECT 1 \\g out.txt \\\\ SELECT 2;".into()),
+        (
+            "meta/gset-prefix",
+            "SELECT 1 AS a \\gset p_\nSELECT :p_a;".into(),
+        ),
+        (
+            "meta/argument-interpolation",
+            "\\echo :v :'v' :\"v\" :{?v}".into(),
+        ),
+        ("meta/backquote", "\\echo `echo never` x".into()),
+        ("meta/reset", "SELECT 1;\nSELECT 2 \\r\nSELECT 3;".into()),
+        ("meta/watch", "SELECT 1 \\watch 1\nSELECT 2;".into()),
+        ("meta/unknown", "\\nosuch a \\\\ b\nSELECT 1;".into()),
+        ("meta/copy-upper", "\\COPY t TO stdout".into()),
+        // `\set` and `\unset` change the variables of the script.
+        (
+            "set/use",
+            "\\set t users\nSELECT * FROM :\"t\" WHERE a = :'t';".into(),
+        ),
+        ("set/concatenate", "\\set v 4 2\nSELECT :v;".into()),
+        ("set/empty", "\\set v\nSELECT :'v';".into()),
+        (
+            "set/from-variable",
+            "\\set a 1\n\\set b :a:a\nSELECT :b;".into(),
+        ),
+        ("set/unset", "\\set v 1\n\\unset v\nSELECT :v;".into()),
+        ("set/quoted", "\\set v 'a b'\nSELECT :'v';".into()),
+        // `\if` blocks.
+        (
+            "if/true",
+            "\\if true\nSELECT 1;\n\\else\nSELECT 2;\n\\endif\n".into(),
+        ),
+        (
+            "if/false",
+            "\\if off\nSELECT 1;\n\\elif yes\nSELECT 2;\n\\else\nSELECT 3;\n\\endif\n".into(),
+        ),
+        (
+            "if/variable",
+            "\\set flag on\n\\if :flag\nSELECT 1;\n\\endif\n".into(),
+        ),
+        ("if/unrecognised", "\\if maybe\nSELECT 1;\n\\endif\n".into()),
+        (
+            "if/nested",
+            "\\if false\n\\if true\nSELECT 1;\n\\endif\n\\else\nSELECT 2;\n\\endif\n".into(),
+        ),
+        (
+            "if/in-statement",
+            "select\n\\if true\n42\n\\else\n(bogus\n\\endif\nforty_two;\n".into(),
+        ),
+        (
+            "if/inactive-set",
+            "\\if false\n\\set v 1\n\\else\n\\set v 2\n\\endif\nSELECT :v;".into(),
+        ),
+        (
+            "if/inactive-interpolation",
+            "\\set v 1\n\\if false\nSELECT :v;\n\\endif\nSELECT :v;".into(),
+        ),
+        (
+            "if/test-variable",
+            "\\set i 1\n\\if :{?i}\nSELECT 1;\n\\endif\n".into(),
+        ),
         // Unterminated lexical regions.
         ("open/string", "SELECT 'a".into()),
         ("open/quoted-identifier", "SELECT \"a".into()),
@@ -251,10 +333,14 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
 struct Facts {
     /// The text forwarded to the server.
     sql: String,
-    /// Each variable interpolation: its extent in the document and its name.
+    /// Each variable interpolation in SQL text: its extent in the document
+    /// and its name. An interpolation in a command argument is not here.
     interpolations: Vec<(Range<usize>, String)>,
     /// The extent of each construct that ends the query buffer.
     submissions: Vec<Range<usize>>,
+    /// Each backslash command: its whole extent, and the extent of each of
+    /// its arguments.
+    commands: Vec<(Range<usize>, Vec<Range<usize>>)>,
     /// Whether the document ends with a complete query buffer.
     complete: bool,
 }
@@ -282,6 +368,18 @@ fn semicolon_spans(source: &str) -> Vec<Range<usize>> {
         .collect()
 }
 
+/// The extent of a command and of each of its arguments.
+fn command_facts(source: &str, command: &PsqlCommand<'_>) -> (Range<usize>, Vec<Range<usize>>) {
+    (
+        span_of(source, command.text()),
+        command
+            .arguments()
+            .iter()
+            .map(|argument| span_of(source, argument.text()))
+            .collect(),
+    )
+}
+
 /// What pgtk-psql makes of `source`. `None` when it refuses the document.
 fn pg_psql_facts(source: &str, variables: &Variables) -> Option<Facts> {
     let document = pgtk_psql::parse(source).ok()?;
@@ -289,33 +387,46 @@ fn pg_psql_facts(source: &str, variables: &Variables) -> Option<Facts> {
 
     let mut interpolations = Vec::new();
     let mut submissions = Vec::new();
+    let mut commands = Vec::new();
     let mut semicolons = semicolon_spans(source).into_iter();
     for item in &document.items {
-        match item {
-            PsqlItem::Interpolation(interpolation) => interpolations.push((
-                span_of(source, interpolation.text()),
-                interpolation.name().to_owned(),
-            )),
-            PsqlItem::Terminator(Terminator::Semi) => submissions.push(
-                semicolons
-                    .next()
-                    .expect("each `;` terminator is one SEMI token"),
-            ),
-            PsqlItem::Terminator(Terminator::Send(send)) => {
-                submissions.push(span_of(source, send.text()))
+        let command = match item {
+            PsqlItem::Interpolation(interpolation) => {
+                interpolations.push((
+                    span_of(source, interpolation.text()),
+                    interpolation.name().to_owned(),
+                ));
+                continue;
             }
+            PsqlItem::Terminator(Terminator::Semi) => {
+                submissions.push(
+                    semicolons
+                        .next()
+                        .expect("each `;` terminator is one SEMI token"),
+                );
+                continue;
+            }
+            PsqlItem::Sql(_) => continue,
+            PsqlItem::Terminator(Terminator::Send(send)) => send.command(),
+            PsqlItem::Terminator(Terminator::Reset(reset)) => reset.command(),
             #[cfg(feature = "since-pg18")]
-            PsqlItem::Terminator(Terminator::Discard(discard)) => {
-                submissions.push(span_of(source, discard.text()))
+            PsqlItem::Terminator(Terminator::Discard(discard)) => discard.command(),
+            PsqlItem::Command(command) => {
+                commands.push(command_facts(source, &command.command()));
+                continue;
             }
-            PsqlItem::Sql(_) => {}
-        }
+        };
+        // A terminator command: the boundary is the backslash and the name,
+        // as the oracle reports it.
+        submissions.push(span_of(source, command.head()));
+        commands.push(command_facts(source, &command));
     }
 
     Some(Facts {
         sql: rendered.sql().to_owned(),
         interpolations,
         submissions,
+        commands,
         // pgtk-psql has no notion of an incomplete query buffer: it has no
         // open lexical region, so a document it parses at all is complete.
         // Where psql is still inside a string, a comment or a dollar-quoted
@@ -330,17 +441,24 @@ fn pg_psql_facts(source: &str, variables: &Variables) -> Option<Facts> {
 /// own, while pgtk-psql renders one SQL string for the whole document (ADR
 /// 0007). The two are made comparable here, on psql's own facts: a send
 /// command becomes the `;` that separates the two statements it stands
-/// between, and a discard command (18) removes the buffer it ends, keeping
-/// the whitespace before it. That is exactly what
+/// between, a discard command (`\r`, and the commands of 18) removes the
+/// buffer it ends, keeping the whitespace before it, and the query text of an
+/// inactive `\if` branch goes when psql discards it. That is exactly what
 /// `pgtk_psql::substitution::render_document` does.
 fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
     let scanned = pgtk_psql_oracle::scan(source, variables);
     let raw = scanned.sql();
     let mut sql = String::with_capacity(raw.len());
+    // How much of `raw` is in `sql`.
     let mut copied = 0;
+    // Pairs of a `raw` offset and the `sql` length at that offset, one for
+    // each event, so that a discarded range of `raw` can find its place in
+    // `sql`.
+    let mut marks: Vec<(usize, usize)> = vec![(0, 0)];
     let mut buffer_start = 0;
     let mut interpolations = Vec::new();
     let mut submissions = Vec::new();
+    let mut commands = Vec::new();
     for event in scanned.events() {
         match event {
             Event::Interpolation { name, source, .. } => {
@@ -349,7 +467,11 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
                 }
             }
             Event::Terminator { source, output } => {
-                submissions.push(source.clone());
+                // A `;` from a rescanned `:name` value has no place in the
+                // document, and pgtk-psql does not rescan a value.
+                if let Some(source) = source {
+                    submissions.push(source.clone());
+                }
                 sql.push_str(&raw[copied..output.end]);
                 copied = output.end;
                 buffer_start = sql.len();
@@ -357,9 +479,17 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
             Event::Backslash {
                 name,
                 command,
+                source: extent,
                 output,
-                ..
+                options,
             } => {
+                commands.push((
+                    extent.clone(),
+                    options
+                        .iter()
+                        .map(|option| option.source.clone())
+                        .collect::<Vec<_>>(),
+                ));
                 sql.push_str(&raw[copied..*output]);
                 copied = *output;
                 match pgtk_psql_oracle::classify(name) {
@@ -378,15 +508,41 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
                     Command::Other => {}
                 }
             }
+            Event::Discard { output } => {
+                // psql removes `output` from the buffer. The branch command
+                // before this event has copied the raw text to its end, and
+                // the last mark at or before its start says where that start
+                // is in `sql`: between two events the raw text is copied
+                // unchanged. The discarded ranges nest, so an earlier mark
+                // is never inside text that a later discard removed.
+                sql.push_str(&raw[copied..output.end]);
+                copied = output.end;
+                let (at, length) = *marks
+                    .iter()
+                    .rev()
+                    .find(|(at, _)| *at <= output.start)
+                    .expect("the first mark is the start");
+                sql.truncate((length + (output.start - at)).min(sql.len()));
+                buffer_start = buffer_start.min(sql.len());
+            }
             Event::End { .. } | Event::Incomplete { .. } => {}
         }
+        marks.push((copied, sql.len()));
     }
     sql.push_str(&raw[copied..]);
+
+    // An interpolation in a command argument is part of the command.
+    interpolations.retain(|(range, _)| {
+        !commands
+            .iter()
+            .any(|(extent, _)| extent.start <= range.start && range.end <= extent.end)
+    });
 
     Facts {
         sql,
         interpolations,
         submissions,
+        commands,
         complete: scanned.is_complete(),
     }
 }
@@ -399,12 +555,13 @@ struct Outcome {
     text: bool,
     interpolations: bool,
     submissions: bool,
+    commands: bool,
     complete: bool,
 }
 
 impl Outcome {
     fn agrees(self) -> bool {
-        self.text && self.interpolations && self.submissions && self.complete
+        self.text && self.interpolations && self.submissions && self.commands && self.complete
     }
 
     /// The comparisons that disagreed, in a stable order.
@@ -413,6 +570,7 @@ impl Outcome {
             (!self.text, "text"),
             (!self.interpolations, "interpolations"),
             (!self.submissions, "submissions"),
+            (!self.commands, "commands"),
             (!self.complete, "complete"),
         ]
         .into_iter()
@@ -467,11 +625,12 @@ fn compare(source: &str) -> Comparison {
             text: false,
             interpolations: false,
             submissions: false,
+            commands: false,
             complete: !unbound_oracle.complete,
         };
         return Comparison {
             outcome,
-            class: classify(&scanned, None, &unbound_oracle, outcome),
+            class: classify(source, &scanned, None, &unbound_oracle, outcome),
             detail: format!(
                 "pgtk-psql refuses the document; psql ends with {:?}",
                 scanned.final_prompt(),
@@ -484,6 +643,7 @@ fn compare(source: &str) -> Comparison {
         text: unbound_psql.sql == unbound_oracle.sql && bound_psql.sql == bound_oracle.sql,
         interpolations: unbound_psql.interpolations == unbound_oracle.interpolations,
         submissions: unbound_psql.submissions == unbound_oracle.submissions,
+        commands: unbound_psql.commands == unbound_oracle.commands,
         complete: unbound_psql.complete == unbound_oracle.complete,
     };
     let detail = if outcome.agrees() {
@@ -503,7 +663,13 @@ fn compare(source: &str) -> Comparison {
     };
     Comparison {
         outcome,
-        class: classify(&scanned, Some(&unbound_psql), &unbound_oracle, outcome),
+        class: classify(
+            source,
+            &scanned,
+            Some(&unbound_psql),
+            &unbound_oracle,
+            outcome,
+        ),
         detail,
     }
 }
@@ -536,6 +702,7 @@ fn first_difference(psql_side: &str, oracle_side: &str) -> String {
 /// be recorded without a reason. The order of the rules is the order of
 /// causes: a later rule only speaks for a document no earlier one explains.
 fn classify(
+    source: &str,
     scanned: &pgtk_psql_oracle::Scan,
     psql: Option<&Facts>,
     oracle: &Facts,
@@ -554,26 +721,20 @@ fn classify(
     if psql.is_none() {
         return "refused";
     }
-    // psql stops SQL lexing at every backslash command and reads the rest of
-    // its line as arguments. pgtk-psql keeps a command it does not model as
-    // ordinary text (freshtonic/pg-sql#11, #12, #13), so the forwarded text
-    // and the boundaries both move.
-    if scanned
-        .backslash_commands()
-        .any(|name| pgtk_psql_oracle::classify(name) == Command::Other)
+    // psql reads the data lines after a `COPY ... FROM STDIN` itself, up to
+    // `\.`. Neither side models that: both read the data as psql text, where
+    // `\N` and `\.` are unknown commands, and the two read an unknown command
+    // differently (the next class).
+    if (scanned.copy_from_stdin() > 0 || has_copy_from_stdin_command(source))
+        && has_unknown_command(source)
     {
-        return "unmodelled-meta-command";
+        return "copy-data";
     }
-    // A send or discard command can take arguments. psql reads them and the
-    // server never sees them; pgtk-psql ends the statement at the command name
-    // and forwards the rest as SQL text.
-    if scanned.events().iter().any(|event| match event {
-        Event::Backslash {
-            source, command, ..
-        } => source.end > command.end,
-        _ => false,
-    }) {
-        return "send-command-arguments";
+    // psql reports an unknown command as an error and drops the rest of its
+    // line. pgtk-psql keeps the name only, as `MetaCommand::Unknown`, and
+    // forwards it, so that the server SQL shows the error.
+    if has_unknown_command(source) {
+        return "unknown-command";
     }
     // psql suppresses the `;` boundary inside parentheses and inside a
     // tracked `BEGIN ... END` block of a `CREATE FUNCTION`. pgtk-psql tracks
@@ -587,6 +748,32 @@ fn classify(
         return "boundary-suppressed-by-nesting";
     }
     "unclassified"
+}
+
+/// Whether pgtk-psql reads a command name that is not a command of the
+/// target version.
+fn has_unknown_command(source: &str) -> bool {
+    pgtk_psql::parse(source).is_ok_and(|document| {
+        document
+            .items
+            .iter()
+            .any(|item| matches!(item, PsqlItem::Command(MetaCommand::Unknown(_))))
+    })
+}
+
+/// Whether the document holds `\copy ... from stdin`, which reads its data
+/// lines from the script as `COPY ... FROM STDIN` does.
+fn has_copy_from_stdin_command(source: &str) -> bool {
+    pgtk_psql::parse(source).is_ok_and(|document| {
+        document.items.iter().any(|item| match item {
+            PsqlItem::Command(command @ MetaCommand::WholeLine(_)) => {
+                let command = command.command();
+                command.name().eq_ignore_ascii_case("copy")
+                    && command.text().to_ascii_lowercase().contains("from stdin")
+            }
+            _ => false,
+        })
+    })
 }
 
 /// Whether `part` appears in `whole` in order.
@@ -798,8 +985,8 @@ fn every_document_matches_its_pinned_outcome() {
     for (class, _) in expected.values() {
         assert!(
             [
-                "unmodelled-meta-command",
-                "send-command-arguments",
+                "copy-data",
+                "unknown-command",
                 "boundary-suppressed-by-nesting",
                 "open-lexical-region",
                 "refused",
@@ -817,6 +1004,36 @@ fn every_document_matches_its_pinned_outcome() {
 fn regenerate_psql_oracle_baseline() {
     let feature = target_version();
     let results = run_all();
+    // `PSQL_ORACLE_DUMP=<directory>` writes both forwarded texts of each gap,
+    // unbound, for a diff.
+    if let Some(directory) = std::env::var_os("PSQL_ORACLE_DUMP") {
+        let directory = PathBuf::from(directory);
+        let sources = corpus()
+            .into_iter()
+            .map(|file| (file.name.clone(), file.source()))
+            .chain(
+                shaped_documents()
+                    .into_iter()
+                    .map(|(name, source)| (format!("shaped/{name}"), source)),
+            )
+            .collect::<BTreeMap<_, _>>();
+        for (name, comparison) in &results {
+            if comparison.outcome.agrees() {
+                continue;
+            }
+            let source = &sources[name];
+            let file = name.replace('/', "_");
+            if let Some(facts) = pg_psql_facts(source, &Variables::new()) {
+                std::fs::write(directory.join(format!("{file}.pgtk")), facts.sql)
+                    .expect("write a dump");
+            }
+            std::fs::write(
+                directory.join(format!("{file}.psql")),
+                oracle_facts(source, &[]).sql,
+            )
+            .expect("write a dump");
+        }
+    }
     for (name, comparison) in &results {
         if !comparison.outcome.agrees() {
             println!(

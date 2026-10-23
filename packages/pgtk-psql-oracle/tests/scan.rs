@@ -4,6 +4,8 @@
 //! pgtk-psql, they only show that the oracle reports what psql does. The
 //! comparison lives in `pgtk-psql/tests/psql_oracle.rs`.
 
+use std::ops::Range;
+
 use pgtk_psql_oracle::{Event, Prompt, Quote, scan};
 
 fn interpolations(source: &str, variables: &[(&str, &str)]) -> Vec<(String, Quote, bool)> {
@@ -172,9 +174,92 @@ fn a_backslash_command_forwards_none_of_itself() {
         panic!("the first event is the backslash command");
     };
     assert_eq!(name, "gset");
-    // The command itself, then the argument psql reads to the line break.
+    // The command itself, then the argument psql reads.
     assert_eq!(*command, 9..14);
     assert_eq!(*source, 9..16);
+}
+
+/// The extent of the first backslash command, and the extent and value of
+/// each of its arguments.
+/// The extent and value of one argument.
+type Read = (Range<usize>, Option<String>);
+
+fn options(source: &str) -> (Range<usize>, Vec<Read>) {
+    let scanned = scan(source, &[]);
+    let Some(Event::Backslash {
+        source: extent,
+        options,
+        ..
+    }) = scanned
+        .events()
+        .iter()
+        .find(|event| matches!(event, Event::Backslash { .. }))
+    else {
+        panic!("{source:?} holds a backslash command");
+    };
+    (
+        extent.clone(),
+        options
+            .iter()
+            .map(|option| (option.source.clone(), option.value.clone()))
+            .collect(),
+    )
+}
+
+#[test]
+fn the_arguments_are_read_as_command_c_reads_them() {
+    // OT_NORMAL options end at a space or a backslash, and `\\` ends the
+    // command.
+    let (extent, read) = options(r"\set a 'b c' \\ SELECT 1;");
+    assert_eq!(extent, 0..15);
+    assert_eq!(
+        read,
+        vec![(5..6, Some("a".into())), (7..12, Some("b c".into()))]
+    );
+    // A second command on the same line starts after the first.
+    assert_eq!(scan(r"\x \x", &[]).backslash_commands().count(), 2);
+    // An OT_WHOLE_LINE option runs to the end of the line.
+    let (extent, read) = options("\\copy t to stdout \\\\ x\nSELECT 1;");
+    assert_eq!(extent, 0..22);
+    assert_eq!(read, vec![(6..22, Some(r"t to stdout \\ x".into()))]);
+    // An unknown command discards the rest of the line.
+    let (extent, _) = options("\\nosuch a \\\\ b\n");
+    assert_eq!(extent, 0..14);
+}
+
+#[test]
+fn set_and_unset_change_the_variables_of_the_script() {
+    let scanned = scan("\\set v 4 2\nSELECT :v;\n\\unset v\nSELECT :v;", &[]);
+    assert_eq!(scanned.sql(), "\nSELECT 42;\n\nSELECT :v;");
+}
+
+#[test]
+fn an_inactive_branch_is_discarded() {
+    let scanned = scan(
+        "\\if false\nSELECT 1;\n\\elif 1\nSELECT 2;\n\\else\nSELECT 3;\n\\endif\n",
+        &[],
+    );
+    // The oracle keeps the text and reports what psql removes.
+    let mut kept = scanned.sql().to_owned();
+    let discarded = scanned
+        .events()
+        .iter()
+        .filter_map(|event| match event {
+            Event::Discard { output } => Some(output.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for range in discarded.iter().rev() {
+        kept.replace_range(range.clone(), "");
+    }
+    assert_eq!(kept, "\nSELECT 2;\n\n");
+    assert_eq!(discarded.len(), 2, "the \\if and the \\else branch");
+}
+
+#[test]
+fn a_backquoted_argument_is_never_run() {
+    let (_, read) = options("\\set v `echo ran`");
+    assert_eq!(read[1].1.as_deref(), Some("echo ran"));
 }
 
 #[test]
@@ -240,10 +325,11 @@ fn the_send_commands_of_this_release_are_classified() {
     for name in ["gsetfoo", "gexecx", "getenv", "set", "d", "", "."] {
         assert_eq!(classify(name), Command::Other, "\\{name}");
     }
-    // `\watch` and `\r` end the query buffer without `PSQL_CMD_SEND`, so the
-    // table does not cover them (docs/psql-oracle.md).
-    assert_eq!(classify("watch"), Command::Other);
-    assert_eq!(classify("r"), Command::Other);
+    // `\watch` runs the query buffer and resets it, and `\r` clears it,
+    // although neither returns `PSQL_CMD_SEND` (docs/psql-oracle.md).
+    assert_eq!(classify("watch"), Command::Send);
+    assert_eq!(classify("r"), Command::Discard);
+    assert_eq!(classify("reset"), Command::Discard);
 }
 
 // Added in 18: nine commands end the query buffer, and two of them send its
