@@ -10,6 +10,11 @@
 # The other target versions, the no-spans build and the parity bench are the
 # release gate's (scripts/release-gate).
 #
+# The tests include the Arbitrary round trip (tests/arbitrary_roundtrip.rs).
+# It samples 100,000 statements, renders them, parses them again and asks the
+# PostgreSQL 17 oracle about each one. PGTK_SQL_ARBITRARY_ATTEMPTS changes the
+# count.
+#
 # The gate takes the machine-wide gate lock and, after the build, removes the
 # build artefacts of configurations it does not use (scripts/gate-lib.sh).
 set -euo pipefail
