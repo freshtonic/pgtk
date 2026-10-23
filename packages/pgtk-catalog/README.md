@@ -73,12 +73,22 @@ let same = catalog.type_visible(&path, "int4").unwrap();
 assert_eq!(same, int4);
 ```
 
-Try the `inspect` example. It finds each entity with a given name: a type, a relation, each
-function overload and each operator overload.
+## Examples
+
+The `examples/` folder has programs that you can copy and change.
+
+| Example | Features | What it does |
+|---|---|---|
+| `inspect` | `fixture` | Finds each entity with a given name in the built-in catalog: a type, a relation, each function overload and each operator overload. |
+| `describe_schema` | `postgres` | Loads the catalog of a live server, and prints the tables of a schema with their columns, types, primary keys and parents, like `\d` in psql. |
+| `snapshot` | `postgres`, `serde` | Saves the catalog of a live server to a JSON file. Later, it loads the file with no server. A CI job can check queries with the file and no database. |
 
 ```sh
 cargo run -p pgtk-catalog --features fixture --example inspect -- int4
 cargo run -p pgtk-catalog --features fixture --example inspect -- information_schema.tables
+cargo run -p pgtk-catalog --features postgres --example describe_schema -- postgresql://postgres@localhost/app public
+cargo run -p pgtk-catalog --features postgres,serde --example snapshot -- save postgresql://postgres@localhost/app catalog.json
+cargo run -p pgtk-catalog --features postgres,serde --example snapshot -- show catalog.json
 ```
 
 ## Use a different driver
