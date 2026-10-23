@@ -37,7 +37,8 @@ cargo test --workspace
 When you commit:
 
 - Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) for the commit
-  messages. release-plz makes the changelogs from them.
+  messages. release-plz makes the changelogs from them. CI checks the commits of each pull
+  request; run `scripts/check-conventional-commits origin/main` to check them before you push.
 - Sign off each commit, as part of the
   [Developer Certificate of Origin (DCO)](https://developercertificate.org).
 
