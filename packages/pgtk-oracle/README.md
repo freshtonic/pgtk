@@ -12,6 +12,7 @@ published.
 ## What it gives
 
 - `parse_ok(sql)`: does PostgreSQL's raw parser accept this SQL?
+- `parse_error(sql)`: the error message of the raw parser, or `None` if it accepts the SQL.
 - `parse_equal(a, b)`: do two SQL texts give the same parse tree?
 - `node_to_string(sql)`: the parse tree, as PostgreSQL prints it.
 - `POSTGRES_REF` and `POSTGRES_COMMIT`: the release that this build linked.

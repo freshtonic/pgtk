@@ -10,7 +10,7 @@
 mod parser;
 
 #[cfg(feature = "parser")]
-pub use parser::{node_to_string, parse_equal, parse_ok, Equal};
+pub use parser::{node_to_string, parse_equal, parse_error, parse_ok, Equal};
 
 /// The Git ref (a release tag, or a branch for a pre-release major) of the
 /// PostgreSQL release that this oracle is built from.

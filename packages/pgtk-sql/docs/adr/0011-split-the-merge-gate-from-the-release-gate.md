@@ -37,6 +37,13 @@ other versions rarely fail.
 - Both gates prune the build artefacts of every configuration but the merge
   gate's at their end, because a stale configuration is a gigabyte nothing
   reads again, and a full disk slows every build.
+- Both gates run the `Arbitrary` round trip (`tests/arbitrary_roundtrip.rs`,
+  issue #49). It samples statements with `Arbitrary`, renders them, parses
+  them again, and asks the oracle of the version about each one. The merge
+  gate samples 100,000 statements (pg17, about 6 seconds in a debug build).
+  The release gate samples 1,000,000 statements for each version (about one
+  minute each). The test fails when a failure has no entry in its list of
+  known failures, or when the yield falls below its pinned floor.
 - The dev profile carries no debug info. The gates never run a debugger, and
   the unpacked debug objects of one configuration were five gigabytes that
   every test link read. `--profile dev-debug` restores line tables.
