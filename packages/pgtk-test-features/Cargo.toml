@@ -16,4 +16,4 @@ publish = false
 [dependencies]
 pgtk-catalog = { path = "../pgtk-catalog", features = ["async", "fixture", "pg19-beta", "postgres", "serde", "tokio-postgres"] }
 pgtk-psql = { path = "../pgtk-psql", features = ["psql-oracle"] }
-pgtk-sql = { path = "../pgtk-sql", features = ["postgres-oracle"] }
+pgtk-sql = { path = "../pgtk-sql", features = ["arbitrary", "postgres-oracle"] }

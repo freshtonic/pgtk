@@ -56,7 +56,8 @@ cargo test --workspace
 `cargo test --workspace` runs every test of the repository for the default Target Version
 (pg17):
 
-- The tests against the oracles (`differential`, `accepted_legacy_gaps`, `psql_oracle`).
+- The tests against the oracles (`differential`, `accepted_legacy_gaps`, `arbitrary_roundtrip`,
+  `psql_oracle`).
 - The pgtk-catalog tests of all features, and the live loader tests against PostgreSQL 14, 15,
   16 and 17.
 - The pgtk-analyze oracle harness, which replays the regression corpus against PostgreSQL 17.
@@ -81,7 +82,7 @@ feature gates. Give the features yourself:
 
 | Crate | Command for all its tests |
 | --- | --- |
-| pgtk-sql | `cargo test -p pgtk-sql --features postgres-oracle` |
+| pgtk-sql | `cargo test -p pgtk-sql --features arbitrary,postgres-oracle` |
 | pgtk-psql | `cargo test -p pgtk-psql --features psql-oracle` |
 | pgtk-catalog | `cargo test -p pgtk-catalog --all-features` |
 | pgtk-analyze | `cargo test -p pgtk-analyze` |
@@ -105,8 +106,8 @@ start them from any directory.
 
 | Script | What it proves |
 | --- | --- |
-| `packages/pgtk-sql/scripts/merge-gate` | pg17 with `spans`, `arbitrary` and both oracles. Run it before a merge. |
-| `packages/pgtk-sql/scripts/release-gate [pgN...]` | Each Target Version (all six if you give none). Run it before a release, and for the oldest affected version when you change a version gate. |
+| `packages/pgtk-sql/scripts/merge-gate` | pg17 with `spans`, `arbitrary` and both oracles, and the `Arbitrary` round trip with 100,000 statements. Run it before a merge. |
+| `packages/pgtk-sql/scripts/release-gate [pgN...]` | Each Target Version (all six if you give none), and the `Arbitrary` round trip with 1,000,000 statements for each version. Run it before a release, and for the oldest affected version when you change a version gate. |
 | `packages/pgtk-analyze/scripts/gate-versions [pgN...]` | clippy and the tests of pgtk-analyze for each Grammar Version. |
 
 The CI workflow `Release gate` (`.github/workflows/release-gate.yml`) runs `release-gate` and

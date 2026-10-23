@@ -27,6 +27,27 @@ pub fn parse_ok(sql: &str) -> bool {
     unsafe { pgo_raw_parse_check(c.as_ptr(), std::ptr::null_mut()) == 0 }
 }
 
+/// The error message of the raw parser of the pinned PostgreSQL release, for
+/// example `syntax error at or near "("`. `None` if the parser accepts `sql`.
+pub fn parse_error(sql: &str) -> Option<String> {
+    let c = CString::new(sql).expect("NUL in SQL");
+    let _guard = LOCK.lock().unwrap();
+    unsafe {
+        let mut errmsg: *mut c_char = std::ptr::null_mut();
+        if pgo_raw_parse_check(c.as_ptr(), &mut errmsg) == 0 {
+            return None;
+        }
+        if errmsg.is_null() {
+            return Some(String::new());
+        }
+        let s = std::ffi::CStr::from_ptr(errmsg)
+            .to_string_lossy()
+            .into_owned();
+        pgo_free(errmsg as *mut c_void);
+        Some(s)
+    }
+}
+
 /// Compare two SQL strings by PostgreSQL's `equal()` over their raw parse
 /// trees (location-insensitive).
 pub fn parse_equal(a: &str, b: &str) -> Equal {
@@ -80,6 +101,15 @@ mod tests {
     fn parse_check_outcomes() {
         assert!(parse_ok("SELECT 1"));
         assert!(!parse_ok("SELECT FROM FROM"));
+    }
+
+    #[test]
+    fn parse_error_outcomes() {
+        assert_eq!(parse_error("SELECT 1"), None);
+        assert_eq!(
+            parse_error("SELECT FROM FROM").as_deref(),
+            Some("syntax error at or near \"FROM\"")
+        );
     }
 
     // Added in 15: trailing junk after a numeric literal is a lexical error

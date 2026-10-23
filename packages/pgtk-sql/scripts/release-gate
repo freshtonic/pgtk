@@ -14,6 +14,11 @@
 # `arbitrary`, and the parity gate (ADR 0006): the parse bench's
 # pgtk-sql/sqlparser geomean must be at or below 1.0.
 #
+# The Arbitrary round trip (tests/arbitrary_roundtrip.rs) runs for each
+# version with 1,000,000 attempts, ten times the merge gate's count. It takes
+# about one minute in a debug build. PGTK_SQL_ARBITRARY_ATTEMPTS changes the
+# count.
+#
 # Each version is its own build of the generated grammar, so the run keeps no
 # incremental cache (CARGO_INCREMENTAL=1 restores it), and at the end it
 # removes every configuration but the merge gate's (scripts/gate-lib.sh).
@@ -21,6 +26,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/gate-lib.sh"
 
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+export PGTK_SQL_ARBITRARY_ATTEMPTS="${PGTK_SQL_ARBITRARY_ATTEMPTS:-1000000}"
 
 versions=("$@")
 if [ "${#versions[@]}" -eq 0 ]; then
