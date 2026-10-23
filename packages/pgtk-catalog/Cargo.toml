@@ -38,9 +38,19 @@ zstd = { workspace = true, optional = true }
 postgres = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
 
+# The examples. CI builds them with `cargo build --workspace --examples`, where
+# pgtk-test-features turns on each feature that they need.
 [[example]]
 name = "inspect"
 required-features = ["fixture"]
+
+[[example]]
+name = "describe_schema"
+required-features = ["postgres"]
+
+[[example]]
+name = "snapshot"
+required-features = ["postgres", "serde"]
 
 [dev-dependencies]
 pgtk-test-server = { path = "../pgtk-test-server" }
