@@ -53,6 +53,11 @@ Every package must pass `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings` and
 `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`. CI runs all three.
 
+Each commit subject is a [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/),
+for example `fix(pgtk-sql): reject a second WITH in CREATE DATABASE`. CI runs
+`scripts/check-conventional-commits` on each pull request, and release-plz makes the changelogs
+from the subjects.
+
 CI also checks the published crates with Rust 1.88, their `rust-version`, and the licences of
 their dependencies against `deny.toml`. A new dependency of a published crate must have a licence
 that `deny.toml` permits.
