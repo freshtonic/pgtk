@@ -1,10 +1,12 @@
 # cargo-deny configuration (https://embarkstudios.github.io/cargo-deny/).
 #
 # CI checks the licences of the dependencies of pgtk-catalog and pgtk-analyze (and thus of
-# pgtk-sql, which pgtk-analyze depends on), with all features of the crate:
+# pgtk-sql, which pgtk-analyze depends on), with all features of the crate, and of pgtk-psql with
+# its default features (its version features are mutually exclusive):
 #
 #   cargo deny --manifest-path packages/pgtk-catalog/Cargo.toml --all-features check licenses
 #   cargo deny --manifest-path packages/pgtk-analyze/Cargo.toml --all-features check licenses
+#   cargo deny --manifest-path packages/pgtk-psql/Cargo.toml check licenses
 #
 # The development crates are not published, so they are not checked.
 
