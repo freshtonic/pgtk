@@ -77,6 +77,15 @@ jobs:
           fetch-depth: 0
       - run: scripts/check-conventional-commits "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
 
+  llms-txt:
+    name: llms.txt links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # llms.txt is written by hand. Each link to a file of the repository must point to a file
+      # that exists.
+      - run: scripts/check-llms-txt
+
   msrv:
     name: Rust 1.88 (rust-version)
     runs-on: ubuntu-latest
