@@ -91,6 +91,13 @@ name = "accepted_legacy_gaps"
 path = "tests/accepted_legacy_gaps.rs"
 required-features = ["postgres-oracle"]
 
+# The `Arbitrary` round trip (issue #49). With `postgres-oracle` it also asks
+# the oracle about each statement. `PGTK_SQL_ARBITRARY_ATTEMPTS` sets its size.
+[[test]]
+name = "arbitrary_roundtrip"
+path = "tests/arbitrary_roundtrip.rs"
+required-features = ["arbitrary"]
+
 [[test]]
 name = "table_parser"
 path = "tests/table_parser.rs"
