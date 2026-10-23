@@ -23,12 +23,12 @@ needs to type-check SQL.
   cannot point to an entity of a different kind. `catalog[handle]` gives you the entity.
 - **PostgreSQL's name rules.** Look up a name in a schema, or resolve an unqualified name
   against a search path, the way the server does.
-- **One build for all server versions.** One binary reads PostgreSQL 14, 15, 16 and 17. The
-  loader finds the server version when it connects.
+- **One build for all server versions.** One binary reads PostgreSQL 14, 15, 16, 17 and 18, and
+  19 beta with the `pg19-beta` feature. The loader finds the server version when it connects.
 - **Bring your own driver.** Adapters for `postgres` and `tokio-postgres` are included. For any
   other driver, implement a trait with one method.
-- **Works offline.** The `fixture` feature includes a stock PostgreSQL 17 catalog in the crate,
-  for tests and for tools that never connect to a server.
+- **Works offline.** The `fixture` feature includes a stock catalog of each supported version in
+  the crate, for tests and for tools that never connect to a server.
 - **Safe and small.** `unsafe` is forbidden in this crate. The only required dependency is
   `thiserror`.
 
@@ -51,7 +51,8 @@ let catalog = loaded.catalog;
 `loaded.diagnostics` holds one note for each entity that the loader could not fully keep. For a
 stock database, the list is empty.
 
-Or use the built-in PostgreSQL 17 catalog (the `fixture` feature), with no server:
+Or use a built-in catalog (the `fixture` feature), with no server. There is one for each
+version, from `fixture::pg14()` to `fixture::pg18()`, and `fixture::pg19_beta()` with `pg19-beta`:
 
 ```rust
 let catalog = pgtk_catalog::fixture::pg17();
@@ -109,7 +110,8 @@ The loader reads `pg_catalog` only. It never reads `information_schema`.
 | `tokio-postgres` | `AsyncExecutor` for `tokio_postgres::Client`. Turns on `async`. |
 | `async` | The `AsyncExecutor` trait and `load_async`. |
 | `serde` | `Serialize` and `Deserialize` for a `Catalog`. Save a catalog, and load it again later. |
-| `fixture` | The built-in PostgreSQL 17 catalog. Turns on `serde`. |
+| `fixture` | The built-in catalogs of PostgreSQL 14 to 18, and of 19 beta with `pg19-beta`. Turns on `serde`. |
+| `pg19-beta` | Loads a PostgreSQL 19 beta server. The 19 catalog can change before 19.0. |
 
 ## Documents
 

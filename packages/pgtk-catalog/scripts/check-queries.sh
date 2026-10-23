@@ -1,20 +1,22 @@
 #!/usr/bin/env bash
 #
-# Run every query in src/loader/queries.rs against PostgreSQL 14, 15, 16, and
-# 17 in Docker. Fail on any SQL error. Print the row count of each query for
-# each version.
+# Run every query in src/loader/queries.rs against PostgreSQL 14, 15, 16, 17,
+# and 18 in Docker, and 19 beta when you name it. Fail on any SQL error. Print
+# the row count of each query for each version.
 #
 # The SQL comes out of src/loader/queries.rs. This script holds no second
 # copy. The extraction convention is documented at the top of that file:
 #
-#   //@sql <VariantName>
+#   //@sql <VariantName> [<first>-[<last>]]
 #   const NAME: &str = r#"
 #   ... SQL ...
 #   "#;
 #
+# A text with a range runs only on the versions of its range.
+#
 # Usage:
-#   scripts/check-queries.sh            # every version
-#   scripts/check-queries.sh 16 17      # only the versions you name
+#   scripts/check-queries.sh            # 14 to 18
+#   scripts/check-queries.sh 18 19      # only the versions you name
 
 set -euo pipefail
 
@@ -23,8 +25,16 @@ QUERIES_RS="$REPO_ROOT/src/loader/queries.rs"
 
 VERSIONS=("$@")
 if [ ${#VERSIONS[@]} -eq 0 ]; then
-    VERSIONS=(14 15 16 17)
+    VERSIONS=(14 15 16 17 18)
 fi
+
+# The image of each version. 19 is pinned to one tag until 19.0.
+image_of() {
+    case "$1" in
+        19) echo "postgres:19rc1" ;;
+        *) echo "postgres:$1" ;;
+    esac
+}
 
 CONTAINER_PREFIX="pgtk-catalog-check-$$"
 WORK_DIR="$(mktemp -d)"
@@ -47,15 +57,23 @@ fi
 
 # --- Extract the SQL -------------------------------------------------------
 #
-# Writes one file per query into $WORK_DIR, named <n>-<VariantName>.sql, and
-# one index file that keeps declaration order.
+# Writes one file per text into $WORK_DIR, named <n>.sql, and one index file
+# that keeps declaration order. Each index line is `<n> <VariantName> <first>
+# <last>`. A text with no range gets 0 and 999.
 
 awk -v out="$WORK_DIR" '
-    /^\/\/@sql [A-Za-z][A-Za-z0-9_]*$/ {
+    /^\/\/@sql [A-Za-z][A-Za-z0-9_]*( [0-9]+-[0-9]*)?$/ {
         name = $2
+        first = 0
+        last = 999
+        if (NF == 3) {
+            split($3, range, "-")
+            first = range[1]
+            if (range[2] != "") last = range[2]
+        }
         n += 1
-        file = sprintf("%s/%02d-%s.sql", out, n, name)
-        print name > (out "/index.txt")
+        file = sprintf("%s/%02d.sql", out, n)
+        printf "%02d %s %s %s\n", n, name, first, last > (out "/index.txt")
         want_open = 1
         next
     }
@@ -95,11 +113,13 @@ for version in "${VERSIONS[@]}"; do
     name="$CONTAINER_PREFIX-$version"
     port=$((PORT_BASE + version))
 
-    echo "=== PostgreSQL $version (container $name, port $port) ==="
+    image="$(image_of "$version")"
 
-    if ! docker image inspect "postgres:$version" >/dev/null 2>&1; then
-        echo "  pulling postgres:$version ..."
-        docker pull "postgres:$version" >/dev/null
+    echo "=== PostgreSQL $version ($image, container $name, port $port) ==="
+
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+        echo "  pulling $image ..."
+        docker pull "$image" >/dev/null
     fi
 
     docker rm -f "$name" >/dev/null 2>&1 || true
@@ -110,7 +130,7 @@ for version in "${VERSIONS[@]}"; do
         -e POSTGRES_USER=postgres \
         -e POSTGRES_DB=postgres \
         -p "$port:5432" \
-        "postgres:$version" >/dev/null
+        "$image" >/dev/null
 
     # Wait for readiness. pg_isready reports true once during init, so also
     # require a real query to succeed.
@@ -124,7 +144,7 @@ for version in "${VERSIONS[@]}"; do
         sleep 1
     done
     if [ "$ready" -ne 1 ]; then
-        echo "  ERROR: postgres:$version did not become ready" >&2
+        echo "  ERROR: $image did not become ready" >&2
         docker logs "$name" 2>&1 | tail -20 >&2
         FAILED=1
         docker rm -f "$name" >/dev/null 2>&1 || true
@@ -135,8 +155,11 @@ for version in "${VERSIONS[@]}"; do
         "SELECT current_setting('server_version')")
     echo "  server_version: $server_version"
 
-    while IFS= read -r query_name; do
-        sql_file=$(find "$WORK_DIR" -name "*-$query_name.sql" | head -1)
+    while read -r number query_name first last; do
+        if [ "$version" -lt "$first" ] || [ "$version" -gt "$last" ]; then
+            continue
+        fi
+        sql_file="$WORK_DIR/$number.sql"
         docker cp "$sql_file" "$name:/tmp/q.sql" >/dev/null
 
         # -v ON_ERROR_STOP=1 makes psql exit non-zero on any SQL error. The

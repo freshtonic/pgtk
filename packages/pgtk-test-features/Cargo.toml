@@ -14,6 +14,6 @@ publish = false
 # not get these features. `cargo test -p <crate>` alone does not either: give
 # it `--features` (see DEVELOPMENT.md).
 [dependencies]
-pgtk-catalog = { path = "../pgtk-catalog", features = ["async", "fixture", "postgres", "serde", "tokio-postgres"] }
+pgtk-catalog = { path = "../pgtk-catalog", features = ["async", "fixture", "pg19-beta", "postgres", "serde", "tokio-postgres"] }
 pgtk-psql = { path = "../pgtk-psql", features = ["psql-oracle"] }
 pgtk-sql = { path = "../pgtk-sql", features = ["postgres-oracle"] }

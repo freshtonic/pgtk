@@ -39,7 +39,7 @@ use crate::oid::Oid;
 use crate::operator::{Operator, OperatorKind};
 use crate::operator_class::OperatorClass;
 use crate::parameter::{Parameter, ParameterKind};
-use crate::relation::{Column, Identity, PrimaryKey, Relation, RelationKind};
+use crate::relation::{Column, Generated, Identity, PrimaryKey, Relation, RelationKind};
 use crate::rule::{FiresWhen, Rule, RuleEvent};
 use crate::schema::Schema;
 use crate::trigger::Trigger;
@@ -190,8 +190,8 @@ struct AttributeRow {
     not_null: bool,
     /// True when the attribute has a default.
     has_default: bool,
-    /// True when the attribute is a generated column.
-    generated: bool,
+    /// The `attgenerated` letter, when the attribute is a generated column.
+    generated: Option<char>,
     /// The `attidentity` letter, when the attribute is an identity column.
     identity: Option<char>,
     /// The OID of the collation of the attribute, or 0.
@@ -439,7 +439,7 @@ fn attribute_rows(rows: &Rows) -> Result<HashMap<Oid, Vec<AttributeRow>>, LoadEr
             typmod: row.i32(4)?,
             not_null: row.bool(5)?,
             has_default: row.bool(6)?,
-            generated: row.bool(7)?,
+            generated: row.opt_char(7)?,
             identity: row.opt_char(8)?,
             collation: row.oid(9)?,
         };
@@ -731,6 +731,10 @@ struct ConstraintRow {
     n: Option<i32>,
     /// The attribute number of the column, when there is a column.
     attnum: Option<i16>,
+    /// True when the constraint is enforced.
+    enforced: bool,
+    /// True when the constraint has `WITHOUT OVERLAPS` or `PERIOD`.
+    period: bool,
 }
 
 /// Read [`QueryId::Constraints`].
@@ -744,6 +748,8 @@ fn constraint_rows(rows: &Rows) -> Result<Vec<ConstraintRow>, LoadError> {
             deferrable: row.bool(4)?,
             n: row.opt_text(5)?.map(|_| row.i32(5)).transpose()?,
             attnum: row.opt_text(6)?.map(|_| row.i16(6)).transpose()?,
+            enforced: row.bool(7)?,
+            period: row.bool(8)?,
         })
     })
 }
@@ -757,6 +763,7 @@ fn constraint_kind(letter: char) -> Option<ConstraintKind> {
         'f' => Some(ConstraintKind::ForeignKey),
         'x' => Some(ConstraintKind::Exclusion),
         't' => Some(ConstraintKind::ConstraintTrigger),
+        'n' => Some(ConstraintKind::NotNull),
         _ => None,
     }
 }
@@ -792,6 +799,8 @@ fn constraints_by_relation(
                 name: first.name.clone(),
                 kind,
                 deferrable: first.deferrable,
+                enforced: first.enforced,
+                period: first.period,
                 columns: group.iter().filter_map(|row| row.attnum).collect(),
             });
     }
@@ -1825,6 +1834,22 @@ fn columns_of(
                     return None;
                 }
             };
+            let generated = match attribute.generated {
+                None => None,
+                Some('s') => Some(Generated::Stored),
+                Some('v') => Some(Generated::Virtual),
+                Some(letter) => {
+                    // A column of an unknown kind is generated, but the
+                    // loader cannot say how. The column goes.
+                    diagnostics.push(unparsable(
+                        EntityKind::Column,
+                        row.oid,
+                        "attgenerated",
+                        letter,
+                    ));
+                    return None;
+                }
+            };
             Some(Column {
                 name: attribute.name.clone(),
                 position: attribute.num,
@@ -1832,7 +1857,7 @@ fn columns_of(
                 typmod: Typmod(attribute.typmod),
                 not_null: attribute.not_null,
                 has_default: attribute.has_default,
-                generated: attribute.generated,
+                generated,
                 collation,
                 identity,
             })
@@ -2404,7 +2429,7 @@ mod tests {
     use crate::loader::{Loaded, Rows};
     use crate::name::{Name, QualifiedName};
     use crate::oid::Oid;
-    use crate::relation::{Identity, PrimaryKey, RelationKind};
+    use crate::relation::{Generated, Identity, PrimaryKey, RelationKind};
     use crate::rule::{FiresWhen, Rule, RuleEvent};
     use crate::trigger::TriggerTiming;
     use crate::types::{TypeCategory, TypeKind};
@@ -2507,9 +2532,9 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "0"]),
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", NULL, NULL, "0"]),
                 row(&[
-                    "16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL, "0",
+                    "16384", "2", "flags", "1000", "-1", "f", "t", NULL, NULL, "0",
                 ]),
             ],
         );
@@ -2730,7 +2755,7 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![row(&[
-                "16384", "1", "ghost", "99999", "-1", "f", "f", "f", NULL, "0",
+                "16384", "1", "ghost", "99999", "-1", "f", "f", NULL, NULL, "0",
             ])],
         );
 
@@ -2837,12 +2862,12 @@ mod tests {
                     "-1",
                     "t",
                     "f",
-                    "f",
+                    NULL,
                     NULL,
                     "0",
                 ]),
                 row(&[
-                    "16409", "2", "log_cnt", "20", "-1", "t", "f", "f", NULL, "0",
+                    "16409", "2", "log_cnt", "20", "-1", "t", "f", NULL, NULL, "0",
                 ]),
                 row(&[
                     "16409",
@@ -2852,7 +2877,7 @@ mod tests {
                     "-1",
                     "t",
                     "f",
-                    "f",
+                    NULL,
                     NULL,
                     "0",
                 ]),
@@ -3075,7 +3100,7 @@ mod tests {
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "always", "16", "-1", "t", "f", "f", "a", "0"]),
+                row(&["16384", "1", "always", "16", "-1", "t", "f", NULL, "a", "0"]),
                 row(&[
                     "16384",
                     "2",
@@ -3084,11 +3109,11 @@ mod tests {
                     "-1",
                     "t",
                     "f",
-                    "f",
+                    NULL,
                     "d",
                     "0",
                 ]),
-                row(&["16384", "3", "plain", "16", "-1", "f", "f", "f", NULL, "0"]),
+                row(&["16384", "3", "plain", "16", "-1", "f", "f", NULL, NULL, "0"]),
             ],
         );
         let loaded = load(rows);
@@ -3105,13 +3130,50 @@ mod tests {
     }
 
     #[test]
+    fn a_column_keeps_the_kind_of_its_generation() {
+        let mut rows = sample_rows();
+        rows.insert(
+            QueryId::Attributes,
+            vec![
+                row(&["16384", "1", "stored", "16", "-1", "f", "t", "s", NULL, "0"]),
+                row(&[
+                    "16384", "2", "virtual", "16", "-1", "f", "t", "v", NULL, "0",
+                ]),
+                row(&["16384", "3", "plain", "16", "-1", "f", "f", NULL, NULL, "0"]),
+                row(&["16384", "4", "odd", "16", "-1", "f", "t", "q", NULL, "0"]),
+            ],
+        );
+        let loaded = load(rows);
+        let relation = loaded.catalog.relation_by_oid(Oid(16384)).unwrap();
+        let kinds: Vec<(&str, Option<Generated>)> = loaded.catalog[relation]
+            .columns
+            .iter()
+            .map(|column| (column.name.as_str(), column.generated))
+            .collect();
+        assert_eq!(
+            kinds,
+            vec![
+                ("stored", Some(Generated::Stored)),
+                ("virtual", Some(Generated::Virtual)),
+                ("plain", None),
+            ]
+        );
+        assert!(loaded.diagnostics.contains(&Diagnostic::UnparsableValue {
+            entity: EntityKind::Column,
+            oid: Oid(16384),
+            column: "attgenerated",
+            value: "q".to_owned(),
+        }));
+    }
+
+    #[test]
     fn a_column_with_an_unknown_identity_letter_goes_with_a_note() {
         let mut rows = sample_rows();
         rows.insert(
             QueryId::Attributes,
             vec![
-                row(&["16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "0"]),
-                row(&["16384", "2", "odd", "16", "-1", "t", "f", "f", "q", "0"]),
+                row(&["16384", "1", "flag", "16", "-1", "t", "f", NULL, NULL, "0"]),
+                row(&["16384", "2", "odd", "16", "-1", "t", "f", NULL, "q", "0"]),
             ],
         );
         let loaded = load(rows);
@@ -3501,13 +3563,13 @@ mod tests {
             QueryId::Attributes,
             vec![
                 row(&[
-                    "16384", "1", "flag", "16", "-1", "t", "f", "f", NULL, "12002",
+                    "16384", "1", "flag", "16", "-1", "t", "f", NULL, NULL, "12002",
                 ]),
                 row(&[
-                    "16384", "2", "flags", "1000", "-1", "f", "t", "f", NULL, "0",
+                    "16384", "2", "flags", "1000", "-1", "f", "t", NULL, NULL, "0",
                 ]),
                 row(&[
-                    "16384", "3", "gone", "16", "-1", "f", "f", "f", NULL, "77777",
+                    "16384", "3", "gone", "16", "-1", "f", "f", NULL, NULL, "77777",
                 ]),
             ],
         );
@@ -3544,13 +3606,24 @@ mod tests {
         rows.insert(
             QueryId::Constraints,
             vec![
-                row(&["80001", "16384", "t1_pkey", "p", "f", "2", "1"]),
-                row(&["80001", "16384", "t1_pkey", "p", "f", "1", "2"]),
-                row(&["80000", "16384", "t1_check", "c", "f", NULL, NULL]),
-                row(&["80002", "16384", "t1_excl", "x", "t", "1", "0"]),
-                row(&["80003", "16384", "t1_odd", "q", "f", "1", "1"]),
+                row(&["80001", "16384", "t1_pkey", "p", "f", "2", "1", "t", "t"]),
+                row(&["80001", "16384", "t1_pkey", "p", "f", "1", "2", "t", "t"]),
+                row(&["80000", "16384", "t1_check", "c", "f", NULL, NULL, "f", "f"]),
+                row(&["80002", "16384", "t1_excl", "x", "t", "1", "0", "t", "f"]),
+                row(&["80003", "16384", "t1_odd", "q", "f", "1", "1", "t", "f"]),
+                row(&[
+                    "80005",
+                    "16384",
+                    "t1_x_not_null",
+                    "n",
+                    "f",
+                    "1",
+                    "1",
+                    "t",
+                    "f",
+                ]),
                 // A constraint of a relation that is not in the catalog goes.
-                row(&["80004", "99999", "lost", "u", "f", "1", "1"]),
+                row(&["80004", "99999", "lost", "u", "f", "1", "1", "t", "f"]),
             ],
         );
         let loaded = load(rows);
@@ -3563,19 +3636,33 @@ mod tests {
                     name: Name::new("t1_check"),
                     kind: ConstraintKind::Check,
                     deferrable: false,
+                    enforced: false,
+                    period: false,
                     columns: Vec::new(),
                 },
                 Constraint {
                     name: Name::new("t1_excl"),
                     kind: ConstraintKind::Exclusion,
                     deferrable: true,
+                    enforced: true,
+                    period: false,
                     columns: vec![0],
                 },
                 Constraint {
                     name: Name::new("t1_pkey"),
                     kind: ConstraintKind::PrimaryKey,
                     deferrable: false,
+                    enforced: true,
+                    period: true,
                     columns: vec![2, 1],
+                },
+                Constraint {
+                    name: Name::new("t1_x_not_null"),
+                    kind: ConstraintKind::NotNull,
+                    deferrable: false,
+                    enforced: true,
+                    period: false,
+                    columns: vec![1],
                 },
             ]
         );

@@ -61,6 +61,7 @@ impl Rule {
 /// as a rule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum RuleEvent {
     /// `ON UPDATE`. `ev_type` is `2`.
     Update,
@@ -76,6 +77,7 @@ pub enum RuleEvent {
 /// ordinary session is in the `origin` mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum FiresWhen {
     /// In the `origin` mode and the `local` mode. This is the default. The
     /// letter is `O`.
