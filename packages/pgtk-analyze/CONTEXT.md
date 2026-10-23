@@ -84,11 +84,15 @@ _Avoid_: Row description, schema, shape
 A type the caller states for a positional parameter before Analysis. Analysis infers the type of every parameter without one.
 
 **Diagnostic**:
-The error PostgreSQL would raise for a Statement, with the same SQLSTATE, message and cursor position, plus the spans that PostgreSQL does not have. Analysis stops at the first Diagnostic, as PostgreSQL does. This is a different concept from `pgtk-catalog`'s Diagnostic, which is a loader note.
+The error PostgreSQL would raise for a Statement. Its PostgreSQL part (the SQLSTATE, message, hint and cursor position) agrees with PostgreSQL exactly. Its Explanation adds what PostgreSQL does not give: the spans, labels, notes and help. Analysis stops at the first Diagnostic, as PostgreSQL does. This is a different concept from `pgtk-catalog`'s Diagnostic, which is a loader note.
 _Avoid_: Error (for the PostgreSQL-defined ones), warning, finding, report
 
+**Explanation**:
+The part of a Diagnostic that PostgreSQL does not give: labels (a span with a short message), notes, and help (a suggested change, for example a column name that is near the misspelled one). It adds to the PostgreSQL part and never changes it. `pgtk-sql` uses the same term for a Rejection.
+_Avoid_: Embellishment, decoration, extras
+
 **Unsupported**:
-The outcome when Analysis meets something PostgreSQL would accept but this crate cannot yet analyse. Never reported as a Diagnostic and never as a wrong answer.
+The outcome when Analysis meets something PostgreSQL would accept but this crate cannot yet analyse. Never reported as a Diagnostic and never as a wrong answer. A text that `pgtk-sql` rejects is a Rejection, never Unsupported.
 _Avoid_: Unimplemented, todo, unknown
 
 ### Fidelity
