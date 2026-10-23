@@ -1,29 +1,6 @@
-//! The psql client grammar: what `psqlscan.l` recognises, and nothing else.
+#![doc = include_str!("../README.md")]
 //!
-//! psql is a client program, not a dialect. It scans its input, substitutes
-//! variable interpolations textually, and sends the resulting string to the
-//! server; PostgreSQL's `gram.y` therefore contains no psql construct at
-//! all. That is why this is a separate crate from `pgtk-sql` rather than an
-//! extension of it: admitting `:'name'` into an expression grammar puts a
-//! client rewrite where the server grammar has a type cast or a SQL/JSON
-//! key/value separator, and no lookahead settles the difference.
-//!
-//! The pipeline is three steps, in this order:
-//!
-//! ```no_run
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut variables = pgtk_psql::Variables::new();
-//! variables.set("x", "42");
-//!
-//! // 1. Parse the psql document.  2. Substitute and render server SQL.
-//! let rendered = pgtk_psql::render("SELECT int :'x';", &variables)?;
-//! assert_eq!(rendered.sql(), "SELECT int '42';");
-//!
-//! // 3. Only now parse the result as PostgreSQL SQL.
-//! let document = rendered.parse_sql().map_err(|error| error.to_string())?;
-//! assert_eq!(document.statements().len(), 1);
-//! # Ok(()) }
-//! ```
+//! # Source map
 //!
 //! Rendering keeps a [`SourceMap`] so a diagnostic over the rendered SQL can
 //! still name a byte of the user's psql source. Without it, substitution

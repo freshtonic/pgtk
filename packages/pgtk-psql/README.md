@@ -29,18 +29,22 @@ It is not on crates.io yet.
 The pipeline has three steps: parse the psql script, render it to server SQL, then parse that
 SQL with `pgtk-sql`.
 
-```rust,ignore
+```rust
 let mut variables = pgtk_psql::Variables::new();
 variables.set("table", "users");
+variables.set("id", "42");
 
-let rendered = pgtk_psql::render(r#"SELECT * FROM :"table" WHERE id = :'id';"#, &variables)?;
-assert_eq!(rendered.sql(), r#"SELECT * FROM "users" WHERE id = :'id';"#);
+// 1. Parse the psql script.  2. Substitute, and render server SQL.
+let rendered = pgtk_psql::render(r#"SELECT * FROM :"table" WHERE id = :'id';"#, &variables)
+    .expect("a valid psql script");
+assert_eq!(rendered.sql(), r#"SELECT * FROM "users" WHERE id = '42';"#);
 
-// Only now parse the result as PostgreSQL SQL.
-let document = rendered.parse_sql().map_err(|error| error.to_string())?;
+// 3. Only now parse the result as PostgreSQL SQL.
+let document = rendered.parse_sql().expect("valid PostgreSQL");
+assert_eq!(document.statements().len(), 1);
 ```
 
-`id` is not set, so `:'id'` stays in the text, as psql leaves it.
+A variable that is not set stays in the text, as psql leaves it.
 
 ## Features
 

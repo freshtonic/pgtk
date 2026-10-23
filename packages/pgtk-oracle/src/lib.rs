@@ -1,10 +1,4 @@
-//! FFI bindings to the raw parser of the target version's pinned PostgreSQL
-//! release, linked as a static lib.
-//!
-//! The version feature (`pg14` ... `pg19-beta`, default `pg17`) selects the
-//! release from `pins.tsv` (ADR 0009). The parser is behind the `parser` feature
-//! (default on); without it the crate has only the pin constants. See
-//! docs/plans/2026-05-21-differential-parser-testing-design.md.
+#![doc = include_str!("../README.md")]
 
 #[cfg(feature = "parser")]
 mod parser;

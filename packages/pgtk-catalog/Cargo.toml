@@ -12,6 +12,11 @@ repository.workspace = true
 readme = "README.md"
 publish = true
 
+
+# docs.rs documents each loader adapter and the built-in catalog.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 # Serialize and deserialize a Catalog.
