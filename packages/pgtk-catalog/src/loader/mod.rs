@@ -54,10 +54,13 @@ pub struct Loaded {
 }
 
 /// The lowest major version that this crate supports.
-const MIN_MAJOR: u16 = 14;
+pub(crate) const MIN_MAJOR: u16 = 14;
 
 /// The highest major version that this crate supports.
-const MAX_MAJOR: u16 = 17;
+///
+/// The `pg19-beta` feature adds PostgreSQL 19, because the catalog of 19 can
+/// still change before 19.0.
+const MAX_MAJOR: u16 = if cfg!(feature = "pg19-beta") { 19 } else { 18 };
 
 /// The part of the crate that turns query rows into a [`Catalog`].
 ///
@@ -84,7 +87,7 @@ impl Loader {
     ///
     /// This gives [`LoadError::Parse`] when the rows do not hold a number,
     /// and [`LoadError::UnsupportedVersion`] when the major version is not
-    /// 14 through 17.
+    /// 14 through 18. With the `pg19-beta` feature, 19 is supported too.
     pub fn new(bootstrap_rows: Rows) -> Result<Self, LoadError> {
         let empty: Vec<Option<String>> = Vec::new();
         let first = bootstrap_rows.first().unwrap_or(&empty);
@@ -116,7 +119,7 @@ impl Loader {
             .iter()
             .copied()
             .filter(|id| *id != QueryId::Version)
-            .map(|id| (id, queries::sql(id)))
+            .map(|id| (id, queries::sql(id, self.version.major)))
     }
 
     /// Give the loader the rows of one query.
@@ -157,7 +160,7 @@ mod tests {
     fn the_bootstrap_query_is_the_version_query() {
         assert_eq!(
             Loader::BOOTSTRAP_QUERY.trim(),
-            queries::sql(QueryId::Version).trim()
+            queries::sql(QueryId::Version, super::MIN_MAJOR).trim()
         );
     }
 
@@ -171,7 +174,7 @@ mod tests {
 
     #[test]
     fn it_takes_every_supported_version() {
-        for major in 14..=17 {
+        for major in 14..=18 {
             let loader = Loader::new(bootstrap(&format!("{major}0002"))).unwrap();
             assert_eq!(loader.version().major, major);
         }
@@ -179,11 +182,38 @@ mod tests {
 
     #[test]
     fn it_refuses_a_version_outside_the_range() {
-        for number in ["130010", "180000"] {
+        for number in ["130010", "200000"] {
             match Loader::new(bootstrap(number)) {
                 Err(LoadError::UnsupportedVersion(_)) => {}
                 other => panic!("expected an unsupported version, got {other:?}"),
             }
+        }
+    }
+
+    #[test]
+    fn it_takes_19_only_with_the_pg19_beta_feature() {
+        let result = Loader::new(bootstrap("190000"));
+        if cfg!(feature = "pg19-beta") {
+            assert_eq!(result.unwrap().version().major, 19);
+        } else {
+            match result {
+                Err(LoadError::UnsupportedVersion(_)) => {}
+                other => panic!("expected an unsupported version, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn the_constraints_query_reads_the_new_columns_only_from_18() {
+        for major in 14..=17 {
+            let sql = queries::sql(QueryId::Constraints, major);
+            assert!(!sql.contains("k.conenforced"), "version {major}");
+            assert!(!sql.contains("k.conperiod"), "version {major}");
+        }
+        for major in 18..=19 {
+            let sql = queries::sql(QueryId::Constraints, major);
+            assert!(sql.contains("k.conenforced"), "version {major}");
+            assert!(sql.contains("k.conperiod"), "version {major}");
         }
     }
 

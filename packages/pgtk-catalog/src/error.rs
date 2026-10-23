@@ -10,9 +10,17 @@ use crate::loader::QueryId;
 /// makes a query wrong, or a failed build. Everything else becomes a
 /// [`crate::Diagnostic`].
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum LoadError {
     /// The server is older or newer than the range that this crate supports.
-    #[error("server version {0} is not supported; need 14 through 17")]
+    #[cfg_attr(
+        not(feature = "pg19-beta"),
+        error("server version {0} is not supported; need 14 through 18")
+    )]
+    #[cfg_attr(
+        feature = "pg19-beta",
+        error("server version {0} is not supported; need 14 through 19")
+    )]
     UnsupportedVersion(ServerVersion),
     /// The executor could not run a query.
     #[error("query {query:?} failed: {source}")]

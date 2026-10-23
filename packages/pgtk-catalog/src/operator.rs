@@ -45,6 +45,7 @@ pub struct Operator {
 /// The kind of an operator, from `oprkind`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum OperatorKind {
     /// A prefix operator, which takes one operand. `oprkind` is `l`.
     Prefix,

@@ -4320,7 +4320,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 {
                     apply_default = true;
                 }
-                if column.generated && !apply_default {
+                if column.is_generated() && !apply_default {
                     return Err(Diagnostic::new(
                         "428C9",
                         format!("cannot insert a non-DEFAULT value into column \"{name}\""),
@@ -4339,7 +4339,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     ))
                     .into());
                 }
-                if column.generated {
+                if column.is_generated() {
                     return Err(Diagnostic::new(
                         "428C9",
                         format!("column \"{name}\" can only be updated to DEFAULT"),
