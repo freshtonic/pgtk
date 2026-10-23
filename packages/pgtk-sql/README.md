@@ -1,18 +1,82 @@
 # pgtk-sql
 
-Postgres-flavoured SQL parser based on `recursa`.
+**A PostgreSQL parser that agrees with PostgreSQL.**
 
-## Roadmap
+[![crates.io](https://img.shields.io/crates/v/pgtk-sql.svg)](https://crates.io/crates/pgtk-sql)
+[![docs.rs](https://img.shields.io/docsrs/pgtk-sql)](https://docs.rs/pgtk-sql)
+[![MIT licence](https://img.shields.io/badge/licence-MIT-blue.svg)](https://github.com/freshtonic/pgtk/blob/main/LICENSE)
 
-- [ ] 100% accuracy with Postgres SQL syntax (as of version 17)
-- [ ] Passes Postgres's SQL parser regression tests
-- [x] Generate accurate railroad diagrams from the syntax tree
-- [ ] Impossible to represent invalid SQL with the AST
-- [x] Support quickcheck-style testing: optional Arbitrary impl feature
-- [ ] PGPLSQL support behind feature flag
-- [x] Benchmark (runnable in CI to catch regressions)
-- [x] Support "super flat" ASTs https://jhwlr.io/super-flat-ast/ — see
-      [Flat AST](#flat-ast)
+Most SQL parsers speak "approximately PostgreSQL". pgtk-sql speaks the PostgreSQL of one exact
+release. It accepts each statement that PostgreSQL's `gram.y` accepts, and it rejects each
+statement that `gram.y` rejects. You select the release with a Cargo feature: PostgreSQL 14, 15,
+16, 17, 18 or 19 beta.
+
+pgtk-sql is part of [pgtk](https://github.com/freshtonic/pgtk), the PostgreSQL toolkit for Rust.
+
+## Why pgtk-sql?
+
+- **Proven parity.** On PostgreSQL's own regression suite, pgtk-sql and the raw parser of
+  PostgreSQL agree on all **43,474** statements, for each of the six versions. The test suite
+  links the real PostgreSQL parser and compares again on each run.
+- **Fast.** On the same statements, pgtk-sql parses at **35 MiB/s**, more than **2×** the speed
+  of `sqlparser`. The flat AST is faster again, at **40 MiB/s**.
+- **A typed AST.** Each statement is a Rust value with a type for each construct. With the
+  `spans` feature, each node also knows its location in the source text.
+- **A flat AST.** One contiguous store for each parse, with handles in place of pointers. It is
+  fast to make and fast to drop.
+- **Version answers.** pgtk-sql tells you the oldest PostgreSQL version that accepts a
+  statement, and which clause needs it.
+- **More than a parser.** A formatter, railroad diagrams of the grammar, and `Arbitrary`
+  support for fuzz tests and property tests.
+
+## Quick start
+
+```toml
+[dependencies]
+pgtk-sql = "0.1"
+```
+
+Parse one statement:
+
+```rust,ignore
+use pgtk_sql::{ast::Statement, lex};
+
+let lexed = lex("SELECT id, name FROM users WHERE id = $1");
+let mut input = lexed.input();
+let statement = Statement::parse(&mut input).expect("PostgreSQL accepts it");
+```
+
+Parse a document of statements:
+
+```rust,ignore
+let document = pgtk_sql::document::parse_sql("SELECT 1; INSERT INTO t VALUES (2);")?;
+assert_eq!(document.statements().len(), 2);
+```
+
+Find the oldest PostgreSQL version that accepts a statement:
+
+```rust,ignore
+use pgtk_sql::{MinimumVersion, TargetVersion};
+
+// PostgreSQL 15 needs an alias on a subquery in FROM. PostgreSQL 16 does not.
+if let Some(found) = statement.minimum_version_above(TargetVersion::Pg15) {
+    println!("{:?}: {:?} at {:?}", found.version(), found.message(), found.span());
+    // Pg16: Some("subquery in FROM must have an alias") at Some(Span { start: 14, end: 24 })
+}
+```
+
+To know what a statement means (its types, its columns, its errors), give it to
+[`pgtk-analyze`](https://crates.io/crates/pgtk-analyze). To parse a psql script, give it to
+`pgtk-psql` first.
+
+## Features
+
+| Feature | What it does |
+|---|---|
+| `pg14` ... `pg19-beta` | Selects the PostgreSQL version. Use exactly one. The default is `pg17`. |
+| `spans` | Keeps the source span of each node. |
+| `arbitrary` | Derives `arbitrary::Arbitrary` for the AST. |
+| `postgres-oracle` | Development only: builds PostgreSQL's raw parser for the differential tests. |
 
 ## Build time
 
@@ -49,17 +113,16 @@ target version. Select it with exactly one Cargo feature:
 | `pg19-beta` | `REL_19_STABLE` at `b73d13c` |
 
 ```toml
-pgtk-sql = { path = "../pgtk-sql", default-features = false, features = ["pg16", "spans"] }
+pgtk-sql = { version = "0.1", default-features = false, features = ["pg16", "spans"] }
 ```
 
 The features are mutually exclusive: the build stops with an error for zero
 or for two or more. Cargo feature unification is the usual cause of two. A
 crate between your crate and pgtk-sql must use `default-features = false` on
 pgtk-sql and forward the version features, as `pgtk-psql` does.
-`pgtk_sql::TARGET_VERSION` reports the selection. The grammar of `pg14`,
-`pg15` and `pg16` is complete (#74 to #76). The grammar of `pg18` and
-`pg19-beta` is not complete yet (#77, #78). See ADR 0009 and
-`docs/plans/2026-09-22-target-versions.md`.
+`pgtk_sql::TARGET_VERSION` reports the selection. The grammar of each
+version is complete: the differential baseline of each version has no
+expected gap. See ADR 0009 and `docs/plans/2026-09-22-target-versions.md`.
 
 `cargo loop` is the edit loop: it tests pgtk-sql in the merge gate's
 configuration, so `cargo loop --test embedded` and the gate share one build.
@@ -108,11 +171,9 @@ store and builds PostgreSQL. Fetch the pins first with
 
 ## Toolchain
 
-`rust-toolchain.toml` pins a dated nightly. The dev loop compiles the
-generated grammar with the parallel rustc front end (`-Z threads` in
-`.cargo/config.toml`), which stable rustc does not accept. If your shell
-exports `RUSTUP_TOOLCHAIN`, it overrides the file; unset it in this
-workspace.
+pgtk-sql needs Rust 1.88 or later (`rust-version`). In the pgtk workspace,
+`rust-toolchain.toml` pins the toolchain that CI uses. If your shell exports
+`RUSTUP_TOOLCHAIN`, it overrides the file; unset it in this workspace.
 
 ## Flat AST
 

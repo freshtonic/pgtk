@@ -5,6 +5,7 @@ description = "PostgreSQL servers for the pgtk tests, built from the vendored Po
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 publish = false
 
 [lints.rust]
