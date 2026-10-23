@@ -42,7 +42,7 @@ pgtk gives a fifth way: **the answer of the server, without the server.**
 | Pure Rust | ✅ | ❌ links C | ✅ |
 | AST types that match the PostgreSQL grammar | ✅ | ❌ one node enum | ❌ shared by all dialects |
 | Visitor | ✅ | ❌ a flat list of nodes | ✅ |
-| `Arbitrary` values that are always valid SQL | ✅ | ❌ | ❌ |
+| `Arbitrary` values that are typed statements | ✅ about 80% valid today | ❌ | ❌ |
 | Minimum PostgreSQL version of a statement | ✅ | ❌ | ❌ |
 | Types, result columns and errors (parse analysis) | ✅ | ❌ | ❌ |
 | Fingerprinting and normalisation | ❌ not yet | ✅ | ❌ |
@@ -71,8 +71,8 @@ A PostgreSQL SQL parser that agrees with PostgreSQL on each statement. It accept
 version, from 14 to 19 beta.
 
 - **The AST is the grammar.** A struct is a sequence of grammar parts, an enum is a choice
-  between them, and each list says if it can be empty. A value that PostgreSQL cannot parse
-  cannot exist, so `Arbitrary` gives only valid SQL, and `match` covers each form.
+  between them, and each list says if it can be empty. `match` covers each form, and `Arbitrary`
+  gives typed statements for fuzz tests.
 - **Source spans** on each node, and a visitor for each AST type.
 - **A flat AST**: one contiguous store for each parse, for tools that must be fast.
 - **A minimum version for each statement.** pgtk-sql tells you that a statement needs

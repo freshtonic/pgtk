@@ -50,17 +50,21 @@ recursa::ast_node! {
 ```
 
 The declaration is the grammar: [recursa](https://crates.io/crates/recursa) generates the lexer
-and the LR parser from these types. Thus each value that you can make is a statement that
-PostgreSQL can parse. A `MERGE` with no `WHEN` clause cannot exist, because the type has no value
-for it.
+and the LR parser from these types. A `MERGE` with no `WHEN` clause cannot exist, because the
+type has no value for it. The goal is that each value that you can make is a statement that
+PostgreSQL can parse. Where a value is not, the type is too loose, and that is a bug in pgtk-sql.
 
 The design gives three results:
 
 - **Your `match` is the specification.** When you handle each variant, you handle each form
   that PostgreSQL accepts, and the compiler tells you when you forget one.
-- **Generated SQL is valid by construction.** With the `arbitrary` feature, each AST type
-  derives `arbitrary::Arbitrary`. A random value is always a grammatically valid statement, so a
-  fuzz test or a property test never spends time on input that PostgreSQL would reject.
+- **Generated SQL is almost always valid.** With the `arbitrary` feature, each AST type
+  derives `arbitrary::Arbitrary`, so a fuzz test or a property test gets typed statements, not
+  random bytes. Today, PostgreSQL accepts about 80% of the random statements. Each of the other
+  20% shows a place where a type permits more than PostgreSQL does. A test measures this on each
+  run, and issues
+  [#50 to #61](https://github.com/freshtonic/pgtk/issues?q=is%3Aissue+label%3Abug+%22pgtk-sql+accepts%22)
+  record the gaps that remain.
 - **Traversal is free.** Each AST type derives `Visit` and `VisitMut`, so a lint or a rewrite
   is a visitor, not a recursive function for each node type.
 
