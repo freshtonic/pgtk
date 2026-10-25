@@ -69,7 +69,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.signature.definition.is_some());
+        assert!(matches!(stmt.signature.form, AggregateForm::Modern(_)));
         assert!(input.is_eof());
     }
 
@@ -82,7 +82,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.signature.definition.is_none());
+        assert!(matches!(stmt.signature.form, AggregateForm::Old(_)));
         assert!(input.is_eof());
     }
 
@@ -93,7 +93,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.signature.definition.is_some());
+        assert!(matches!(stmt.signature.form, AggregateForm::Modern(_)));
         assert!(input.is_eof());
     }
 
@@ -107,7 +107,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.signature.definition.is_some());
+        assert!(matches!(stmt.signature.form, AggregateForm::Modern(_)));
         assert!(input.is_eof());
     }
 
@@ -202,13 +202,13 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        let CreateAggregateArgs::Old(definition) = &stmt.signature.args else {
+        let AggregateForm::Old(definition) = &stmt.signature.form else {
             panic!("expected an old-style definition");
         };
         assert_eq!(definition.elems.len(), 2);
         assert_eq!(definition.elems[0].name.text(), "BASETYPE");
         assert_eq!(definition.elems[1].name.text(), "STYPE");
-        assert!(stmt.signature.definition.is_none());
+        assert!(matches!(stmt.signature.form, AggregateForm::Old(_)));
         assert!(input.is_eof());
     }
 
@@ -220,11 +220,11 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateAggregateStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        let CreateAggregateArgs::Args(lists) = &stmt.signature.args else {
+        let AggregateForm::Modern(ModernAggregateDefinition { args: CreateAggregateArgs::Args(lists), .. }) = &stmt.signature.form else {
             panic!("expected a plain argument group");
         };
         assert_eq!(lists.direct.len(), 2);
-        assert!(stmt.signature.definition.is_some());
+        assert!(matches!(stmt.signature.form, AggregateForm::Modern(_)));
         assert!(input.is_eof());
     }
 

@@ -154,18 +154,18 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A string-constant value in a COPY statement — Postgres' `Sconst`. Covers
-    /// the plain `'…'` form plus the `E'…'` (escape), `U&'…'` (unicode), and
-    /// `B'…'` (bit) prefixed forms used in the regression corpus.
+    /// A string-constant value — Postgres' `Sconst`, in COPY and in the
+    /// other statements that take an `Sconst`. Covers the plain `'…'` form
+    /// plus the `E'…'` (escape) and `U&'…'` (unicode) prefixed forms.
     ///
-    /// The lexer assigns the prefixed forms (`U&`, `E`, `B`, `X`) their own token
-    /// kinds before the parser sees them.
+    /// A bit string (`B'…'`) and a hex string (`X'…'`) are not an `Sconst`:
+    /// scan.l makes them `BCONST` and `XCONST` tokens, and gram.y `Sconst`
+    /// is `SCONST` only (REL_17_11 gram.y 17297). So they have no variant
+    /// here (issue #52).
     #[derive(Debug)]
     pub enum CopySconst {
         Unicode(literal::UnicodeStringLit),
         Escape(literal::EscapeStringLit),
-        Bit(literal::BitStringLit),
-        Hex(literal::HexStringLit),
         Plain(literal::StringLit),
     }
 }

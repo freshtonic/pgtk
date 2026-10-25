@@ -26,7 +26,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateDomainStmt {
         #[tok(CREATE, DOMAIN, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(optional(AS), this)]
         pub type_name: CastType,
         pub quals: crate::ast::ddl::table::ColQualList,
@@ -290,7 +290,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterDomainStmt {
         #[tok(ALTER, DOMAIN, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterDomainAction,
     }
 }

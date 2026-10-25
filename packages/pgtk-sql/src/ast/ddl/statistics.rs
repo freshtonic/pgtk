@@ -42,7 +42,7 @@ recursa::ast_node! {
     /// shapes round-trip.
     #[derive(Debug)]
     pub struct StatsFuncParam {
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub args: StatsFuncArgs,
     }
 }
@@ -121,9 +121,9 @@ recursa::ast_node! {
                     opt_name_list ON stats_params FROM from_list`; optional from 16, \
                     commit 624aa2a13"
         )]
-        pub name: Option<QualifiedName>,
+        pub name: Option<crate::ast::shared::names::AnyName>,
         #[config(before = pg16)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub stat_types: Option<StatisticsTypeList>,
         pub on: StatisticsOnClause,
         pub from: StatisticsFromClause,
@@ -202,7 +202,7 @@ recursa::ast_node! {
     #[tok(ALTER, STATISTICS, this)]
     pub struct AlterStatisticsStmt {
         pub if_exists: Option<IfExists>,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterStatisticsAction,
     }
 }
