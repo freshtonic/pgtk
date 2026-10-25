@@ -1515,3 +1515,45 @@ fn a_window_frame_keeps_the_bounds_that_gram_y_keeps() {
         "SELECT count(*) OVER (ROWS BETWEEN 1 PRECEDING AND \"unbounded\" FOLLOWING) FROM t",
     ]);
 }
+
+/// `check_indirection` refuses a `.*` that is not the last element of the
+/// indirection of a parenthesized value or a sub-select too (REL_17_11 gram.y
+/// 18779; issue #55).
+#[test]
+fn a_star_ends_the_indirection_of_a_parenthesized_value() {
+    assert_rejects(
+        &[
+            "SELECT (a).*.b FROM t",
+            "SELECT (a).*[1] FROM t",
+            "SELECT (a).b.*.* FROM t",
+            "SELECT (SELECT 1).*[1]",
+            "SELECT (SELECT a FROM t).*.b",
+        ],
+        "a star ends the indirection",
+    );
+    assert_accepts(&[
+        "SELECT (a).*, (a).b.*, (a).b[1].*, (a)[1].b FROM t",
+        "SELECT (SELECT a FROM t).b[1], (SELECT a FROM t).*",
+    ]);
+}
+
+/// gram.y `json_wrapper_behavior` (REL_17_11 gram.y 16854-16864):
+/// `CONDITIONAL` and `UNCONDITIONAL` follow `WITH` only.
+#[cfg(feature = "since-pg17")]
+#[test]
+fn a_json_wrapper_takes_its_behavior_after_with_only() {
+    assert_rejects(
+        &[
+            "SELECT JSON_QUERY(j, '$' WITHOUT CONDITIONAL WRAPPER)",
+            "SELECT JSON_QUERY(j, '$' WITHOUT UNCONDITIONAL ARRAY WRAPPER)",
+        ],
+        "the behavior follows WITH only",
+    );
+    assert_accepts(&[
+        "SELECT JSON_QUERY(j, '$' WITHOUT WRAPPER)",
+        "SELECT JSON_QUERY(j, '$' WITHOUT ARRAY WRAPPER)",
+        "SELECT JSON_QUERY(j, '$' WITH WRAPPER)",
+        "SELECT JSON_QUERY(j, '$' WITH CONDITIONAL ARRAY WRAPPER)",
+        "SELECT JSON_QUERY(j, '$' WITH UNCONDITIONAL WRAPPER)",
+    ]);
+}

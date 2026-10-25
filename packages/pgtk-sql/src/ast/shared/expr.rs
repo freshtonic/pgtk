@@ -550,7 +550,7 @@ recursa::ast_node! {
         /// `t.*`.
         Star(ParenthesizedDotStar),
         /// `t.a`, `s.t.a[1]`, `s.f(x)`.
-        Attrs(QualifiedAttrs),
+        Attrs(boxed!(QualifiedAttrs)),
     }
 }
 
@@ -1334,23 +1334,14 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One non-star element in the indirection chain following parenthesized
-    /// content.
-    #[derive(Debug)]
-    pub enum ParenthesizedIndirection {
-        Field(IndirectionField),
-        Subscript(BracketSubscript),
-        Star(ParenthesizedDotStar),
-    }
-}
-
-recursa::ast_node! {
     /// gram.y:15403 `select_with_parens indirection`: a sub-select with a
     /// field, wildcard or subscript chain applied to its result.
     #[derive(Debug)]
     pub struct SubSelectIndirectionExpr {
         pub query: crate::ast::dml::values::SelectWithParens,
-        pub indirection: one_or_many!(ParenthesizedIndirection),
+        /// gram.y `indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #55).
+        pub indirection: Indirection,
     }
 }
 
@@ -1368,7 +1359,9 @@ recursa::ast_node! {
         pub open: ParenthesizedOpen,
         pub expr: boxed!(Expr),
         pub close: ParenthesizedClose,
-        pub indirection: zero_or_many!(ParenthesizedIndirection),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #55).
+        pub indirection: Option<Indirection>,
     }
 }
 
@@ -3764,12 +3757,34 @@ recursa::ast_node! {
 // (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// `{WITH [CONDITIONAL|UNCONDITIONAL] | WITHOUT} [ARRAY] WRAPPER` — the
-    /// `JSON_QUERY` array-wrapper clause.
+    /// `WITH [CONDITIONAL|UNCONDITIONAL] [ARRAY] WRAPPER` or `WITHOUT [ARRAY]
+    /// WRAPPER` — the `JSON_QUERY` array-wrapper clause, gram.y
+    /// `json_wrapper_behavior` (REL_17_11 gram.y 16854-16864). `CONDITIONAL`
+    /// and `UNCONDITIONAL` follow `WITH` only.
     #[derive(Debug)]
-    pub struct JsonWrapper {
-        pub with_or_without: WithOrWithout,
+    pub enum JsonWrapper {
+        With(#[tok(WITH, this)] JsonWrapperWith),
+        Without(#[tok(WITHOUT, this)] JsonWrapperArray),
+    }
+}
+
+// Added in 17: see `JsonWrapper`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `[CONDITIONAL|UNCONDITIONAL] [ARRAY] WRAPPER` after `WITH`.
+    #[derive(Debug)]
+    pub struct JsonWrapperWith {
         pub behavior: Option<WrapperBehavior>,
+        pub array: JsonWrapperArray,
+    }
+}
+
+// Added in 17: see `JsonWrapper`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `[ARRAY] WRAPPER`.
+    #[derive(Debug)]
+    pub struct JsonWrapperArray {
         #[tok(this, WRAPPER)]
         #[presence(ARRAY)]
         pub array: bool,
