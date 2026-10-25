@@ -90,9 +90,39 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CycleToDefault {
         #[tok(TO, this)]
-        pub to_value: Expr,
+        pub to_value: CycleMarkConst,
         #[tok(DEFAULT, this)]
-        pub default_value: Expr,
+        pub default_value: CycleMarkConst,
+    }
+}
+
+recursa::ast_node! {
+    /// The constants of [`Expr`] that a `CYCLE` mark value takes: gram.y
+    /// `opt_cycle_clause: CYCLE columnList SET ColId TO AexprConst DEFAULT
+    /// AexprConst USING ColId` (REL_17_11 gram.y 12944). Like
+    /// [`crate::ast::shared::expr::BExpr`], it is not an AST type: a field
+    /// typed `CycleMarkConst` holds an [`Expr`].
+    ///
+    /// The `func_name Sconst` constant with a qualified name or a type modifier
+    /// (`s.t 'x'`, `t(1) 'x'`) is part of a column reference or a function
+    /// call in pgtk-sql, so this restriction does not admit it.
+    #[restricts(Expr)]
+    pub enum CycleMarkConst {
+        IntegerLit,
+        NumericLit,
+        StringLit,
+        UnicodeStringLit,
+        EscapeStringLit,
+        DollarStringLit,
+        BitStringLit,
+        HexStringLit,
+        TimestampLit,
+        TimeLit,
+        IntervalLit,
+        CastFunc,
+        BoolTrue,
+        BoolFalse,
+        Null,
     }
 }
 
