@@ -782,10 +782,7 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `'(' qualified_name ')'` after `ONLY`. The `)` closes through
-    /// [`ParenthesizedClose`](crate::ast::shared::expr::ParenthesizedClose),
-    /// because before a set operator it is the merged kind
-    /// `RPAREN_SELECT_LA`: `TABLE ONLY (t) UNION TABLE u` (issue #60).
+    /// `'(' qualified_name ')'` after `ONLY`.
     #[derive(Debug, derive_more :: Deref)]
     pub struct ParenthesizedQualifiedName {
         #[tok(LPAREN, this)]

@@ -155,8 +155,8 @@ recursa::ast_node! {
     /// ROLE = DEFAULT` parse, through `generic_set` (issue #53).
     #[derive(Debug)]
     pub enum SetRoleTarget {
-        Role(crate::tokens::ColId),
-        String(literal::StringLit),
+        Role(crate::tokens::NonReservedWord),
+        String(crate::ast::utility::copy::CopySconst),
     }
 }
 

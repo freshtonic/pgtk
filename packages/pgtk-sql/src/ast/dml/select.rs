@@ -176,12 +176,6 @@ recursa::ast_node! {
     /// The delimiters wrap the list as a whole. Attaching them to the repeated
     /// field would instead require a fresh pair of parentheses around every
     /// element after a comma.
-    ///
-    /// The closing `)` is its own rule because it can end a `select_clause`:
-    /// in `SELECT x FROM (VALUES (1)) _(x) UNION SELECT 2` a set operator
-    /// follows it directly, which the token feed reads as `RPAREN_SELECT_LA`.
-    /// [`ParenthesizedClose`] names that merged kind, which a fixed `RPAREN`
-    /// at the end of this rule could not.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this)]
     pub struct TableAliasColumnList(
@@ -762,6 +756,52 @@ recursa::ast_node! {
 // REL_17_11 gram.y 14138-14283, `table_ref` 13519).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
+    /// The path of `JSON_TABLE`. gram.y writes `a_expr` there, and the action
+    /// refuses each value that is not an `A_Const` string: "only string
+    /// constants are supported in JSON_TABLE path specification" (REL_17_11
+    /// gram.y 14150-14154; issue #59). A string constant in parentheses is
+    /// the same `A_Const`, because `'(' a_expr ')'` keeps no node of its own,
+    /// so the parentheses stay.
+    #[derive(Debug)]
+    pub enum JsonTablePath {
+        Const(boxed!(JsonTablePathConst)),
+        Parens(JsonTableParenPath),
+    }
+}
+
+// Added in 17: see `JsonTablePath`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `'(' path ')'`: a [`JsonTablePath`] in parentheses.
+    #[derive(Debug)]
+    pub struct JsonTableParenPath {
+        pub open: crate::ast::shared::expr::ParenthesizedOpen,
+        pub path: boxed!(JsonTablePath),
+        pub close: crate::ast::shared::expr::ParenthesizedClose,
+    }
+}
+
+// Added in 17: see `JsonTablePath`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// The string constants of [`Expr`] as a restricted expression: each
+    /// spelling of gram.y `Sconst`, which makes an `A_Const` string. A bit
+    /// string and a hex string make an `A_Const` of another type, and are
+    /// refused. Like [`crate::ast::shared::expr::CExpr`], it is not an AST
+    /// type: a field typed `JsonTablePathConst` holds an [`Expr`].
+    #[restricts(Expr)]
+    pub enum JsonTablePathConst {
+        UnicodeStringLit,
+        EscapeStringLit,
+        DollarStringLit,
+        StringLit,
+    }
+}
+
+// Added in 17: `JSON_TABLE` (research, PostgreSQL 17, "Queries and expressions";
+// REL_17_11 gram.y 14138-14283, `table_ref` 13519).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
     /// Inner contents of `JSON_TABLE ( ‹ctx› , ‹path› [AS name] [PASSING ...]
     /// COLUMNS ( ... ) [behavior ON ERROR] )`.
     #[derive(Debug)]
@@ -769,7 +809,7 @@ recursa::ast_node! {
         pub context: boxed!(Expr),
         pub context_format: Option<JsonTableFormat>,
         #[tok(COMMA, this)]
-        pub path: boxed!(Expr),
+        pub path: boxed!(JsonTablePath),
         pub path_name: Option<JsonTablePathName>,
         pub passing: Option<JsonPassing>,
         pub column_list: JsonTableColumnList,
@@ -2152,8 +2192,7 @@ recursa::ast_node! {
     pub struct GroupingSetsItem {
         #[sep(COMMA)]
         pub groups: one_or_many!(boxed!(GroupByItem)),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2173,8 +2212,7 @@ recursa::ast_node! {
     pub struct RollupItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2188,8 +2226,7 @@ recursa::ast_node! {
     pub struct CubeItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2212,15 +2249,11 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// The empty grouping set `()`, used inside `GROUPING SETS` and also valid as
-    /// a top-level grouping item. Before a set operator, the `)` is the merged
-    /// kind `RPAREN_SELECT_LA`: `SELECT 1 GROUP BY () UNION SELECT 2` (issue
-    /// #60).
+    /// a top-level grouping item.
     #[derive(Debug)]
     pub enum EmptyGroupingSet {
         #[tok(LPAREN, RPAREN)]
         Value,
-        #[tok(LPAREN, RPAREN_SELECT_LA)]
-        MergedSelect,
     }
 }
 
@@ -2519,14 +2552,6 @@ impl<'input> SelectStmt<'input> {
 recursa::ast_node! {
     /// One row of a `VALUES` list: gram.y `'(' expr_list ')'` of
     /// `values_clause` (REL_17_11 gram.y 12935).
-    ///
-    /// The delimiters are their own rules rather than fixed tokens of this
-    /// one, because the closing `)` of the last row stands directly before a
-    /// set operator in `VALUES (1, 2) UNION ALL SELECT 3, 4`, which the token
-    /// feed reads as `RPAREN_SELECT_LA`. [`ParenthesizedClose`] names that
-    /// merged kind; a fixed `RPAREN` at the end of this rule could not,
-    /// because lookahead substitution reads `FIRST` of the rest of the rule
-    /// only and nothing follows it here.
     #[derive(Debug)]
     pub struct ValuesRow {
         pub open: ParenthesizedOpen,

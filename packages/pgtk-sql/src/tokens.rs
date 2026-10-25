@@ -1153,32 +1153,17 @@ recursa::tokens! {
         // the closing delimiter followed by its string payload so the LR
         // table reduces ordinary arguments on `)` and shifts the typed-literal
         // close on this distinct lookahead.
-        // Typed literals and parenthesized set queries need different merged
-        // kinds: their trigger sets are disjoint, and combining them would
-        // make a function close before `)` look like a typed-literal close.
         RPAREN_TYPED_LA = RPAREN before { StringLit },
-        // A `)` that a set operator follows, which is how a completed
-        // parenthesized form parts from a grouped set query on one token:
-        // `(SELECT 1) UNION SELECT 2` continues the query, `(SELECT 1)` alone
-        // does not. Every closing rule that can end a `select_clause` names
-        // the merged kind, because lookahead substitution reads `FIRST` of
-        // the rest of the rule only and a closing `)` is rule-final: see
-        // `crate::ast::shared::expr::ParenthesizedClose`, `FunctionCallClose`
-        // and `TypeModifierClose`, and `crate::ast::dml::select::ValuesRow`
-        // and `TableAliasColumnList`.
-        //
-        // `RPAREN` is deliberately not a trigger. It was one, so that the
-        // inner `)` of `((SELECT 2))` shifted into
-        // `select_with_parens: '(' select_with_parens ')'` instead of closing
-        // an expression paren. As a trigger it merges the inner `)` of every
-        // `))` in the language, so each of the hundred-odd closing rules of
-        // the grammar would have to name the merged kind: 25 of them fail the
-        // embedded suite with the trigger in place, and nothing diagnoses the
-        // next one added. gram.y needs no lookahead there at all, because
-        // `select_with_parens` is its own nonterminal (REL_17_11 gram.y
-        // 12658-12663, second production at 12685), which pgtk-sql cannot
-        // mirror while every grammar type is also a parsing entry point.
-        RPAREN_SELECT_LA = RPAREN before { UNION, INTERSECT, EXCEPT },
+        // There is no filter for a `)` before a set operator. parser.c has
+        // none: gram.y makes `select_with_parens` its own nonterminal
+        // (REL_17_11 gram.y 12658-12663, second production at 12685), so the
+        // `)` of `(SELECT 1)` shifts in each context, and the set operator
+        // after it is the lookahead that decides if the query continues.
+        // pgtk-sql has the same factoring (`SelectWithParens`), so it needs no
+        // lookahead there either. Such a filter (`RPAREN_SELECT_LA`) was here
+        // before, and each closing rule that did not name it rejected a valid
+        // statement, for example `SELECT 1 WHERE a IN (1) UNION SELECT 2`
+        // (issue #74).
     }
 
     // PostgreSQL's precedence declarations (`gram.y:829-908`, "Precedence:
@@ -1222,14 +1207,10 @@ recursa::tokens! {
         // `<>` and `!=` as one `NOT_EQUALS`; pgtk-sql keeps a token per
         // spelling so the formatter can reproduce the one it read.
         //
-        // `OVERLAPS` joins them, which gram.y does not do. gram.y needs no
-        // level for it because `a_expr: row OVERLAPS row` demands a row on
-        // the left, so `OVERLAPS` can never follow a bare column reference
-        // and the reduce is the only action there. pgtk-sql's `Expr::Overlaps`
-        // takes any operand, so `RANGE BETWEEN OVERLAPS ...` needs a level
-        // to settle `ColId: BETWEEN` against it; at this level it reduces,
-        // which is the answer gram.y arrives at without one.
-        nonassoc(bp = 70) { LT, GT, EQ, LTE, GTE, NEQ, BANGEQ, OVERLAPS },
+        // `OVERLAPS` has no level, as in gram.y: `a_expr: row OVERLAPS row`
+        // takes a row on each side (`Expr::Overlaps`), so `OVERLAPS` never
+        // follows an expression and the reduce is the only action there.
+        nonassoc(bp = 70) { LT, GT, EQ, LTE, GTE, NEQ, BANGEQ },
         // gram.y:837 `%nonassoc BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA` --
         // `Expr::BetweenExpr`, `Expr::InExpr` and the LIKE family. `NOT_LA`
         // is the lookahead filter declared above, and a level may name a
@@ -1396,7 +1377,7 @@ recursa::tokens! {
         //
         // `)` is deliberately left without a level. pgtk-sql still shares one
         // `(`-led production between a parenthesized expression and a
-        // parenthesized query (`ParenContent`), which gram.y does not do:
+        // parenthesized query (`ParenthesizedExpr`), which gram.y does not do:
         // gram.y factors `select_with_parens` as its own nonterminal. Where
         // pgtk-sql's factoring leaves a decision on `)`, the answer is authored
         // as a scoped LR resolution on the variant, and a level for `)` would

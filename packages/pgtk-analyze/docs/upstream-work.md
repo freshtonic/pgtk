@@ -10,7 +10,7 @@ their own nodes; infix `OPERATOR(schema.op)`; the identifier folding helper;
 `SELECT DISTINCT` requires a target list; `ROLLUP` and `CUBE` are grouping
 clauses; `SELECT ALL` parses; a set operation chain is a left-recursive
 `SelectClause` tree with gram.y's precedence; `UNBOUNDED PRECEDING` and
-`UNBOUNDED FOLLOWING` are `WindowFrameBound::Unbounded`; `QueryBody.limit_locking`
+`UNBOUNDED FOLLOWING` are their own variants of the frame bound types; `QueryBody.limit_locking`
 holds the LIMIT and the locking clauses in either written order, with several
 locking items, `FOR READ ONLY`, and qualified names in `OF`; `CREATE RULE ...
 DO ALSO SELECT 1 UNION (SELECT 2)` parses; `BETWEEN SYMMETRIC` is

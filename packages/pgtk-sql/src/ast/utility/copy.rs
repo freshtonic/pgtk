@@ -255,8 +255,11 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// A string-constant value — Postgres' `Sconst`, in COPY and in the
-    /// other statements that take an `Sconst`. Covers the plain `'…'` form
-    /// plus the `E'…'` (escape) and `U&'…'` (unicode) prefixed forms.
+    /// other statements that take an `Sconst`. gram.y `Sconst` is `SCONST`
+    /// (REL_17_11 gram.y 17297), which scan.l gives for each string spelling:
+    /// the plain `'…'` form, a continued `'…'` form (`quotecontinue`), the
+    /// `E'…'` (escape) and `U&'…'` (unicode) prefixed forms, and a
+    /// dollar-quoted `$tag$…$tag$` form (issue #74).
     ///
     /// A bit string (`B'…'`) and a hex string (`X'…'`) are not an `Sconst`:
     /// scan.l makes them `BCONST` and `XCONST` tokens, and gram.y `Sconst`
@@ -266,6 +269,8 @@ recursa::ast_node! {
     pub enum CopySconst {
         Unicode(literal::UnicodeStringLit),
         Escape(literal::EscapeStringLit),
+        Dollar(literal::DollarStringLit),
+        Sequence(literal::StringLitSequence),
         Plain(literal::StringLit),
     }
 }
