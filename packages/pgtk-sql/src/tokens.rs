@@ -1786,6 +1786,26 @@ pub mod literal {
         })
     }
 
+    /// Folds the `Iconst` of `ALTER [COLUMN] Iconst SET STATISTICS` to the
+    /// range that the `alter_table_cmd` action checks (REL_17_11 gram.y
+    /// 2484-2488): `"fits"` for 1 to 32767 (`PG_INT16_MAX`), else
+    /// `"out_of_range"`. The `#[classify]` of `ColumnNumber` reads it. The
+    /// text has the forms of `float_precision_class`.
+    pub fn column_number_class(raw: &str) -> Option<&'static str> {
+        let digits = raw.replace('_', "");
+        let (radix, digits) = match digits.get(..2) {
+            Some("0x" | "0X") => (16, &digits[2..]),
+            Some("0o" | "0O") => (8, &digits[2..]),
+            Some("0b" | "0B") => (2, &digits[2..]),
+            _ => (10, digits.as_str()),
+        };
+        let value = u64::from_str_radix(digits, radix).ok()?;
+        Some(match value {
+            1..=32767 => "fits",
+            _ => "out_of_range",
+        })
+    }
+
     // Catch-all for Postgres user-defined operator names.
     //
     // Matches any sequence of the characters `+ - * / < > = ~ ! @ # % ^ & | ?`.

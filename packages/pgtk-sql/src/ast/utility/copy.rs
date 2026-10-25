@@ -49,17 +49,37 @@ recursa::ast_node! {
     /// `name [(cols)] {FROM|TO} [PROGRAM] target [USING DELIMITERS 'c']
     /// [WITH] [options...] [WHERE expr]`.
     ///
-    /// The `where_clause` field is FROM-only by Postgres' semantics, but we accept
-    /// it unconditionally and let the server reject `WHERE` with `TO`. This keeps
-    /// the grammar context-free.
+    /// The action of gram.y `CopyStmt` rejects a `WHERE` clause on `COPY TO`
+    /// (REL_17_11 gram.y 3364; REL_14_24 gram.y 3076). So the direction
+    /// parts the tail, and only the `FROM` tail has a `WHERE` clause.
     #[derive(Debug)]
     pub struct CopyTableBody {
         pub table: QualifiedName,
         pub columns: Option<CopyColumnList>,
-        pub direction: CopyDirection,
-        #[presence(PROGRAM)]
-        pub program: bool,
-        pub target: CopyTarget,
+        pub transfer: CopyTableTransfer,
+    }
+}
+
+recursa::ast_node! {
+    /// The direction and the tail of a table-form COPY.
+    #[derive(Debug)]
+    #[allow(
+        clippy::large_enum_variant,
+        reason = "keep the public parser AST variants inline"
+    )]
+    pub enum CopyTableTransfer {
+        From(CopyFromTail),
+        To(CopyToTail),
+    }
+}
+
+recursa::ast_node! {
+    /// `FROM [PROGRAM] target [USING DELIMITERS 'c'] [WITH] [options...]
+    /// [WHERE expr]`.
+    #[derive(Debug)]
+    pub struct CopyFromTail {
+        #[tok(FROM, this)]
+        pub file: CopyFileName,
         pub delimiter: Option<CopyUsingDelimiters>,
         /// gram.y `opt_with`: the noise word before `copy_options`, present
         /// even when the `copy_opt_list` after it is empty (`COPY t FROM stdin
@@ -69,6 +89,99 @@ recursa::ast_node! {
         /// gram.y `copy_options`; the empty `copy_opt_list` is the absent value.
         pub options: Option<CopyOptions>,
         pub where_clause: Option<CopyWhereClause>,
+    }
+}
+
+recursa::ast_node! {
+    /// `TO [PROGRAM] target [USING DELIMITERS 'c'] [WITH] [options...]`.
+    #[derive(Debug)]
+    pub struct CopyToTail {
+        #[tok(TO, this)]
+        pub file: CopyFileName,
+        pub delimiter: Option<CopyUsingDelimiters>,
+        /// gram.y `opt_with`.
+        #[presence(WITH)]
+        pub with: bool,
+        /// gram.y `copy_options`; the empty `copy_opt_list` is the absent value.
+        pub options: Option<CopyOptions>,
+    }
+}
+
+/// The direction of a table-form COPY.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CopyDirection {
+    From,
+    To,
+}
+
+impl<'input> CopyTableBody<'input> {
+    /// `FROM` or `TO`.
+    pub fn direction(&self) -> CopyDirection {
+        match self.transfer {
+            CopyTableTransfer::From(_) => CopyDirection::From,
+            CopyTableTransfer::To(_) => CopyDirection::To,
+        }
+    }
+
+    /// The file, the program or the standard stream.
+    pub fn file(&self) -> &CopyFileName<'input> {
+        match &self.transfer {
+            CopyTableTransfer::From(tail) => &tail.file,
+            CopyTableTransfer::To(tail) => &tail.file,
+        }
+    }
+
+    /// The legacy `[USING] DELIMITERS 'c'` clause.
+    pub fn delimiter(&self) -> Option<&CopyUsingDelimiters<'input>> {
+        match &self.transfer {
+            CopyTableTransfer::From(tail) => tail.delimiter.as_ref(),
+            CopyTableTransfer::To(tail) => tail.delimiter.as_ref(),
+        }
+    }
+
+    /// Whether the noise word `WITH` is present.
+    pub fn with(&self) -> bool {
+        match &self.transfer {
+            CopyTableTransfer::From(tail) => tail.with,
+            CopyTableTransfer::To(tail) => tail.with,
+        }
+    }
+
+    /// The options.
+    pub fn options(&self) -> Option<&CopyOptions<'input>> {
+        match &self.transfer {
+            CopyTableTransfer::From(tail) => tail.options.as_ref(),
+            CopyTableTransfer::To(tail) => tail.options.as_ref(),
+        }
+    }
+
+    /// The `WHERE` clause, which only `COPY FROM` has.
+    pub fn where_clause(&self) -> Option<&CopyWhereClause<'input>> {
+        match &self.transfer {
+            CopyTableTransfer::From(tail) => tail.where_clause.as_ref(),
+            CopyTableTransfer::To(_) => None,
+        }
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `opt_program copy_file_name`. The actions of gram.y `CopyStmt`
+    /// reject `PROGRAM` before `STDIN` or `STDOUT` (REL_17_11 gram.y 3358
+    /// and 3392; REL_14_24 gram.y 3070 and 3103), so a program is a string
+    /// only.
+    #[derive(Debug)]
+    pub enum CopyFileName {
+        Program(CopyProgram),
+        Target(CopyTarget),
+    }
+}
+
+recursa::ast_node! {
+    /// `PROGRAM 'command'`.
+    #[derive(Debug)]
+    pub struct CopyProgram {
+        #[tok(PROGRAM, this)]
+        pub command: literal::StringLit,
     }
 }
 
@@ -89,9 +202,7 @@ recursa::ast_node! {
         #[tok(LPAREN, this, RPAREN)]
         pub query: boxed!(PreparableStmt),
         #[tok(TO, this)]
-        #[presence(PROGRAM)]
-        pub program: bool,
-        pub target: CopyTarget,
+        pub file: CopyFileName,
         /// gram.y `opt_with`: the noise word before `copy_options`, present
         /// even when the `copy_opt_list` after it is empty.
         #[presence(WITH)]
@@ -108,17 +219,6 @@ recursa::ast_node! {
     pub struct CopyColumnList {
         #[sep(COMMA)]
         pub cols: one_or_many!(crate::tokens::ColId),
-    }
-}
-
-recursa::ast_node! {
-    /// `FROM` or `TO` direction marker on the table-form COPY statement.
-    #[derive(Debug)]
-    pub enum CopyDirection {
-        #[tok(FROM)]
-        From,
-        #[tok(TO)]
-        To,
     }
 }
 
@@ -175,7 +275,7 @@ recursa::ast_node! {
     /// parenthesised name/value form.
     ///
     /// `Generic` begins with `(`. `Legacy` is the bareword form starting with one of
-    /// `BINARY`/`FREEZE`/`OIDS`/`DELIMITER`/`NULL`/`CSV`/`HEADER`/`QUOTE`/`ESCAPE`/
+    /// `BINARY`/`FREEZE`/`DELIMITER`/`NULL`/`CSV`/`HEADER`/`QUOTE`/`ESCAPE`/
     /// `FORCE`/`ENCODING`.
     #[derive(Debug)]
     pub enum CopyOptions {
@@ -285,6 +385,9 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// One item in the legacy bareword options list — Postgres' `copy_opt_item`.
     ///
+    /// `OIDS` is no `copy_opt_item` in any target version (REL_14_24 gram.y
+    /// `copy_opt_item` has no `OIDS` arm), so it has no variant.
+    ///
     /// Variant ordering: multi-keyword forms (`FORCE NOT NULL ...`, `FORCE QUOTE ...`,
     /// `FORCE NULL ...`) come before any single-keyword form to avoid ambiguity.
     /// The keyword `FORCE` is a separate token so the multi-keyword forms are not
@@ -304,8 +407,6 @@ recursa::ast_node! {
         Binary,
         #[tok(FREEZE)]
         Freeze,
-        #[tok(OIDS)]
-        Oids,
         #[tok(CSV)]
         Csv,
         /// Added in 19: `copy_opt_item: JSON` (gram.y b73d13c:3567; research
@@ -422,8 +523,8 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `WHERE expr` clause on a `COPY ... FROM` (the only direction that accepts
-    /// it per Postgres' grammar; the server enforces the FROM-only restriction).
+    /// `WHERE expr` clause on a `COPY ... FROM`, the only direction that
+    /// accepts it.
     #[derive(Debug)]
     pub struct CopyWhereClause {
         #[tok(WHERE, this)]

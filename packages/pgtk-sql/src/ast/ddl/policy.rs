@@ -33,14 +33,22 @@ recursa::ast_node! {
     /// `AS ident` permissive/restrictive selector on CREATE POLICY —
     /// Postgres' `RowSecurityDefaultPermissive`.
     ///
-    /// gram.y parses the keyword as `IDENT` and validates `"permissive"` /
-    /// `"restrictive"` via `strcmp`; the bogus `AS UGLY` form in the corpus
-    /// is intentionally syntactically valid but semantically rejected.
-    /// Modelling the identifier as `literal::Ident` preserves both cases.
+    /// gram.y reads the word as `IDENT` and its action compares the name
+    /// with `"permissive"` and `"restrictive"` (`strcmp`). The action rejects
+    /// each other name, so the corpus form `AS UGLY` is a raw-parser error
+    /// (REL_17_11 gram.y 5849; REL_14_24 gram.y 5298).
+    #[classify(kind, fold = crate::ident::fold_name)]
+    #[reject(
+        not_in(kind, "permissive", "restrictive"),
+        code = "42601",
+        message = "unrecognized row security option",
+        hint = "Only PERMISSIVE or RESTRICTIVE policies are supported currently.",
+        cite = "REL_17_11 gram.y 5849, RowSecurityDefaultPermissive",
+    )]
     #[derive(Debug)]
     pub struct PolicyPermissiveClause {
         #[tok(AS, this)]
-        pub kind: crate::tokens::NonReservedWord,
+        pub kind: crate::tokens::literal::IdentOnly,
     }
 }
 

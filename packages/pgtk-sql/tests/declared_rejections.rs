@@ -262,3 +262,109 @@ fn a_role_id_is_a_plain_role_name() {
         assert_declared_rejection(source, "42939", message, span);
     }
 }
+
+/// The action of gram.y `TriggerEvents` refuses an event that the list has
+/// already, with or without a column list on `UPDATE`, at the event that
+/// repeats (REL_17_11 gram.y 5972; issue #55).
+#[test]
+fn a_repeated_trigger_event_is_refused_at_the_repeat() {
+    for (source, span) in [
+        (
+            "CREATE TRIGGER t AFTER insert OR INSERT ON x EXECUTE FUNCTION f()",
+            "INSERT",
+        ),
+        (
+            "CREATE TRIGGER t AFTER UPDATE OR DELETE OR UPDATE OF b ON x EXECUTE FUNCTION f()",
+            "UPDATE OF b",
+        ),
+        (
+            "CREATE TRIGGER t BEFORE delete OR DELETE ON x EXECUTE PROCEDURE f()",
+            "DELETE",
+        ),
+        (
+            "CREATE TRIGGER t AFTER truncate OR TRUNCATE ON x EXECUTE FUNCTION f()",
+            "TRUNCATE",
+        ),
+    ] {
+        assert_declared_rejection(source, "42601", "duplicate trigger events specified", span);
+    }
+}
+
+/// gram.y `RowSecurityDefaultPermissive` reads `AS IDENT` and refuses each
+/// name but `permissive` and `restrictive`, at the name (REL_17_11 gram.y
+/// 5849; issue #55).
+#[test]
+fn a_policy_kind_other_than_permissive_or_restrictive_is_refused() {
+    for (source, span) in [
+        ("CREATE POLICY p ON t AS ugly", "ugly"),
+        (
+            "CREATE POLICY p ON t AS \"PERMISSIVE\" USING (true)",
+            "\"PERMISSIVE\"",
+        ),
+    ] {
+        assert_declared_rejection(source, "42601", "unrecognized row security option", span);
+    }
+}
+
+/// gram.y `alter_table_cmd: ALTER opt_column Iconst SET STATISTICS` refuses a
+/// column number below 1 or above 32767, at the number (REL_17_11 gram.y
+/// 2487; issue #55).
+#[test]
+fn a_column_number_out_of_range_is_refused_at_the_number() {
+    for (source, span) in [
+        ("ALTER INDEX i ALTER 0 SET STATISTICS 100", "0"),
+        (
+            "ALTER INDEX i ALTER COLUMN 32768 SET STATISTICS 100",
+            "32768",
+        ),
+        ("ALTER TABLE t ALTER 40000 SET STATISTICS 1", "40000"),
+    ] {
+        assert_declared_rejection(
+            source,
+            "22023",
+            "column number must be in range from 1 to 32767",
+            span,
+        );
+    }
+}
+
+/// From 16, gram.y `PartitionSpec` reads the strategy with
+/// `parsePartitionStrategy`, which refuses each name but `list`, `range` and
+/// `hash` (REL_16_15 gram.y 18756; issue #55).
+#[cfg(feature = "since-pg16")]
+#[test]
+fn an_unknown_partition_strategy_is_refused_at_the_name() {
+    assert_declared_rejection(
+        "CREATE TABLE t (a int) PARTITION BY spread (a)",
+        "22023",
+        "unrecognized partitioning strategy",
+        "spread",
+    );
+}
+
+/// gram.y `json_format_clause` refuses each encoding but `utf8`, `utf16`
+/// and `utf32` (REL_17_11 gram.y 16926; issue #55).
+#[cfg(feature = "since-pg16")]
+#[test]
+fn an_unknown_json_encoding_is_refused_at_the_name() {
+    assert_declared_rejection(
+        "SELECT JSON_OBJECT('a' : 1 RETURNING bytea FORMAT JSON ENCODING latin1)",
+        "22023",
+        "unrecognized JSON encoding",
+        "latin1",
+    );
+}
+
+/// `base_yylex` refuses a `UESCAPE` string that is not one character that
+/// `check_uescapechar` admits (REL_17_11 parser.c 278; issue #55).
+#[test]
+fn an_invalid_uescape_character_is_refused_at_the_string() {
+    for (source, span) in [
+        ("SELECT U&'d!0061t' UESCAPE ''", "''"),
+        ("SELECT U&'d!0061t' UESCAPE 'ab'", "'ab'"),
+        ("SELECT U&'d!0061t' UESCAPE 'a'", "'a'"),
+        ("SELECT U&'d!0061t' UESCAPE '+'", "'+'"),
+    ] {
+        assert_declared_rejection(source, "42601", "invalid Unicode escape character", span);
+    }
+}
