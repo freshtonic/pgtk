@@ -542,22 +542,36 @@ impl<'input> OperatorArgType<'input> {
 
 recursa::ast_node! {
     /// `(left, right)` argument-type signature on `operator_with_argtypes` —
-    /// Postgres' `oper_argtypes`.
+    /// Postgres' `oper_argtypes` (REL_17_11 gram.y 8987-9002):
     ///
-    /// gram.y gives the unary spellings their own alternatives (`'(' NONE ','
-    /// Typename ')'` and `'(' Typename ',' NONE ')'`), which duplicates the same
-    /// token language three times. This shared-prefix type parses the pair once
-    /// and lets [`OperatorArgType`] carry the `NONE` marker; [`Self::left`] and
-    /// [`Self::right`] read it back.
+    /// ```text
+    /// '(' Typename ',' Typename ')'
+    /// | '(' NONE ',' Typename ')'    /* left unary */
+    /// | '(' Typename ',' NONE ')'    /* right unary */
+    /// ```
     ///
-    /// The shared prefix also admits `(NONE, NONE)`, which gram.y has no
-    /// alternative for. PostgreSQL rejects that pair semantically ("an operator
-    /// must have at least one operand"), so the over-acceptance costs nothing a
-    /// parser can decide.
+    /// gram.y has no `(NONE, NONE)` alternative, so that pair is a syntax
+    /// error (issue #54). `Prefix` is the left-unary form. `Pair` parses the
+    /// other two once and lets [`OperatorArgType`] carry the right `NONE`;
+    /// [`Self::left`] and [`Self::right`] read the operands back.
+    ///
+    /// Variant ordering: the forms part on the token after `(`, where only
+    /// `Prefix` takes `NONE`.
+    #[derive(Debug)]
+    pub enum OperatorArgtypes {
+        /// `(NONE, right)`.
+        Prefix(#[tok(LPAREN, NONE, COMMA, this, RPAREN)] TypeName),
+        /// `(left, right)` or `(left, NONE)`.
+        Pair(OperatorArgPair),
+    }
+}
+
+recursa::ast_node! {
+    /// `(Typename, Typename)` or `(Typename, NONE)` of gram.y `oper_argtypes`.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
-    pub struct OperatorArgtypes {
-        pub left_type: OperatorArgType,
+    pub struct OperatorArgPair {
+        pub left_type: TypeName,
         #[tok(COMMA, this)]
         pub right_type: OperatorArgType,
     }
@@ -567,13 +581,19 @@ impl<'input> OperatorArgtypes<'input> {
     /// Returns the left operand type, or `None` for PostgreSQL's unary
     /// `(NONE, right)` spelling.
     pub fn left(&self) -> Option<&TypeName<'input>> {
-        self.left_type.type_name()
+        match self {
+            Self::Prefix(_) => None,
+            Self::Pair(pair) => Some(&pair.left_type),
+        }
     }
 
     /// Returns the right operand type, or `None` for PostgreSQL's unary
     /// `(left, NONE)` spelling.
     pub fn right(&self) -> Option<&TypeName<'input>> {
-        self.right_type.type_name()
+        match self {
+            Self::Prefix(right) => Some(right),
+            Self::Pair(pair) => pair.right_type.type_name(),
+        }
     }
 }
 

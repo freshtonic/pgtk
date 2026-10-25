@@ -18,7 +18,7 @@ recursa::ast_node! {
     ///   | '(' aggr_args_list ORDER BY aggr_args_list ')'
     /// ```
     ///
-    /// `aggr_arg` is `func_arg` (re-using `FuncParam` here): a type, optionally
+    /// `aggr_arg` is `func_arg` ([`crate::ast::ddl::function::FunctionArg`]): a type, optionally
     /// preceded by a mode keyword (`VARIADIC` / `IN` / `OUT` / `INOUT`) and an
     /// argument name.
     ///
@@ -28,15 +28,14 @@ recursa::ast_node! {
     /// regex disambiguates `OrderBy` from `BothArgs`/`Args` by the leading
     /// `ORDER` keyword; `BothArgs` and `Args` are disambiguated at parse time
     /// by the presence of a trailing `ORDER BY`.
+    ///
+    /// `aggr_args` has no default values and no old-style `name = value`
+    /// entries, so `ALTER AGGREGATE a(x = 1)` is a syntax error (issue #54).
     #[derive(Debug)]
     pub enum CreateAggregateArgs {
         #[tok(LPAREN, STAR, RPAREN)]
         Star,
         OrderBy(CreateAggregateOrderBy),
-        /// gram.y `old_aggr_definition`: `(name = value, ...)`. Listed before
-        /// `Args`: both open with `(`, and `name =` decides for this form (an
-        /// `aggr_arg` takes no default, so `=` never follows one).
-        Old(OldAggregateDefinition),
         Args(CreateAggregateArgLists),
     }
 }
@@ -125,20 +124,42 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `CREATE [OR REPLACE] AGGREGATE func_name { aggr_args (def_list) | (def_list) }`.
-    ///
-    /// Old-style definition entries and modern aggregate arguments have an
-    /// intrinsically overlapping token shape: for example, `sfunc = int8pl` is
-    /// both a definition element and a function parameter with an `=` default.
-    /// Parse that shared first parenthesized group once as aggregate arguments;
-    /// the presence of a second definition list records the modern form. This
-    /// lets the LR parser decide on the `(` after the completed first group.
+    /// `CREATE [OR REPLACE] AGGREGATE func_name { aggr_args definition |
+    /// old_aggr_definition }` — gram.y `DefineStmt` (REL_17_11 gram.y
+    /// 6235-6256).
     #[derive(Debug)]
     pub struct AggregateSig {
         /// gram.y `DefineStmt: CREATE … AGGREGATE func_name …`.
         pub name: crate::ast::shared::expr::FuncCallName,
+        pub form: AggregateForm,
+    }
+}
+
+recursa::ast_node! {
+    /// The two forms of `CREATE AGGREGATE` after the name.
+    ///
+    /// The old form is one `(name = value, ...)` group. The modern form is
+    /// the argument signature and then the definition list. The old group
+    /// takes no definition list after it, and the modern signature takes no
+    /// `name = value` entry, because an `aggr_arg` has no default (issue
+    /// #54).
+    ///
+    /// Variant ordering: both open with `(`; `name =` decides for `Old`.
+    #[derive(Debug)]
+    pub enum AggregateForm {
+        /// gram.y `old_aggr_definition`.
+        Old(OldAggregateDefinition),
+        /// gram.y `aggr_args definition`.
+        Modern(ModernAggregateDefinition),
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `aggr_args definition`: the modern `CREATE AGGREGATE` form.
+    #[derive(Debug)]
+    pub struct ModernAggregateDefinition {
         pub args: CreateAggregateArgs,
-        pub definition: Option<DefList>,
+        pub definition: DefList,
     }
 }
 

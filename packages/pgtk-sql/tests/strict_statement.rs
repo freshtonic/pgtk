@@ -686,3 +686,43 @@ fn role_statements_keep_the_forms_of_gram_y() {
     ]);
 }
 
+/// The function and operator signatures that gram.y rejects (issue #54).
+#[test]
+fn signatures_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // An event trigger function takes no arguments.
+            "CREATE EVENT TRIGGER id ON title EXECUTE FUNCTION A(0)",
+            "CREATE EVENT TRIGGER id ON title EXECUTE PROCEDURE A('x')",
+            // `oper_argtypes` has no `(NONE, NONE)`.
+            "DROP OPERATOR !(NONE, NONE)",
+            "DROP OPERATOR % (NONE, NONE)",
+            "ALTER OPERATOR & (NONE, NONE) OWNER TO r",
+            "COMMENT ON OPERATOR # (NONE, NONE) IS ''",
+            // `aggr_args` has no default, and the old form takes no
+            // definition list after it.
+            "CREATE AGGREGATE A(A = A)(id)",
+            "ALTER AGGREGATE A(A = .0) OWNER TO A",
+            "CREATE OR REPLACE AGGREGATE A(A = <= )(city)",
+            // `func_args` has no default.
+            "DROP ROUTINE A(JSON = NOT FALSE)",
+            "DROP FUNCTION A(IN A DECIMAL = 1)",
+            "ALTER ROUTINE A(A JSON[] = NULL) OWNER TO A",
+            "DROP PROCEDURE p(int DEFAULT 1)",
+            "COMMENT ON FUNCTION f(int = 1) IS ''",
+            "GRANT EXECUTE ON FUNCTION f(int = 1) TO r",
+        ],
+        "gram.y has no such signature",
+    );
+    assert_accepts(&[
+        "CREATE EVENT TRIGGER id ON ddl_command_start EXECUTE FUNCTION A()",
+        "DROP OPERATOR !(NONE, int)",
+        "DROP OPERATOR !(int, NONE)",
+        "CREATE AGGREGATE A(BASETYPE = int, SFUNC = f, STYPE = int)",
+        "CREATE AGGREGATE A(int)(SFUNC = f, STYPE = int)",
+        "ALTER AGGREGATE A(int) OWNER TO A",
+        "DROP FUNCTION A(IN A DECIMAL)",
+        "CREATE FUNCTION f(a int = 1) RETURNS int LANGUAGE sql AS 'SELECT a'",
+        "CREATE PROCEDURE p(a int DEFAULT 1) LANGUAGE sql AS ''",
+    ]);
+}

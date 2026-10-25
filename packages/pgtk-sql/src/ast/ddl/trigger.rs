@@ -410,7 +410,6 @@ recursa::ast_node! {
     /// `CREATE EVENT TRIGGER name ON event_name [WHEN filters]
     /// EXECUTE {FUNCTION|PROCEDURE} func_name()` — Postgres' `CreateEventTrigStmt`.
     #[derive(Debug)]
-    #[tok(this, RPAREN)]
     pub struct CreateEventTriggerStmt {
         #[tok(CREATE, EVENT, TRIGGER, this)]
         pub name: crate::tokens::ColId,
@@ -421,13 +420,11 @@ recursa::ast_node! {
         pub when_filters: Option<EventTriggerWhenClause>,
         #[tok(EXECUTE, this)]
         pub kind: FunctionOrProcedure,
-        /// gram.y `func_name`.
-        #[tok(this, LPAREN)]
+        /// gram.y `func_name '(' ')'` (REL_17_11 gram.y 6147): an event
+        /// trigger function takes no arguments, so the parentheses are
+        /// always empty (issue #54).
+        #[tok(this, LPAREN, RPAREN)]
         pub func_name: crate::ast::shared::expr::FuncCallName,
-        #[sep(COMMA)]
-        /// `()` — event triggers never take arguments; the list is empty for
-        /// PostgreSQL-valid inputs.
-        pub args: zero_or_many!(TriggerFuncArg),
     }
 }
 
