@@ -176,12 +176,6 @@ recursa::ast_node! {
     /// The delimiters wrap the list as a whole. Attaching them to the repeated
     /// field would instead require a fresh pair of parentheses around every
     /// element after a comma.
-    ///
-    /// The closing `)` is its own rule because it can end a `select_clause`:
-    /// in `SELECT x FROM (VALUES (1)) _(x) UNION SELECT 2` a set operator
-    /// follows it directly, which the token feed reads as `RPAREN_SELECT_LA`.
-    /// [`ParenthesizedClose`] names that merged kind, which a fixed `RPAREN`
-    /// at the end of this rule could not.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this)]
     pub struct TableAliasColumnList(
@@ -2152,8 +2146,7 @@ recursa::ast_node! {
     pub struct GroupingSetsItem {
         #[sep(COMMA)]
         pub groups: one_or_many!(boxed!(GroupByItem)),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2173,8 +2166,7 @@ recursa::ast_node! {
     pub struct RollupItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2188,8 +2180,7 @@ recursa::ast_node! {
     pub struct CubeItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
-        /// The `)`, which before a set operator is the merged kind
-        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        /// The `)`.
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -2212,15 +2203,11 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// The empty grouping set `()`, used inside `GROUPING SETS` and also valid as
-    /// a top-level grouping item. Before a set operator, the `)` is the merged
-    /// kind `RPAREN_SELECT_LA`: `SELECT 1 GROUP BY () UNION SELECT 2` (issue
-    /// #60).
+    /// a top-level grouping item.
     #[derive(Debug)]
     pub enum EmptyGroupingSet {
         #[tok(LPAREN, RPAREN)]
         Value,
-        #[tok(LPAREN, RPAREN_SELECT_LA)]
-        MergedSelect,
     }
 }
 
@@ -2519,14 +2506,6 @@ impl<'input> SelectStmt<'input> {
 recursa::ast_node! {
     /// One row of a `VALUES` list: gram.y `'(' expr_list ')'` of
     /// `values_clause` (REL_17_11 gram.y 12935).
-    ///
-    /// The delimiters are their own rules rather than fixed tokens of this
-    /// one, because the closing `)` of the last row stands directly before a
-    /// set operator in `VALUES (1, 2) UNION ALL SELECT 3, 4`, which the token
-    /// feed reads as `RPAREN_SELECT_LA`. [`ParenthesizedClose`] names that
-    /// merged kind; a fixed `RPAREN` at the end of this rule could not,
-    /// because lookahead substitution reads `FIRST` of the rest of the rule
-    /// only and nothing follows it here.
     #[derive(Debug)]
     pub struct ValuesRow {
         pub open: ParenthesizedOpen,
