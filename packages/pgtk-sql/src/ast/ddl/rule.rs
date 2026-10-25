@@ -100,6 +100,10 @@ recursa::ast_node! {
     /// `select_clause` with its `opt_sort_clause`, `select_limit` and
     /// `for_locking_clause` tails.
     #[derive(Debug)]
+    #[validate(
+        crate::ast::validation::rule_query_options,
+        flat = crate::ast::validation::rule_query_options_flat
+    )]
     pub struct RuleQuery {
         pub clause: RuleSelectClause,
         #[pretty(break_before = soft)]
