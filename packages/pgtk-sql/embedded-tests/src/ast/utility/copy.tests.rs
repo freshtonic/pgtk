@@ -10,14 +10,14 @@ mod tests {
         let CopyBody::Table(table) = &stmt.body else {
             panic!("expected table body");
         };
-        assert!(matches!(table.direction, CopyDirection::From));
-        assert!(matches!(table.target, CopyTarget::Stdin));
+        assert!(table.direction() == CopyDirection::From);
+        assert!(matches!(table.file(), CopyFileName::Target(CopyTarget::Stdin)));
         assert!(table.columns.is_none());
-        assert!(!table.program);
-        assert!(table.delimiter.is_none());
-        assert!(!table.with);
-        assert!(table.options.is_none());
-        assert!(table.where_clause.is_none());
+        assert!(!matches!(table.file(), CopyFileName::Program(_)));
+        assert!(table.delimiter().is_none());
+        assert!(!table.with());
+        assert!(table.options().is_none());
+        assert!(table.where_clause().is_none());
         reparse_stable::<CopyStmt>("COPY t FROM STDIN");
     }
 
@@ -28,8 +28,8 @@ mod tests {
         let CopyBody::Table(table) = &stmt.body else {
             panic!("expected table body");
         };
-        assert!(matches!(table.direction, CopyDirection::To));
-        assert!(matches!(table.target, CopyTarget::Stdout));
+        assert!(table.direction() == CopyDirection::To);
+        assert!(matches!(table.file(), CopyFileName::Target(CopyTarget::Stdout)));
         reparse_stable::<CopyStmt>("COPY t TO STDOUT");
     }
 
@@ -56,7 +56,7 @@ mod tests {
         let CopyBody::Table(table) = &stmt.body else {
             panic!("expected table body");
         };
-        assert!(matches!(table.target, CopyTarget::File(_)));
+        assert!(matches!(table.file(), CopyFileName::Target(CopyTarget::File(_))));
     }
 
     #[test]
@@ -97,7 +97,7 @@ mod tests {
         let CopyBody::BinaryTable(body) = &stmt.body else {
             panic!("expected binary-table body");
         };
-        assert!(matches!(body.inner.direction, CopyDirection::To));
+        assert!(body.inner.direction() == CopyDirection::To);
         reparse_stable::<CopyStmt>("COPY BINARY t TO 'f'");
     }
 
@@ -230,8 +230,8 @@ mod tests {
         let CopyBody::Table(body) = &stmt.body else {
             panic!("expected the table form, got {:?}", stmt.body);
         };
-        let Some(CopyOptions::Legacy(options)) = &body.options else {
-            panic!("expected the legacy option list, got {:?}", body.options);
+        let Some(CopyOptions::Legacy(options)) = body.options() else {
+            panic!("expected the legacy option list, got {:?}", body.options());
         };
         let CopyLegacyOptionItem::ForceNotNull(force) = options.items.last() else {
             panic!("expected FORCE NOT NULL, got {:?}", options.items.last());
@@ -244,8 +244,8 @@ mod tests {
         let CopyBody::Table(body) = &stmt.body else {
             panic!("expected the table form, got {:?}", stmt.body);
         };
-        let Some(CopyOptions::Legacy(options)) = &body.options else {
-            panic!("expected the legacy option list, got {:?}", body.options);
+        let Some(CopyOptions::Legacy(options)) = body.options() else {
+            panic!("expected the legacy option list, got {:?}", body.options());
         };
         let CopyLegacyOptionItem::ForceQuote(force) = options.items.last() else {
             panic!("expected FORCE QUOTE, got {:?}", options.items.last());

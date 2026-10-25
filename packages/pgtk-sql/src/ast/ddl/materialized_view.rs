@@ -129,16 +129,20 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One `alter_table_cmd` from the ALTER MATERIALIZED VIEW corpus —
-    /// `SET TABLESPACE`, `SET ACCESS METHOD`, `ALTER COLUMN … SET COMPRESSION`,
-    /// or the schema/owner/rename actions. The list of cmds is comma-separated
+    /// One `alter_table_cmd` of ALTER MATERIALIZED VIEW: `SET TABLESPACE`,
+    /// `SET ACCESS METHOD`, `SET (...)`, `RESET (...)`, `ALTER COLUMN … SET
+    /// COMPRESSION` or `OWNER TO`. The list of cmds is comma-separated
     /// (`alter_table_cmds`).
     ///
+    /// `RENAME`, `SET SCHEMA` and `[NO] DEPENDS ON EXTENSION` are no
+    /// `alter_table_cmd`: gram.y has them in `RenameStmt`,
+    /// `AlterObjectSchemaStmt` and `AlterObjectDependsStmt`, each one alone
+    /// after the name (REL_17_11 gram.y 9546-9557, 9660-9672, 9922, 10175-10185).
+    /// So they are [`AlterMatViewAction`] variants, not cmds (issue #58).
+    ///
     /// Variant ordering: keyword-disjoint variants — `SET TABLESPACE` /
-    /// `SET ACCESS METHOD` / `SET SCHEMA` all begin with `SET` but their second
-    /// tokens are distinct (`TABLESPACE` / `ACCESS` / `SCHEMA`); `Owner` /
-    /// `Rename` / `AlterColumn` start with distinct keywords. The
-    /// `RenameColumn` form precedes `Rename` because both start with `RENAME`.
+    /// `SET ACCESS METHOD` / `SET (` begin with `SET` but their second tokens
+    /// are distinct; `Owner` / `AlterColumn` start with distinct keywords.
     #[derive(Debug)]
     pub enum AlterMatViewCmd {
         SetTablespace(SetTablespaceClause),
@@ -146,14 +150,10 @@ recursa::ast_node! {
         /// (REL_15_19 gram.y `alter_table_cmd: SET ACCESS METHOD name`).
         #[config(since = pg15)]
         SetAccessMethod(SetAccessMethodClause),
-        SetSchema(SetSchemaClause),
         SetReloptions(SetReloptions),
         ResetReloptions(ResetReloptions),
         AlterColumnCompression(AlterColumnSetCompression),
-        RenameColumn(RenameColumnClause),
-        Rename(RenameTo),
         Owner(OwnerTo),
-        Depends(DependsOnExtension),
     }
 }
 
@@ -167,13 +167,48 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `[IF EXISTS] name action` — the per-matview branch of ALTER
-    /// MATERIALIZED VIEW.
+    /// What follows `ALTER MATERIALIZED VIEW [IF EXISTS] name`: a list of
+    /// `alter_table_cmd`s, or one `RenameStmt` or `AlterObjectSchemaStmt`
+    /// form.
+    ///
+    /// Variant ordering: `RenameColumn` precedes `Rename` because both start
+    /// with `RENAME`; `SET SCHEMA` and the `SET` cmds part on the second
+    /// token.
     #[derive(Debug)]
-    pub struct AlterMaterializedViewSingle {
-        pub if_exists: Option<IfExists>,
+    pub enum AlterMatViewAction {
+        RenameColumn(RenameColumnClause),
+        Rename(RenameTo),
+        SetSchema(SetSchemaClause),
+        Cmds(AlterMatViewCmds),
+    }
+}
+
+recursa::ast_node! {
+    /// `IF EXISTS name action`. gram.y has no `IF EXISTS` form of
+    /// `ALTER MATERIALIZED VIEW … DEPENDS ON EXTENSION` (REL_17_11 gram.y 9922).
+    #[derive(Debug)]
+    pub struct AlterMatViewIfExists {
+        #[tok(IF, EXISTS, this)]
         pub name: QualifiedName,
-        pub cmds: AlterMatViewCmds,
+        pub action: AlterMatViewAction,
+    }
+}
+
+recursa::ast_node! {
+    /// `name action` or `name [NO] DEPENDS ON EXTENSION ext`.
+    #[derive(Debug)]
+    pub struct AlterMatViewPlain {
+        pub name: QualifiedName,
+        pub action: AlterMatViewPlainAction,
+    }
+}
+
+recursa::ast_node! {
+    /// The action of [`AlterMatViewPlain`].
+    #[derive(Debug)]
+    pub enum AlterMatViewPlainAction {
+        Depends(DependsOnExtension),
+        Action(AlterMatViewAction),
     }
 }
 
@@ -181,13 +216,17 @@ recursa::ast_node! {
     /// `ALTER MATERIALIZED VIEW [IF EXISTS] name alter_table_cmds`
     /// `ALTER MATERIALIZED VIEW ALL IN TABLESPACE name [OWNED BY role_list]
     ///   SET TABLESPACE new [NOWAIT]` — the two top-level shapes of Postgres'
-    /// `AlterTableStmt` branches that begin with `ALTER MATERIALIZED VIEW …`.
+    /// `AlterTableStmt` branches that begin with `ALTER MATERIALIZED VIEW …`,
+    /// with the `RenameStmt`, `AlterObjectSchemaStmt` and
+    /// `AlterObjectDependsStmt` forms.
     ///
-    /// Variant ordering: `All` (`ALL`) before `Single` (`[IF EXISTS] name`).
+    /// Variant ordering: `All` (`ALL`) and `IfExists` (`IF EXISTS`) before
+    /// `Plain` (a name); the token after `ALL` or `IF` decides.
     #[derive(Debug)]
     pub enum AlterMatViewBody {
         All(AllInTablespaceBody),
-        Single(AlterMaterializedViewSingle),
+        IfExists(AlterMatViewIfExists),
+        Plain(AlterMatViewPlain),
     }
 }
 

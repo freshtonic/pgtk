@@ -1043,3 +1043,291 @@ fn a_close_before_a_set_operator_parses() {
         "SELECT 1 GROUP BY () ORDER BY 1",
     ]);
 }
+
+/// Statements that a `gram.y` action always rejects with `ereport`, which
+/// pgtk-sql rejects as a grammar shape (issue #55). The declared rejections
+/// are in `tests/declared_rejections.rs`.
+#[test]
+fn statements_that_a_gram_y_action_rejects() {
+    assert_rejects(
+        &[
+            // `aggr_arg` refuses the output modes.
+            "CREATE AGGREGATE a(INOUT int) (SFUNC = f, STYPE = int)",
+            "CREATE AGGREGATE a(x OUT int) (SFUNC = f, STYPE = int)",
+            "ALTER AGGREGATE a(OUT int) RENAME TO b",
+            "DROP AGGREGATE a(int ORDER BY OUT int)",
+            // `CREATE SCHEMA IF NOT EXISTS` takes no schema element.
+            "CREATE SCHEMA IF NOT EXISTS s CREATE SEQUENCE q",
+            "CREATE SCHEMA IF NOT EXISTS AUTHORIZATION r CREATE TABLE t (a int)",
+            // `PROGRAM` takes a string, not a standard stream.
+            "COPY t TO PROGRAM STDIN",
+            "COPY t FROM PROGRAM STDOUT",
+            "COPY (SELECT 1) TO PROGRAM STDOUT",
+            // `WHERE` only with `COPY FROM`.
+            "COPY t TO STDOUT WHERE a > 1",
+            "COPY t TO 'f' WITH WHERE true",
+            // The legacy forms that the actions refuse.
+            "CREATE ROLE r UNENCRYPTED PASSWORD 'x'",
+            "ALTER ROLE r UNENCRYPTED PASSWORD 'x'",
+            "CREATE TABLE t (a int REFERENCES p MATCH PARTIAL)",
+            // A column list on `ON UPDATE SET NULL / SET DEFAULT`.
+            "CREATE TABLE t (a int REFERENCES p ON UPDATE SET NULL (a))",
+            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON UPDATE SET DEFAULT (a))",
+            // `WITH CHECK OPTION` on a recursive view.
+            "CREATE RECURSIVE VIEW v (a) AS SELECT 1 WITH CHECK OPTION",
+            "CREATE OR REPLACE RECURSIVE VIEW v (a) AS SELECT 1 WITH LOCAL CHECK OPTION",
+            // A hash partition bound with no modulus or remainder, or a repeat.
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 0)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, MODULUS 2)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0, REMAINDER 1)",
+            // `preprocess_pubobj_list`: the first object names its kind, and a
+            // schema continuation is a plain name.
+            "CREATE PUBLICATION p FOR t",
+            "ALTER PUBLICATION p ADD t",
+            "ALTER PUBLICATION p DROP t*",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t (a)",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t WHERE (a > 1)",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t*",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, ONLY t",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, a.b",
+        ],
+        "a gram.y action rejects the statement",
+    );
+    assert_accepts(&[
+        "CREATE AGGREGATE a(IN int) (SFUNC = f, STYPE = int)",
+        "CREATE AGGREGATE a(VARIADIC x int ORDER BY VARIADIC int) (SFUNC = f, STYPE = int)",
+        "CREATE SCHEMA IF NOT EXISTS s",
+        "CREATE SCHEMA IF NOT EXISTS AUTHORIZATION r",
+        "CREATE SCHEMA s CREATE SEQUENCE q",
+        "COPY t TO PROGRAM 'cat'",
+        "COPY t FROM STDIN WHERE a > 1",
+        "COPY (SELECT 1) TO STDOUT",
+        "CREATE ROLE r ENCRYPTED PASSWORD 'x'",
+        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+        "CREATE TABLE t (a int REFERENCES p ON UPDATE NO ACTION ON DELETE SET DEFAULT)",
+        "CREATE RECURSIVE VIEW v (a) AS SELECT 1",
+        "CREATE VIEW v AS SELECT 1 WITH CASCADED CHECK OPTION",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 1, MODULUS 2)",
+        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+        "CREATE TRIGGER t AFTER INSERT OR UPDATE OF a OR DELETE OR TRUNCATE ON x EXECUTE FUNCTION f()",
+        "CREATE POLICY p ON t AS PERMISSIVE",
+        "CREATE POLICY p ON t AS \"restrictive\"",
+        "ALTER INDEX i ALTER 1 SET STATISTICS 100",
+        "ALTER INDEX i ALTER 32767 SET STATISTICS 100",
+        "SELECT U&'d!0061t' UESCAPE '!'",
+    ]);
+}
+
+/// CREATE statement forms that gram.y does not have (issue #57).
+#[test]
+fn create_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `OptTemp` holds one persistence keyword.
+            "CREATE TEMP UNLOGGED TABLE t (a int)",
+            "CREATE TEMPORARY UNLOGGED TABLE t OF typ",
+            // The clauses of CREATE TABLE are in the order of gram.y.
+            "CREATE TABLE t USING heap OF typ",
+            "CREATE TABLE t USING heap (a int)",
+            "CREATE TABLE t USING heap PARTITION OF p DEFAULT",
+            "CREATE TABLE t (a int) WITH OIDS",
+            // `IF NOT EXISTS` takes a name.
+            "CREATE INDEX IF NOT EXISTS ON t (a)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ON t (a)",
+            "CREATE STATISTICS IF NOT EXISTS ON a, b FROM t",
+            // A hash partition bound is an integer.
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS DEFAULT, REMAINDER 0)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 1 + 1)",
+            // `PARTITION OF` takes exactly one bound.
+            "CREATE TABLE p1 PARTITION OF p",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES IN (1) DEFAULT",
+            "CREATE FOREIGN TABLE p1 PARTITION OF p SERVER s",
+            "CREATE FOREIGN TABLE p1 PARTITION OF p FOR VALUES IN (1) DEFAULT SERVER s",
+            // A view has no access method.
+            "CREATE VIEW v USING heap AS SELECT 1",
+            "CREATE RECURSIVE VIEW v (a) USING heap AS SELECT 1",
+            // A recursive view has a column list.
+            "CREATE RECURSIVE VIEW v AS SELECT 1",
+            "CREATE RECURSIVE VIEW v WITH (security_barrier) AS SELECT 1",
+            // `key_actions`: one ON UPDATE and one ON DELETE at most.
+            "CREATE TABLE t (a int REFERENCES p ON UPDATE CASCADE ON UPDATE RESTRICT)",
+            "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT ON DELETE NO ACTION)",
+            // `UNIQUE USING INDEX` has no `NULLS [NOT] DISTINCT`.
+            "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT USING INDEX i)",
+            "ALTER TABLE t ADD UNIQUE NULLS DISTINCT USING INDEX i",
+            // A CREATE SCHEMA element is no CREATE TABLE AS.
+            "CREATE SCHEMA s CREATE TABLE t AS SELECT 1",
+            // `into_clause` has no access method.
+            "SELECT 1 INTO t USING heap",
+            "SELECT 1 INTO UNLOGGED t USING heap",
+            // `opt_with` comes once before the whole option list (issue #24).
+            "CREATE DATABASE d WITH OWNER = x WITH TEMPLATE = y",
+            "CREATE EXTENSION e WITH SCHEMA s WITH VERSION '1.0'",
+            "CREATE GROUP g WITH SUPERUSER WITH CREATEDB",
+            "CREATE ROLE r WITH LOGIN WITH SUPERUSER",
+            "CREATE USER u WITH LOGIN WITH SUPERUSER",
+        ],
+        "gram.y has no such CREATE form",
+    );
+    assert_accepts(&[
+        "CREATE TEMP TABLE t (a int)",
+        "CREATE UNLOGGED TABLE t OF typ",
+        "CREATE TABLE t OF typ (a WITH OPTIONS NOT NULL) PARTITION BY LIST (a) USING heap WITH (fillfactor = 70) TABLESPACE s",
+        "CREATE TABLE t (a int) INHERITS (p) USING heap WITHOUT OIDS",
+        "CREATE TABLE t USING heap AS SELECT 1",
+        "CREATE TABLE t (a, b) USING heap WITH (fillfactor = 70) TABLESPACE s AS SELECT 1, 2 WITH NO DATA",
+        "CREATE TEMP TABLE t ON COMMIT DROP AS SELECT 1",
+        "CREATE INDEX IF NOT EXISTS i ON t (a)",
+        "CREATE INDEX ON t (a)",
+        "CREATE INDEX if ON t (a)",
+        "CREATE STATISTICS IF NOT EXISTS s ON a, b FROM t",
+        "CREATE STATISTICS s ON a, b FROM t",
+        "CREATE TABLE p1 PARTITION OF p DEFAULT",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES IN (1) USING heap",
+        "CREATE FOREIGN TABLE p1 PARTITION OF p DEFAULT SERVER s",
+        "CREATE RECURSIVE VIEW v (a) WITH (security_barrier) AS SELECT 1",
+        "CREATE OR REPLACE TEMP VIEW v (a) AS SELECT 1",
+        "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT)",
+        "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))",
+        "ALTER TABLE t ADD UNIQUE USING INDEX i",
+        "CREATE SCHEMA s CREATE TABLE t (a int) CREATE VIEW v AS SELECT 1",
+        "SELECT 1 INTO TEMP TABLE t",
+        "CREATE DATABASE d WITH OWNER = x TEMPLATE = y",
+        "CREATE DATABASE d WITH",
+        "CREATE EXTENSION e WITH SCHEMA s VERSION '1.0'",
+        "CREATE GROUP g WITH SUPERUSER CREATEDB",
+        "CREATE ROLE r LOGIN",
+        "CREATE USER u WITH LOGIN SUPERUSER",
+    ]);
+}
+
+/// ALTER and utility statement forms that gram.y does not have (issue #58).
+#[test]
+fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `IF EXISTS` only where gram.y has it.
+            "ALTER STATISTICS IF EXISTS s OWNER TO r",
+            "ALTER STATISTICS IF EXISTS s RENAME TO t",
+            "ALTER STATISTICS IF EXISTS s SET SCHEMA t",
+            "ALTER INDEX IF EXISTS i ATTACH PARTITION j",
+            "ALTER INDEX IF EXISTS i DEPENDS ON EXTENSION e",
+            "ALTER MATERIALIZED VIEW IF EXISTS m DEPENDS ON EXTENSION e",
+            // `DEPENDS ON EXTENSION` is no `alter_table_cmd`.
+            "ALTER TABLE t DEPENDS ON EXTENSION e",
+            "ALTER FOREIGN TABLE t NO DEPENDS ON EXTENSION e",
+            // `RENAME` and `SET SCHEMA` are alone after the name.
+            "ALTER MATERIALIZED VIEW m OWNER TO r, SET SCHEMA s",
+            "ALTER MATERIALIZED VIEW m SET TABLESPACE s, RENAME TO n",
+            // EXPLAIN takes only CREATE TABLE AS.
+            "EXPLAIN CREATE TABLE t OF typ",
+            "EXPLAIN CREATE TABLE t (a int)",
+            "EXPLAIN CREATE TABLE t ()",
+            // SECURITY LABEL has no such object kind.
+            "SECURITY LABEL ON RULE r ON t IS 'x'",
+            "SECURITY LABEL ON TRIGGER tr ON t IS 'x'",
+            "SECURITY LABEL ON POLICY p ON t IS 'x'",
+            "SECURITY LABEL ON CONSTRAINT c ON t IS 'x'",
+            "SECURITY LABEL ON OPERATOR + (int, int) IS 'x'",
+            // `defacl_privilege_target` has no `PROCEDURES`.
+            "ALTER DEFAULT PRIVILEGES GRANT ALL ON PROCEDURES TO r",
+            // The option list and the old option keywords do not mix.
+            "VACUUM (VERBOSE) FULL",
+            "VACUUM (VERBOSE) ANALYZE t",
+            "ANALYZE VERBOSE (SKIP_LOCKED) t",
+            "CLUSTER (VERBOSE) VERBOSE t",
+            "CLUSTER (VERBOSE) i ON t",
+            // `DEFAULT VALUES` takes no column list and no `OVERRIDING`.
+            "INSERT INTO t (a) DEFAULT VALUES",
+            "INSERT INTO t OVERRIDING SYSTEM VALUE DEFAULT VALUES",
+            // `TABLES IN SCHEMA` takes no column list.
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s (a)",
+            "ALTER PUBLICATION p ADD TABLES IN SCHEMA s (a)",
+            // A column number has no sign, and takes only SET STATISTICS.
+            "ALTER INDEX i ALTER 1 SET (fillfactor = 70)",
+            "ALTER TABLE t ALTER - 1 SET STATISTICS 1",
+            "ALTER TABLE t ALTER 1 DROP NOT NULL",
+            "ALTER FOREIGN TABLE t ALTER 1 OPTIONS (ADD a 'b')",
+            // `OIDS` is no COPY option.
+            "COPY t TO STDOUT OIDS",
+            "COPY t FROM STDIN WITH OIDS FREEZE",
+            // `ON CONFLICT` with an empty target, or `WHERE` with no target.
+            "INSERT INTO t DEFAULT VALUES ON CONFLICT () DO NOTHING",
+            "INSERT INTO t VALUES (1) ON CONFLICT WHERE a > 1 DO NOTHING",
+            "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c WHERE a > 1 DO NOTHING",
+        ],
+        "gram.y has no such ALTER or utility form",
+    );
+    assert_accepts(&[
+        "ALTER STATISTICS IF EXISTS s SET STATISTICS 100",
+        "ALTER STATISTICS s OWNER TO r",
+        "ALTER INDEX i ATTACH PARTITION j",
+        "ALTER INDEX IF EXISTS i RENAME TO j",
+        "ALTER INDEX IF EXISTS i SET TABLESPACE s",
+        "ALTER INDEX i DEPENDS ON EXTENSION e",
+        "ALTER MATERIALIZED VIEW m NO DEPENDS ON EXTENSION e",
+        "ALTER MATERIALIZED VIEW IF EXISTS m RENAME COLUMN a TO b",
+        "ALTER MATERIALIZED VIEW m OWNER TO r, SET TABLESPACE s",
+        "ALTER MATERIALIZED VIEW m SET SCHEMA s",
+        "ALTER TABLE IF EXISTS t RENAME TO u",
+        "EXPLAIN CREATE TABLE t AS SELECT 1",
+        "EXPLAIN CREATE TABLE t (a) AS SELECT 1",
+        "SECURITY LABEL ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR p ON FUNCTION f(int) IS 'x'",
+        "ALTER DEFAULT PRIVILEGES GRANT ALL ON ROUTINES TO r",
+        "VACUUM FULL FREEZE VERBOSE ANALYZE t",
+        "VACUUM (VERBOSE, ANALYZE) t (a)",
+        "ANALYZE VERBOSE t",
+        "ANALYZE (SKIP_LOCKED) t",
+        "CLUSTER VERBOSE i ON t",
+        "CLUSTER (VERBOSE) t USING i",
+        "INSERT INTO t DEFAULT VALUES",
+        "INSERT INTO t (a) OVERRIDING USER VALUE VALUES (1)",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s",
+        "ALTER INDEX i ALTER 1 SET STATISTICS 100",
+        "ALTER INDEX i ALTER a SET (fillfactor = 70)",
+        "ALTER TABLE t ALTER a DROP NOT NULL",
+        "COPY t TO STDOUT CSV HEADER",
+        "INSERT INTO t VALUES (1) ON CONFLICT (a) WHERE a > 1 DO NOTHING",
+        "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
+        "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c DO NOTHING",
+    ]);
+}
+
+/// `ALTER TYPE ... SET (...)` takes gram.y `operator_def_list`, whose value is
+/// optional only from 17 (REL_17_11 gram.y 10252; issue #58).
+#[test]
+fn alter_type_set_takes_an_operator_def_list() {
+    assert_accepts(&["ALTER TYPE t SET (send = none, receive = r)"]);
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&["ALTER TYPE t SET (send)"]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &["ALTER TYPE t SET (send)", "ALTER TYPE t SET (a = 1, b)"],
+        "an operator_def_elem has a value before 17",
+    );
+}
+
+/// A JSON_TABLE `EXISTS` column takes only a path and an `ON ERROR`
+/// behavior (REL_17_11 gram.y 14228-14246).
+#[cfg(feature = "since-pg17")]
+#[test]
+fn a_json_table_exists_column_has_no_wrapper_or_format() {
+    assert_rejects(
+        &[
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS WITH WRAPPER))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS FORMAT JSON))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS KEEP QUOTES))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS NULL ON EMPTY))",
+        ],
+        "an EXISTS column has no wrapper, format, quotes or ON EMPTY",
+    );
+    assert_accepts(&[
+        "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS PATH '$.a' FALSE ON ERROR))",
+        "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a jsonb FORMAT JSON PATH '$.a' WITH WRAPPER KEEP QUOTES NULL ON EMPTY))",
+    ]);
+}

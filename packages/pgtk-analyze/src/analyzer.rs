@@ -17,7 +17,7 @@ use pgtk_sql::ast::dml::select::{
 #[cfg(feature = "since-pg17")]
 use pgtk_sql::ast::dml::select::{
     FlatJsonTableColumn, FlatJsonTableColumnKind, FlatJsonTableColumnList, FlatJsonTableFormat,
-    FlatJsonTableInner, FlatJsonTableRef,
+    FlatJsonTableInner, FlatJsonTableRef, FlatJsonTableTypedTail,
 };
 use pgtk_sql::ast::dml::values::{FlatSelectClause, FlatSetQuantifier};
 use pgtk_sql::ast::session::set_reset::{FlatShowStmt, FlatShowTarget};
@@ -78,9 +78,7 @@ use pgtk_sql::ast::ddl::procedure::FlatCallStmt;
 use pgtk_sql::ast::ddl::table::FlatCtasSource;
 use pgtk_sql::ast::dml::delete::{FlatDeleteStmt, FlatDeleteTableAlias};
 use pgtk_sql::ast::dml::insert::{FlatConflictAction, FlatConflictTarget, FlatOnConflictClause};
-use pgtk_sql::ast::dml::insert::{
-    FlatInsertRest, FlatInsertSource, FlatInsertStmt, FlatOverridingKind,
-};
+use pgtk_sql::ast::dml::insert::{FlatInsertRest, FlatInsertStmt, FlatOverridingKind};
 #[cfg(feature = "since-pg15")]
 use pgtk_sql::ast::dml::merge::{
     FlatInsertAction, FlatMatchedAction, FlatMatchedKind, FlatMergeStmt, FlatMergeTableAlias,
@@ -1501,7 +1499,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatStatement::Call(c) => self.call_statement(*c),
             FlatStatement::CreateTable(t) => match self.get(self.get(*t).body) {
                 FlatCreateTableBody::AsQuery(a) => self.create_table_as(self.get(*a).source),
-                FlatCreateTableBody::ColumnsAsQuery(c) => self.create_table_as(self.get(*c).source),
                 _ => self.utility(),
             },
             // Describe answers these from the Session.
@@ -4772,11 +4769,20 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     icolumns.push((name, ty, typmod, loc, parts));
                     attnums.push(attnum);
                 }
-                (true, c.source)
+                (true, Some(c.source))
             }
-            FlatInsertRest::Plain(p) => {
-                let p = self.get(*p);
-                override_kind = p.overriding.map(|o| *self.get(self.get(o).which));
+            FlatInsertRest::Plain(_) | FlatInsertRest::Default => {
+                let source = match self.get(stmt.rest) {
+                    FlatInsertRest::Plain(p) => {
+                        let p = self.get(*p);
+                        override_kind = p.overriding.map(|o| *self.get(self.get(o).which));
+                        Some(p.source)
+                    }
+                    _ => {
+                        override_kind = None;
+                        None
+                    }
+                };
                 let rel = &self.catalog()[relation];
                 let mut cols: Vec<_> = rel.columns.iter().collect();
                 cols.sort_by_key(|c| c.position);
@@ -4790,14 +4796,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     ));
                     attnums.push(c.position);
                 }
-                (false, p.source)
+                (false, source)
             }
         };
         let mut rows: Vec<Vec<InsertValue>> = Vec::new();
-        match self.get(source) {
-            FlatInsertSource::Default => {}
-            FlatInsertSource::Select(sub) => {
-                let sub_handle = *sub;
+        match source {
+            None => {}
+            Some(sub_handle) => {
                 let sub = self.get(sub_handle);
                 let body = self.get(sub.body);
                 let mut value_rows: Option<Vec<Handle<FlatValuesRow>>> = None;
@@ -5027,15 +5032,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .into());
                     }
                 }
-                FlatConflictTarget::Index(list) => {
+                FlatConflictTarget::Index(index) => {
+                    let index = self.get(*index);
+                    let list = index.columns;
                     // gram.y locates the inference clause at its parenthesis.
-                    let start = self.span(*list).start;
+                    let start = self.span(list).start;
                     let infer_location = if self.source[start..].starts_with('(') {
                         start
                     } else {
                         self.source[..start].rfind('(').unwrap_or(start)
                     };
-                    let items = self.list(self.get(*list).0).to_vec();
+                    let items = self.list1(self.get(list).0).to_vec();
                     let saved = self.expr_kind;
                     self.expr_kind = ExprKind::IndexExpression;
                     for item in items {
@@ -5089,7 +5096,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                     }
                     self.expr_kind = saved;
-                    self.where_clause_kind(scope, clause.where_clause, ExprKind::IndexPredicate)?;
+                    self.where_clause_kind(scope, index.where_clause, ExprKind::IndexPredicate)?;
                 }
             }
         }
@@ -6269,15 +6276,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExplainableStmt::Declare(d) => {
                 self.declare(*d)?;
             }
-            FlatExplainableStmt::CreateTable(t) => match self.get(self.get(*t).body) {
-                FlatCreateTableBody::AsQuery(a) => {
-                    self.create_table_as(self.get(*a).source)?;
-                }
-                FlatCreateTableBody::ColumnsAsQuery(c) => {
-                    self.create_table_as(self.get(*c).source)?;
-                }
-                _ => return Err(unsupported("EXPLAIN CREATE TABLE", None)),
-            },
+            FlatExplainableStmt::CreateTable(t) => {
+                self.create_table_as(self.get(self.get(*t).body).source)?;
+            }
             FlatExplainableStmt::CreateMaterializedView(m) => {
                 self.create_matview(*m)?;
             }
@@ -8901,9 +8902,22 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
                 FlatJsonTableColumnKind::Typed(tc) => {
                     let tc = self.get(*tc);
-                    let op = if tc.exists {
+                    let (exists, format, wrapper, quotes, on_empty, on_error) =
+                        match self.get(tc.tail) {
+                            FlatJsonTableTypedTail::Exists(e) => {
+                                let e = self.get(*e);
+                                let on_error = e.on_error.map(|e| self.json_on_error(e));
+                                (true, None, None, None, None, on_error)
+                            }
+                            FlatJsonTableTypedTail::Regular(r) => {
+                                let r = self.get(*r);
+                                let (on_empty, on_error) = self.json_behaviors(r.on_behavior);
+                                (false, r.format, r.wrapper, r.quotes, on_empty, on_error)
+                            }
+                        };
+                    let op = if exists {
                         JsonOp::Exists
-                    } else if tc.format.is_some() || tc.quotes.is_some() || tc.wrapper.is_some() {
+                    } else if format.is_some() || quotes.is_some() || wrapper.is_some() {
                         JsonOp::Query
                     } else {
                         // A regular column of a composite type is formatted.
@@ -8919,11 +8933,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         context: JsonContext::Typed,
                         path: None,
                         passing,
-                        returning: JsonReturningSpec::Column(tc.ty, tc.format),
-                        wrapper: tc.wrapper,
-                        quotes: tc.quotes,
-                        on_empty: self.json_behaviors(tc.on_behavior).0,
-                        on_error: self.json_behaviors(tc.on_behavior).1,
+                        returning: JsonReturningSpec::Column(tc.ty, format),
+                        wrapper,
+                        quotes,
+                        on_empty,
+                        on_error,
                         column: Some(name.clone()),
                     };
                     let t = self.json_func(lscope, op, &parts, at)?;
@@ -10143,7 +10157,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let encoding = match encoding {
             None => None,
             Some(e) => {
-                let (name, _) = self.alias_name(self.get(e).name)?;
+                let (name, _) = self.col_id(self.get(e).name)?;
                 if !matches!(name.as_str(), "utf8" | "utf16" | "utf32") {
                     return Err(Diagnostic::new(
                         "22023",

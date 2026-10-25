@@ -12,8 +12,8 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateSchemaStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.head, SchemaNameClause::Named(_)));
-        assert!(stmt.elements.is_empty());
+        assert!(matches!(stmt.head(), SchemaNameClause::Named(_)));
+        assert!(stmt.elements().is_empty());
         assert!(input.is_eof());
     }
 
@@ -24,7 +24,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateSchemaStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.head, SchemaNameClause::Authorization(_)));
+        assert!(matches!(stmt.head(), SchemaNameClause::Authorization(_)));
         assert!(input.is_eof());
     }
 
@@ -35,7 +35,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateSchemaStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.if_not_exists.is_some());
+        assert!(stmt.if_not_exists());
         assert!(input.is_eof());
     }
 
@@ -46,7 +46,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateSchemaStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        match &stmt.head {
+        match stmt.head() {
             SchemaNameClause::Named(n) => {
                 assert_eq!(n.name.text(), "s1");
                 assert!(n.authorization.is_some());

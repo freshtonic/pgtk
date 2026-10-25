@@ -45,7 +45,36 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// One trigger event — Postgres' `TriggerOneEvent`:
     /// `INSERT | DELETE | UPDATE [OF cols] | TRUNCATE`.
+    ///
+    /// The action of gram.y `TriggerEvents` rejects a list that has one event
+    /// two times (`events1 & events2`), with or without a column list on
+    /// `UPDATE` (REL_17_11 gram.y 5972; REL_14_24 gram.y 5418). The error is
+    /// at the event that repeats.
     #[derive(Debug)]
+    #[reject(
+        once(Insert),
+        code = "42601",
+        message = "duplicate trigger events specified",
+        cite = "REL_17_11 gram.y 5972, TriggerEvents",
+    )]
+    #[reject(
+        once(Delete),
+        code = "42601",
+        message = "duplicate trigger events specified",
+        cite = "REL_17_11 gram.y 5972, TriggerEvents",
+    )]
+    #[reject(
+        once(Update),
+        code = "42601",
+        message = "duplicate trigger events specified",
+        cite = "REL_17_11 gram.y 5972, TriggerEvents",
+    )]
+    #[reject(
+        once(Truncate),
+        code = "42601",
+        message = "duplicate trigger events specified",
+        cite = "REL_17_11 gram.y 5972, TriggerEvents",
+    )]
     pub enum TriggerOneEvent {
         #[tok(INSERT)]
         Insert,

@@ -30,20 +30,54 @@ recursa::ast_node! {
     /// this rule, as gram.y spells them; a presence with a fixed token attached
     /// to it lowers to its own nonterminal, which has to be reduced before the
     /// `TEMP` that `CREATE TEMP TABLE` shifts.
+    ///
+    /// gram.y has no access method on a view (issue #57). A `RECURSIVE` view
+    /// has a column list, and its action rejects `WITH CHECK OPTION`
+    /// (REL_17_11 gram.y 11206-11243; REL_14_24 gram.y `ViewStmt`), so the
+    /// recursive form is its own body (issues #55 and #57).
     #[derive(Debug)]
     #[tok(CREATE, this)]
     pub struct CreateViewStmt {
         #[presence(OR, REPLACE)]
         pub or_replace: bool,
         pub temp: Option<TempKw>,
-        #[presence(RECURSIVE)]
-        pub recursive: bool,
+        pub body: CreateViewBody,
+    }
+}
+
+recursa::ast_node! {
+    /// The part of `CREATE VIEW` after `OptTemp`.
+    ///
+    /// Variant ordering: `Recursive` starts with `RECURSIVE`, `Plain` with
+    /// `VIEW`.
+    #[derive(Debug)]
+    pub enum CreateViewBody {
+        Recursive(RecursiveViewBody),
+        Plain(PlainViewBody),
+    }
+}
+
+recursa::ast_node! {
+    /// `RECURSIVE VIEW name (cols) [WITH (options)] AS query`.
+    #[derive(Debug)]
+    pub struct RecursiveViewBody {
+        #[tok(RECURSIVE, VIEW, this)]
+        pub name: QualifiedName,
+        pub columns: CreateViewColumnList,
+        /// Optional `WITH (option [= value], ...)` view options.
+        pub with_options: Option<crate::ast::ddl::index::WithStorage>,
+        #[tok(AS, this)]
+        pub query: Subquery,
+    }
+}
+
+recursa::ast_node! {
+    /// `VIEW name [(cols)] [WITH (options)] AS query [WITH CHECK OPTION]`.
+    #[derive(Debug)]
+    pub struct PlainViewBody {
         #[tok(VIEW, this)]
         pub name: QualifiedName,
         pub columns: Option<CreateViewColumnList>,
-        /// Optional `USING access_method` (accepted by PG parser though rejected
-        /// semantically for plain VIEW; tests include it).
-        pub using: Option<ViewUsing>,
         /// Optional `WITH (option [= value], ...)` view options such as
         /// `security_invoker`, `security_barrier`, `check_option`.
         pub with_options: Option<crate::ast::ddl::index::WithStorage>,
@@ -52,6 +86,37 @@ recursa::ast_node! {
         /// Optional `WITH [CASCADED|LOCAL] CHECK OPTION` trailer, used with
         /// updatable views to cascade predicate checks to underlying rows.
         pub check_option: Option<ViewCheckOption>,
+    }
+}
+
+impl<'input> CreateViewStmt<'input> {
+    /// The name of the view.
+    pub fn name(&self) -> &QualifiedName<'input> {
+        match &self.body {
+            CreateViewBody::Recursive(body) => &body.name,
+            CreateViewBody::Plain(body) => &body.name,
+        }
+    }
+
+    /// Whether the view is `RECURSIVE`.
+    pub fn recursive(&self) -> bool {
+        matches!(self.body, CreateViewBody::Recursive(_))
+    }
+
+    /// The output-column list.
+    pub fn columns(&self) -> Option<&CreateViewColumnList<'input>> {
+        match &self.body {
+            CreateViewBody::Recursive(body) => Some(&body.columns),
+            CreateViewBody::Plain(body) => body.columns.as_ref(),
+        }
+    }
+
+    /// The query.
+    pub fn query(&self) -> &Subquery<'input> {
+        match &self.body {
+            CreateViewBody::Recursive(body) => &body.query,
+            CreateViewBody::Plain(body) => &body.query,
+        }
     }
 }
 
@@ -64,15 +129,6 @@ recursa::ast_node! {
         #[deref]
         pub one_or_many!(literal::AliasName),
     );
-}
-
-recursa::ast_node! {
-    /// `USING access_method` trailer on CREATE VIEW.
-    #[derive(Debug)]
-    pub struct ViewUsing {
-        #[tok(USING, this)]
-        pub method: literal::AliasName,
-    }
 }
 
 recursa::ast_node! {

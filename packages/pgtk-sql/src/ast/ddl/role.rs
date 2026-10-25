@@ -192,18 +192,16 @@ recursa::ast_node! {
     /// Only the plain form takes `NULL`, so `ENCRYPTED PASSWORD NULL` is a
     /// syntax error (issue #53). `ENCRYPTED` is a backward-compat noise word
     /// (passwords are always encrypted today). The action of the
-    /// `UNENCRYPTED PASSWORD` form raises an error; pgtk-sql accepts the form
-    /// and round-trips it byte-faithfully.
+    /// `UNENCRYPTED PASSWORD` form always raises an error (REL_17_11 gram.y
+    /// 1231; REL_14_24 gram.y 1108), so the form has no variant (issue #55).
     ///
-    /// Variant ordering: the three forms part on their first keyword.
+    /// Variant ordering: the two forms part on their first keyword.
     #[derive(Debug)]
     pub enum PasswordOption {
         /// `PASSWORD { Sconst | NULL }`.
         Plain(#[tok(PASSWORD, this)] PasswordValue),
         /// `ENCRYPTED PASSWORD Sconst`.
         Encrypted(#[tok(ENCRYPTED, PASSWORD, this)] CopySconst),
-        /// `UNENCRYPTED PASSWORD Sconst`.
-        Unencrypted(#[tok(UNENCRYPTED, PASSWORD, this)] CopySconst),
     }
 }
 
@@ -294,7 +292,7 @@ recursa::ast_node! {
     /// `CreateOptRoleElem`. Options are unordered and repeatable.
     ///
     /// Variant ordering: multi-keyword forms (`IN ROLE`, `CONNECTION LIMIT`,
-    /// `VALID UNTIL`, `ENCRYPTED PASSWORD`, `UNENCRYPTED PASSWORD`) before any
+    /// `VALID UNTIL`, `ENCRYPTED PASSWORD`) before any
     /// single-keyword form they share a first-token with, so longest-match-wins
     /// disambiguates. `ROLE role_list` and `IN ROLE …` both start with `ROLE`/
     /// `IN` so the longer `IN ROLE` form wins on its leading `IN`.
@@ -346,12 +344,11 @@ recursa::ast_node! {
     pub struct CreateGroupStmt {
         #[tok(CREATE, GROUP, this)]
         pub name: RoleId,
-        // `this_each` states the element-wise attachment this site already
-        // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
-        // SUPERUSER` is accepted where gram.y `CREATE GROUP RoleId opt_with
-        // OptRoleList` reads `WITH` once. RCA3152 asks only that the reading
-        // be explicit; the container repair is #59 section B, which is open.
-        #[tok(optional(WITH), this_each)]
+        /// gram.y `CREATE GROUP RoleId opt_with OptRoleList`: one
+        /// optional `WITH` before the whole list, so `WITH LOGIN WITH
+        /// SUPERUSER` is a syntax error (issue #24).
+        #[presence(WITH)]
+        pub with: bool,
         pub options: zero_or_many!(CreateRoleOption),
     }
 }
@@ -371,12 +368,11 @@ recursa::ast_node! {
     pub struct CreateRoleStmt {
         #[tok(CREATE, ROLE, this)]
         pub name: RoleId,
-        // `this_each` states the element-wise attachment this site already
-        // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
-        // SUPERUSER` is accepted where gram.y `CREATE ROLE RoleId opt_with
-        // OptRoleList` reads `WITH` once. RCA3152 asks only that the reading
-        // be explicit; the container repair is #59 section B, which is open.
-        #[tok(optional(WITH), this_each)]
+        /// gram.y `CREATE ROLE RoleId opt_with OptRoleList`: one
+        /// optional `WITH` before the whole list, so `WITH LOGIN WITH
+        /// SUPERUSER` is a syntax error (issue #24).
+        #[presence(WITH)]
+        pub with: bool,
         pub options: zero_or_many!(CreateRoleOption),
     }
 }
@@ -396,12 +392,11 @@ recursa::ast_node! {
     pub struct CreateUserStmt {
         #[tok(CREATE, USER, this)]
         pub name: RoleId,
-        // `this_each` states the element-wise attachment this site already
-        // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
-        // SUPERUSER` is accepted where gram.y `CREATE USER RoleId opt_with
-        // OptRoleList` reads `WITH` once. RCA3152 asks only that the reading
-        // be explicit; the container repair is #59 section B, which is open.
-        #[tok(optional(WITH), this_each)]
+        /// gram.y `CREATE USER RoleId opt_with OptRoleList`: one
+        /// optional `WITH` before the whole list, so `WITH LOGIN WITH
+        /// SUPERUSER` is a syntax error (issue #24).
+        #[presence(WITH)]
+        pub with: bool,
         pub options: zero_or_many!(CreateRoleOption),
     }
 }
@@ -426,7 +421,7 @@ recursa::ast_node! {
     /// "for use by ALTER GROUP", per the gram.y comment).
     ///
     /// Variant ordering: multi-keyword forms (`CONNECTION LIMIT`, `VALID
-    /// UNTIL`, `[ENCRYPTED|UNENCRYPTED] PASSWORD`) before any single-keyword
+    /// UNTIL`, `[ENCRYPTED] PASSWORD`) before any single-keyword
     /// form they share a first-token with — though here they have disjoint
     /// first tokens, order is for clarity. The bare attribute keywords
     /// (`SUPERUSER` etc.) are all distinct soft keywords.
@@ -553,7 +548,7 @@ recursa::ast_node! {
     /// `IN`/`SET`/`RESET`, `With` on `WITH`). The
     /// catch-all `Options` is last; its peek is the union of all
     /// [`AlterRoleOption`] first tokens (the soft attribute keywords and
-    /// `PASSWORD`/`CONNECTION`/`VALID`/`ENCRYPTED`/`UNENCRYPTED`/`USER`),
+    /// `PASSWORD`/`CONNECTION`/`VALID`/`ENCRYPTED`/`USER`),
     /// none of which collide with `IN`/`SET`/`RESET`/`WITH`.
     #[derive(Debug)]
     pub enum AlterRoleAction {

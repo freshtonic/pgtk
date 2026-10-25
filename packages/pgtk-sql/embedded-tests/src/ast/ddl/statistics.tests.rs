@@ -32,7 +32,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateStatisticsStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.if_not_exists.is_none());
+        assert!(!stmt.if_not_exists());
         // The name is a required field before 16.
         #[cfg(feature = "since-pg16")]
         assert!(stmt.name.is_some());
@@ -48,7 +48,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateStatisticsStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.if_not_exists.is_some());
+        assert!(stmt.if_not_exists());
         assert!(stmt.stat_types.is_some());
         assert!(input.is_eof());
     }

@@ -18,8 +18,8 @@ recursa::ast_node! {
     ///   | '(' aggr_args_list ORDER BY aggr_args_list ')'
     /// ```
     ///
-    /// `aggr_arg` is `func_arg` ([`crate::ast::ddl::function::FunctionArg`]): a type, optionally
-    /// preceded by a mode keyword (`VARIADIC` / `IN` / `OUT` / `INOUT`) and an
+    /// `aggr_arg` is `func_arg` without the output modes ([`AggregateArg`]): a
+    /// type, optionally with a mode keyword (`VARIADIC` / `IN`) and an
     /// argument name.
     ///
     /// Variant ordering: `Star` first (the literal `*` is unambiguous), then
@@ -76,7 +76,7 @@ recursa::ast_node! {
     #[tok(ORDER, BY, this)]
     pub struct CreateAggregateOrderByInner {
         #[sep(COMMA)]
-        pub args: one_or_many!(crate::ast::ddl::function::FunctionArg),
+        pub args: one_or_many!(AggregateArg),
     }
 }
 
@@ -94,7 +94,68 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateAggregateArg {
         /// gram.y `aggr_arg: func_arg`.
-        pub arg: crate::ast::ddl::function::FunctionArg,
+        pub arg: AggregateArg,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `aggr_arg: func_arg`. Its action rejects the modes `OUT` and
+    /// `INOUT` ("aggregates cannot have output arguments", REL_17_11 gram.y
+    /// 8529; REL_14_24 gram.y 7742), so the modes are [`AggregateArgMode`]
+    /// (issue #55). The shapes are those of
+    /// [`FunctionArg`](crate::ast::ddl::function::FunctionArg).
+    ///
+    /// Variant ordering: `NameMode` and `Named` start with a name; the token
+    /// after it decides.
+    #[derive(Debug)]
+    pub enum AggregateArg {
+        /// `param_name arg_class func_type`.
+        NameMode(AggregateNameModeArg),
+        /// `[arg_class] param_name func_type`.
+        Named(AggregateNamedArg),
+        /// `[arg_class] func_type`.
+        Unnamed(AggregateUnnamedArg),
+    }
+}
+
+recursa::ast_node! {
+    /// The argument modes that gram.y `aggr_arg` admits: `IN` and
+    /// `VARIADIC`.
+    #[derive(Debug)]
+    pub enum AggregateArgMode {
+        #[tok(IN)]
+        In,
+        #[tok(VARIADIC)]
+        Variadic,
+    }
+}
+
+recursa::ast_node! {
+    /// `name mode type`.
+    #[derive(Debug)]
+    pub struct AggregateNameModeArg {
+        pub name: crate::tokens::type_function_name,
+        pub mode: AggregateArgMode,
+        pub type_name: crate::ast::ddl::function::FuncArgType,
+    }
+}
+
+recursa::ast_node! {
+    /// `[mode] name type`.
+    #[derive(Debug)]
+    pub struct AggregateNamedArg {
+        pub mode: Option<AggregateArgMode>,
+        pub name: crate::tokens::type_function_name,
+        pub type_name: crate::ast::ddl::function::FuncArgType,
+    }
+}
+
+recursa::ast_node! {
+    /// `[mode] type`.
+    #[derive(Debug)]
+    pub struct AggregateUnnamedArg {
+        pub mode: Option<AggregateArgMode>,
+        pub type_name: crate::ast::ddl::function::FuncArgType,
     }
 }
 
@@ -119,7 +180,7 @@ recursa::ast_node! {
     #[tok(ORDER, BY, this)]
     pub struct CreateAggregateOrderedTail {
         #[sep(COMMA)]
-        pub ordered: one_or_many!(crate::ast::ddl::function::FunctionArg),
+        pub ordered: one_or_many!(AggregateArg),
     }
 }
 

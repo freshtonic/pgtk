@@ -54,45 +54,30 @@ recursa::ast_node! {
     }
 }
 
-// From 17, `CLUSTER (options)` takes no table: research, PostgreSQL 17,
-// "Changes to existing statements" (REL_17_11 gram.y 11739).
-#[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// ```sql
-    /// CLUSTER '(' option [, ...] ')' [qualified_name [USING index]]
-    /// CLUSTER [VERBOSE]              [qualified_name [USING index]]
-    /// CLUSTER [VERBOSE] index ON qualified_name              -- pre-8.3
-    /// ```
+    /// `CLUSTER '(' option [, ...] ')' qualified_name [USING index]`, and from
+    /// 17 also `CLUSTER '(' option [, ...] ')'` alone.
     ///
-    /// In the parenthesised form, `options` is `Some` and `verbose` is `None`
-    /// (the option list expresses `VERBOSE` instead). In any legacy form,
-    /// `options` is `None` and `verbose` may be `Some` or `None`.
-    #[derive(Debug)]
-    #[tok(CLUSTER, this)]
-    pub struct ClusterStmt {
-        pub options: Option<VacuumOptions>,
-        #[presence(VERBOSE)]
-        pub verbose: bool,
-        pub target: Option<ClusterTarget>,
-    }
-}
-
-// Before 17, `CLUSTER (options)` must name a table: research, PostgreSQL 17,
-// "Changes to existing statements" (REL_16_15 gram.y 11570-11600). The
-// option list and its table are one variant, so the list cannot occur alone.
-#[cfg(not(feature = "since-pg17"))]
-recursa::ast_node! {
-    /// `CLUSTER '(' option [, ...] ')' qualified_name [USING index]`.
+    /// The option list has no `VERBOSE` keyword and no pre-8.3 `index ON
+    /// table` target after it: gram.y has no such form (REL_17_11 gram.y
+    /// 11730-11784; REL_16_15 gram.y 11570-11615), so the two forms are
+    /// variants of [`ClusterStmt`] (issue #58).
     #[derive(Debug)]
     pub struct ClusterWithOptions {
         #[tok(CLUSTER, this)]
         pub options: VacuumOptions,
+        // From 17, `CLUSTER (options)` takes no table: research, PostgreSQL
+        // 17, "Changes to existing statements" (REL_17_11 gram.y 11739). The
+        // change is a widening, so the field keeps a plain `cfg`.
+        #[cfg(feature = "since-pg17")]
+        pub target: Option<ClusterModernTarget>,
+        // Before 17, `CLUSTER (options)` must name a table (REL_16_15 gram.y
+        // 11583).
+        #[cfg(not(feature = "since-pg17"))]
         pub target: ClusterModernTarget,
     }
 }
 
-// Before 17: see `ClusterWithOptions`.
-#[cfg(not(feature = "since-pg17"))]
 recursa::ast_node! {
     /// `CLUSTER [VERBOSE] [qualified_name [USING index]]` and the pre-8.3
     /// `CLUSTER [VERBOSE] index ON qualified_name`.
@@ -105,11 +90,10 @@ recursa::ast_node! {
     }
 }
 
-// Before 17: see `ClusterWithOptions`.
-#[cfg(not(feature = "since-pg17"))]
 recursa::ast_node! {
     /// ```sql
     /// CLUSTER '(' option [, ...] ')' qualified_name [USING index]
+    /// CLUSTER '(' option [, ...] ')'                         -- from 17
     /// CLUSTER [VERBOSE]              [qualified_name [USING index]]
     /// CLUSTER [VERBOSE] index ON qualified_name              -- pre-8.3
     /// ```
