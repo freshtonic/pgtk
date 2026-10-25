@@ -58,13 +58,13 @@ recursa::ast_node! {
     /// `CREATE TABLE`, the DML and utility forms have disjoint leading keywords,
     /// and `Query` (`SELECT`, `WITH`, `VALUES`, `TABLE`, parenthesized, and set
     /// operations) comes last as the shared-prefix form. gram.y's `CreateAsStmt`
-    /// maps to `CreateTableStmt`, whose body carries the CTAS forms.
+    /// maps to `CreateTableAsStmt`: EXPLAIN takes no other CREATE TABLE form.
     #[derive(Debug)]
     pub enum ExplainableStmt {
         CreateMaterializedView(
             boxed!(crate::ast::ddl::materialized_view::CreateMaterializedViewStmt),
         ),
-        CreateTable(boxed!(crate::ast::ddl::table::CreateTableStmt)),
+        CreateTable(boxed!(crate::ast::ddl::table::CreateTableAsStmt)),
         Insert(boxed!(crate::ast::dml::insert::InsertStmt)),
         Update(boxed!(crate::ast::dml::update::UpdateStmt)),
         /// Added in 15: research, PostgreSQL 15, "New statements" (REL_15_19 gram.y

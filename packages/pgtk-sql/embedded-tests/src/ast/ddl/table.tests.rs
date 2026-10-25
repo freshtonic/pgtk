@@ -63,8 +63,8 @@ mod tests {
         let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
         assert!(matches!(
-            stmt.body,
-            super::CreateTableBody::ColumnsAsQuery(_)
+            &stmt.body,
+            super::CreateTableBody::AsQuery(body) if body.columns.is_some()
         ));
         assert!(input.is_eof());
     }
@@ -112,7 +112,10 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.temp.is_some());
+        assert!(matches!(
+            stmt.persistence,
+            Some(crate::ast::ddl::sequence::CreatePersistence::Temp)
+        ));
         assert_eq!(stmt.name.object(), "foo");
         assert!(input.is_eof());
     }
@@ -235,14 +238,19 @@ mod tests {
     #[cfg(feature = "since-pg15")]
     #[test]
     fn parse_table_foreign_key_set_default_columns() {
+        // Only `ON DELETE` takes the column list: the `key_update` action
+        // rejects it (REL_17_11 gram.y 4432; issue #55).
         let lexed = crate::lex(
-            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON UPDATE SET DEFAULT (a))",
+            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON DELETE SET DEFAULT (a))",
         );
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
         let _stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
         let _stmt = _stmt_parsed.ast();
         assert!(input.is_eof());
+        crate::ast::test_support::assert_statements_rejected(&[
+            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON UPDATE SET DEFAULT (a))",
+        ]);
     }
 
     #[test]
@@ -355,27 +363,21 @@ mod tests {
 
     #[test]
     fn parse_create_table_legacy_oids_clauses() {
-        for (src, expected) in [
-            (
-                "CREATE TABLE with_oids (a int) WITH OIDS",
-                super::WithOidsClause::WithOids,
-            ),
-            (
-                "CREATE TABLE without_oids (a int) WITHOUT OIDS",
-                super::WithOidsClause::WithoutOids,
-            ),
-        ] {
-            let lexed = crate::lex(src);
-            assert_eq!(lexed.errors().count(), 0, "lex errors in input");
-            let mut input = lexed.input();
-            let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
-            let stmt = stmt_parsed.ast();
-            let super::CreateTableBody::Columns(body) = &stmt.body else {
-                panic!("expected columns body for {src:?}");
-            };
-            assert_eq!(body.with_oids(), Some(expected));
-            assert!(input.is_eof(), "leftover for {src:?}");
-        }
+        // gram.y `OptWith` has `WITHOUT OIDS` and no `WITH OIDS` (issue #57).
+        let src = "CREATE TABLE without_oids (a int) WITHOUT OIDS";
+        let lexed = crate::lex(src);
+        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+        let mut input = lexed.input();
+        let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
+        let stmt = stmt_parsed.ast();
+        let super::CreateTableBody::Columns(body) = &stmt.body else {
+            panic!("expected columns body for {src:?}");
+        };
+        assert_eq!(body.with_oids(), Some(super::WithOidsClause::WithoutOids));
+        assert!(input.is_eof(), "leftover for {src:?}");
+        crate::ast::test_support::assert_statements_rejected(&[
+            "CREATE TABLE with_oids (a int) WITH OIDS",
+        ]);
     }
 
     #[test]
@@ -396,7 +398,10 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.unlogged);
+        assert!(matches!(
+            stmt.persistence,
+            Some(crate::ast::ddl::sequence::CreatePersistence::Unlogged)
+        ));
         assert!(input.is_eof());
     }
 
@@ -911,10 +916,10 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTableStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        let super::CreateTableBody::ColumnsAsQuery(body) = &stmt.body else {
+        let super::CreateTableBody::AsQuery(body) = &stmt.body else {
             panic!("expected a columns AS-query body");
         };
-        assert_eq!(body.columns.columns.len(), 1);
+        assert_eq!(body.columns.as_ref().unwrap().columns.len(), 1);
         assert!(matches!(body.source, super::CtasSource::Execute(_)));
         assert!(matches!(body.with_data, Some(super::WithDataClause::Data)));
         assert!(input.is_eof());

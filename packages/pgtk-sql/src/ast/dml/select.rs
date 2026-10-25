@@ -607,16 +607,57 @@ recursa::ast_node! {
 // REL_17_11 gram.y 14138-14283, `table_ref` 13519).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// The typed-column tail: `‹type› [EXISTS] [FORMAT JSON ...] [PATH '...']
-    /// [wrapper] [quotes] [behavior ON EMPTY] [behavior ON ERROR]`.
+    /// The typed-column tail: `‹type› EXISTS [PATH '...'] [behavior ON
+    /// ERROR]`, or `‹type› [FORMAT JSON ...] [PATH '...'] [wrapper] [quotes]
+    /// [behavior ON EMPTY] [behavior ON ERROR]`.
     ///
-    /// `EXISTS` columns and regular columns are merged — `exists` is just an
-    /// optional marker — and clauses are parsed permissively.
+    /// gram.y `json_table_column_definition` gives an `EXISTS` column only a
+    /// path and an `ON ERROR` behavior (REL_17_11 gram.y 14228-14246), so the
+    /// two tails are separate.
     #[derive(Debug)]
     pub struct JsonTableTypedColumn {
         pub ty: CastType,
-        #[presence(EXISTS)]
-        pub exists: bool,
+        pub tail: JsonTableTypedTail,
+    }
+}
+
+// Added in 17: `JSON_TABLE` (research, PostgreSQL 17, "Queries and expressions";
+// REL_17_11 gram.y 14138-14283, `table_ref` 13519).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// The part of a typed JSON_TABLE column after its type.
+    ///
+    /// Variant ordering: `Exists` starts with `EXISTS`; `Regular` may be
+    /// empty.
+    #[derive(Debug)]
+    pub enum JsonTableTypedTail {
+        Exists(JsonTableExistsTail),
+        Regular(JsonTableRegularTail),
+    }
+}
+
+// Added in 17: `JSON_TABLE` (research, PostgreSQL 17, "Queries and expressions";
+// REL_17_11 gram.y 14138-14283, `table_ref` 13519).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `EXISTS [PATH '...'] [behavior ON ERROR]`.
+    #[derive(Debug)]
+    #[tok(EXISTS, this)]
+    pub struct JsonTableExistsTail {
+        pub path: Option<JsonTableColumnPath>,
+        /// gram.y `json_on_error_clause_opt`.
+        pub on_error: Option<crate::ast::shared::expr::JsonOnError>,
+    }
+}
+
+// Added in 17: `JSON_TABLE` (research, PostgreSQL 17, "Queries and expressions";
+// REL_17_11 gram.y 14138-14283, `table_ref` 13519).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `[FORMAT JSON ...] [PATH '...'] [wrapper] [quotes] [behavior ON EMPTY]
+    /// [behavior ON ERROR]`.
+    #[derive(Debug)]
+    pub struct JsonTableRegularTail {
         pub format: Option<JsonTableFormat>,
         pub path: Option<JsonTableColumnPath>,
         pub wrapper: Option<JsonWrapper>,
@@ -2228,14 +2269,15 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// `INTO [TEMP|TEMPORARY|UNLOGGED] [TABLE] target` clause for the
-    /// Postgres `SELECT ... INTO new_table` statement form.
+    /// Postgres `SELECT ... INTO new_table` statement form: gram.y
+    /// `into_clause: INTO OptTempTableName` (REL_17_11 gram.y 12979-13040).
+    /// It has no access method (issue #57).
     #[derive(Debug)]
     #[tok(INTO, this)]
     pub struct SelectIntoClause {
         pub persistence: Option<SelectIntoPersistence>,
         #[tok(optional(TABLE), this)]
         pub target: crate::ast::shared::names::QualifiedName,
-        pub using: Option<crate::ast::ddl::table::UsingAccessMethodClause>,
     }
 }
 

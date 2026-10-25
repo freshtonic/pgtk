@@ -105,7 +105,6 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(CREATE, STATISTICS, this)]
     pub struct CreateStatisticsStmt {
-        pub if_not_exists: Option<IfNotExists>,
         // The name is optional from 16: research, PostgreSQL 16, "Changes to
         // existing statements" (commit 624aa2a13). REL_15_19 gram.y has
         // `CREATE STATISTICS any_name`.
@@ -121,12 +120,47 @@ recursa::ast_node! {
                     opt_name_list ON stats_params FROM from_list`; optional from 16, \
                     commit 624aa2a13"
         )]
-        pub name: Option<crate::ast::shared::names::AnyName>,
+        pub name: Option<StatisticsName>,
         #[config(before = pg16)]
-        pub name: crate::ast::shared::names::AnyName,
+        pub name: StatisticsName,
         pub stat_types: Option<StatisticsTypeList>,
         pub on: StatisticsOnClause,
         pub from: StatisticsFromClause,
+    }
+}
+
+recursa::ast_node! {
+    /// The name of `CREATE STATISTICS`, with `IF NOT EXISTS` before it. gram.y
+    /// `CreateStatsStmt: CREATE STATISTICS IF_P NOT EXISTS any_name ...` has a
+    /// name in every target version (REL_17_11 gram.y 4607; REL_14_24 gram.y
+    /// `CreateStatsStmt`), so `IF NOT EXISTS` goes with the name (issue #57).
+    ///
+    /// Variant ordering: `IfNotExists` leads with `IF`, which is also a
+    /// `ColId`; the token after `IF` parts the two forms.
+    #[derive(Debug)]
+    pub enum StatisticsName {
+        IfNotExists(StatisticsIfNotExistsName),
+        Plain(crate::ast::shared::names::AnyName),
+    }
+}
+
+recursa::ast_node! {
+    /// `IF NOT EXISTS any_name`.
+    #[derive(Debug)]
+    pub struct StatisticsIfNotExistsName {
+        #[tok(IF, NOT, EXISTS, this)]
+        pub name: crate::ast::shared::names::AnyName,
+    }
+}
+
+impl<'input> CreateStatisticsStmt<'input> {
+    /// Whether the statement has `IF NOT EXISTS`.
+    pub fn if_not_exists(&self) -> bool {
+        #[cfg(feature = "since-pg16")]
+        let name = self.name.as_ref();
+        #[cfg(not(feature = "since-pg16"))]
+        let name = Some(&self.name);
+        matches!(name, Some(StatisticsName::IfNotExists(_)))
     }
 }
 
@@ -169,7 +203,7 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One action on `ALTER STATISTICS [IF EXISTS] any_name action` — covers
+    /// One action on `ALTER STATISTICS any_name action` — covers
     /// Postgres' `RenameStmt`, `AlterOwnerStmt`, `AlterObjectSchemaStmt`,
     /// and `AlterStatsStmt` branches for extended statistics.
     ///
@@ -193,15 +227,42 @@ recursa::ast_node! {
     /// `AlterStatsStmt` plus the statistics branches of `RenameStmt` /
     /// `AlterOwnerStmt` / `AlterObjectSchemaStmt`.
     ///
-    /// `IF EXISTS` is permitted by Postgres only on the `SET STATISTICS`
-    /// branch; pgtk-sql accepts it on every action (the differential corpus
-    /// only exercises the SET STATISTICS form) — a strict per-action gate
-    /// would require either a sub-grammar dispatcher or two separate
-    /// statement types. The corpus oracle catches any regression here.
+    /// gram.y has `IF EXISTS` only on the `SET STATISTICS` form (REL_17_11
+    /// gram.y 4662-4680, 9791, 10085, 10434), so the `IF EXISTS` form has no
+    /// other action (issue #58).
     #[derive(Debug)]
     #[tok(ALTER, STATISTICS, this)]
     pub struct AlterStatisticsStmt {
-        pub if_exists: Option<IfExists>,
+        pub form: AlterStatisticsForm,
+    }
+}
+
+recursa::ast_node! {
+    /// The two forms of `ALTER STATISTICS`.
+    ///
+    /// Variant ordering: `IfExists` leads with `IF`, which is also a
+    /// `ColId`; the token after `IF` parts the two forms.
+    #[derive(Debug)]
+    pub enum AlterStatisticsForm {
+        IfExists(AlterStatisticsIfExists),
+        Plain(AlterStatisticsPlain),
+    }
+}
+
+recursa::ast_node! {
+    /// `IF EXISTS any_name SET STATISTICS value`.
+    #[derive(Debug)]
+    pub struct AlterStatisticsIfExists {
+        #[tok(IF, EXISTS, this)]
+        pub name: crate::ast::shared::names::AnyName,
+        pub set_statistics: AlterStatisticsSetStatisticsClause,
+    }
+}
+
+recursa::ast_node! {
+    /// `any_name action`.
+    #[derive(Debug)]
+    pub struct AlterStatisticsPlain {
         pub name: crate::ast::shared::names::AnyName,
         pub action: AlterStatisticsAction,
     }

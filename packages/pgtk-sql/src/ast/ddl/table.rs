@@ -11,13 +11,12 @@ use crate::tokens::literal;
 // will tighten these once the migration completes.
 use crate::ast::ddl::database::SetTablespaceClause;
 use crate::ast::ddl::foreign::AlterGenericOptions;
-use crate::ast::ddl::index::{AllInTablespaceBody, ColumnRef, ResetReloptions, SetReloptions};
+use crate::ast::ddl::index::{AllInTablespaceBody, ResetReloptions, SetReloptions};
 use crate::ast::ddl::materialized_view::ColumnCompressionTarget;
 // Added in 15: research, PostgreSQL 15, "Changes to existing statements".
 #[cfg(feature = "since-pg15")]
 use crate::ast::ddl::materialized_view::SetAccessMethodClause;
 use crate::ast::ddl::statistics::SetStatisticsValue;
-use crate::ast::ddl::trigger::DependsOnExtension;
 use crate::ast::ddl::view::RenameColumnClause;
 #[allow(unused_imports)]
 use crate::ast::shared::expr::*;
@@ -148,29 +147,49 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `ON UPDATE action`.
+    /// `ON UPDATE action`: gram.y `key_update`. Its action rejects a column
+    /// list on `SET NULL` and `SET DEFAULT` (REL_17_11 gram.y 4432; REL_15_19
+    /// gram.y 4264), so the action has no column list. PostgreSQL 14 has no
+    /// column list on any `key_action`.
     #[derive(Debug)]
     pub struct OnUpdateAction {
         #[tok(ON, UPDATE, this)]
-        pub action: ReferentialAction,
+        pub action: UpdateReferentialAction,
     }
 }
 
 recursa::ast_node! {
-    /// Match type for a foreign key: `MATCH FULL | PARTIAL | SIMPLE`.
+    /// gram.y `key_action` after `ON UPDATE`, without the column list.
+    #[derive(Debug)]
+    pub enum UpdateReferentialAction {
+        #[tok(NO, ACTION)]
+        NoAction,
+        #[tok(SET, NULL)]
+        SetNull,
+        #[tok(SET, DEFAULT)]
+        SetDefault,
+        #[tok(CASCADE)]
+        Cascade,
+        #[tok(RESTRICT)]
+        Restrict,
+    }
+}
+
+recursa::ast_node! {
+    /// Match type for a foreign key: `MATCH FULL | SIMPLE`. The action of
+    /// gram.y `key_match: MATCH PARTIAL` always raises an error (REL_17_11
+    /// gram.y 4340; REL_14_24 gram.y 3934), so `PARTIAL` has no variant.
     #[derive(Debug)]
     pub enum MatchKind {
         #[tok(FULL)]
         Full,
-        #[tok(PARTIAL)]
-        Partial,
         #[tok(SIMPLE)]
         Simple,
     }
 }
 
 recursa::ast_node! {
-    /// `MATCH FULL | MATCH PARTIAL | MATCH SIMPLE`.
+    /// `MATCH FULL | MATCH SIMPLE`.
     #[derive(Debug)]
     pub struct MatchClause {
         #[tok(MATCH, this)]
@@ -435,15 +454,35 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `ON DELETE ...` or `ON UPDATE ...` trailing action on a REFERENCES
-    /// constraint. Modeled as an enum so both orders of the two clauses
-    /// are accepted via a [`Vec`]`<`[`OnAction`]`>`.
+    /// gram.y `key_actions`: one `ON UPDATE` and one `ON DELETE` clause at
+    /// most, in either order (REL_17_11 gram.y 4376-4425).
     ///
-    /// Variant ordering: both start with `ON`; they diverge at the next keyword.
+    /// Variant ordering: the two-clause forms first; each one starts with
+    /// the one-clause form of the same first clause.
     #[derive(Debug)]
-    pub enum OnAction {
-        OnDelete(OnDeleteAction),
-        OnUpdate(OnUpdateAction),
+    pub enum KeyActions {
+        UpdateDelete(KeyUpdateDelete),
+        DeleteUpdate(KeyDeleteUpdate),
+        Update(OnUpdateAction),
+        Delete(OnDeleteAction),
+    }
+}
+
+recursa::ast_node! {
+    /// `key_update key_delete`.
+    #[derive(Debug)]
+    pub struct KeyUpdateDelete {
+        pub update: OnUpdateAction,
+        pub delete: OnDeleteAction,
+    }
+}
+
+recursa::ast_node! {
+    /// `key_delete key_update`.
+    #[derive(Debug)]
+    pub struct KeyDeleteUpdate {
+        pub delete: OnDeleteAction,
+        pub update: OnUpdateAction,
     }
 }
 
@@ -467,7 +506,7 @@ recursa::ast_node! {
         pub table: crate::ast::shared::names::QualifiedName,
         pub columns: Option<ReferencedColumnList>,
         pub match_clause: Option<MatchClause>,
-        pub actions: zero_or_many!(OnAction),
+        pub actions: Option<KeyActions>,
     }
 }
 
@@ -1072,21 +1111,41 @@ recursa::ast_node! {
     /// constraint. Per gram.y `ConstraintElem`:
     /// `UNIQUE … '(' columnList ')' opt_c_include … ConstraintAttributeSpec`
     /// or `UNIQUE ExistingIndex ConstraintAttributeSpec`. The `USING INDEX`
-    /// branch has no `NULLS [NOT] DISTINCT` qualifier (PG infers it from the
-    /// existing index definition).
+    /// branch has no `NULLS [NOT] DISTINCT` qualifier (REL_17_11 gram.y
+    /// 4144 and 4162; issue #57).
     #[derive(Debug)]
     #[tok(UNIQUE, this)]
     pub struct TableUnique {
-        /// `NULLS [NOT] DISTINCT` qualifier — only meaningful for the
-        /// `(cols)` branch but accepted before either body for parsing
-        /// simplicity. If present alongside `USING INDEX`, PG rejects at
-        /// semantic time; the diff oracle handles that case. Added in 15:
-        /// research, PostgreSQL 15, "Changes to existing statements".
-        #[config(since = pg15)]
-        pub nulls: Option<NullsDistinctQualifier>,
-        pub body: IndexedConstraintBody,
+        pub body: TableUniqueBody,
         /// gram.y `ConstraintAttributeSpec`.
         pub attrs: zero_or_many!(IndexConstraintAttr),
+    }
+}
+
+recursa::ast_node! {
+    /// The body of a table-level `UNIQUE` constraint.
+    ///
+    /// Variant ordering: `UsingIndex` starts with `USING`; `Columns` with
+    /// `NULLS` or `(`.
+    #[derive(Debug)]
+    pub enum TableUniqueBody {
+        /// `USING INDEX name` — bind constraint to an existing index.
+        UsingIndex(ExistingIndex),
+        /// `[NULLS [NOT] DISTINCT] (cols) [INCLUDE (…)]`.
+        Columns(TableUniqueColumns),
+    }
+}
+
+recursa::ast_node! {
+    /// `[NULLS [NOT] DISTINCT] (cols) ...` of a table-level `UNIQUE`.
+    #[derive(Debug)]
+    pub struct TableUniqueColumns {
+        /// `NULLS [NOT] DISTINCT` qualifier. Added in 15: research,
+        /// PostgreSQL 15, "Changes to existing statements" (REL_15_19 gram.y
+        /// `opt_unique_null_treatment`).
+        #[config(since = pg15)]
+        pub nulls: Option<NullsDistinctQualifier>,
+        pub columns: IndexedConstraintColumns,
     }
 }
 
@@ -1160,7 +1219,7 @@ recursa::ast_node! {
         pub table: crate::ast::shared::names::QualifiedName,
         pub columns: Option<ForeignKeyReferencedColumnList>,
         pub match_clause: Option<MatchClause>,
-        pub actions: zero_or_many!(OnAction),
+        pub actions: Option<KeyActions>,
     }
 }
 
@@ -1445,10 +1504,11 @@ recursa::ast_node! {
     }
 }
 
-/// Legacy OIDS choice exposed by [`ColumnsBody::with_oids`].
+/// Legacy OIDS choice exposed by [`ColumnsBody::with_oids`]. gram.y
+/// `OptWith` has only `WITHOUT OIDS` (REL_14_24 gram.y 4068-4072), so `WITH
+/// OIDS` is a syntax error (issue #57).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WithOidsClause {
-    WithOids,
     WithoutOids,
 }
 
@@ -1464,25 +1524,10 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Payload after the common CREATE TABLE `WITH` prefix.
-    #[derive(Debug)]
-    pub enum ColumnsWithValue {
-        #[tok(OIDS)]
-        Oids,
-        Storage(ColumnsStorageParams),
-    }
-}
-
-recursa::ast_node! {
-    /// CREATE TABLE's mutually exclusive `WITH OIDS`, `WITH (...)`, and
-    /// `WITHOUT OIDS` clauses.
-    ///
-    /// Factoring `WITH` before choosing `OIDS` or `(` lets the parser use the
-    /// second token for disambiguation instead of committing one optional field
-    /// before it can try the other.
+    /// gram.y `OptWith: WITH reloptions | WITHOUT OIDS`, on CREATE TABLE.
     #[derive(Debug)]
     pub enum ColumnsWithClause {
-        With(#[tok(WITH, this)] ColumnsWithValue),
+        With(#[tok(WITH, this)] ColumnsStorageParams),
         #[tok(WITHOUT, OIDS)]
         WithoutOids,
     }
@@ -1516,21 +1561,16 @@ impl<'input> ColumnsBody<'input> {
     /// Legacy OIDS clause, when present.
     pub fn with_oids(&self) -> Option<WithOidsClause> {
         match self.with.as_ref() {
-            Some(ColumnsWithClause::With(ColumnsWithValue::Oids)) => Some(WithOidsClause::WithOids),
             Some(ColumnsWithClause::WithoutOids) => Some(WithOidsClause::WithoutOids),
-            Some(ColumnsWithClause::With(ColumnsWithValue::Storage(_))) | None => None,
+            Some(ColumnsWithClause::With(_)) | None => None,
         }
     }
 
     /// Storage parameters from `WITH (...)`, when present.
     pub fn with_storage(&self) -> Option<&[crate::ast::ddl::index::StorageParam<'input>]> {
         match self.with.as_ref() {
-            Some(ColumnsWithClause::With(ColumnsWithValue::Storage(params))) => {
-                Some(params.0.as_slice())
-            }
-            Some(ColumnsWithClause::With(ColumnsWithValue::Oids))
-            | Some(ColumnsWithClause::WithoutOids)
-            | None => None,
+            Some(ColumnsWithClause::With(params)) => Some(params.0.as_slice()),
+            Some(ColumnsWithClause::WithoutOids) | None => None,
         }
     }
 }
@@ -1626,12 +1666,12 @@ recursa::ast_node! {
         #[tok(PARTITION, OF, this)]
         pub parent: crate::ast::shared::names::QualifiedName,
         pub column_options: Option<PartitionColumnOptionList>,
-        pub for_values: Option<ForValuesClause>,
-        #[presence(DEFAULT)]
-        pub default: bool,
+        /// gram.y `PartitionBoundSpec`: `FOR VALUES ...` or `DEFAULT`, one of
+        /// them and only one (REL_17_11 gram.y 3103-3190; issue #57).
+        pub bound: PartitionBoundSpec,
         pub partition_by: Option<PartitionByClause>,
         pub using: Option<UsingAccessMethodClause>,
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
+        pub with: Option<ColumnsWithClause>,
         pub on_commit: Option<OnCommitClause>,
         pub tablespace: Option<TablespaceClause>,
     }
@@ -1647,6 +1687,11 @@ recursa::ast_node! {
         #[tok(OF, this)]
         pub type_name: crate::ast::shared::names::AnyName,
         pub column_options: Option<PartitionColumnOptionList>,
+        pub partition_by: Option<PartitionByClause>,
+        pub using: Option<UsingAccessMethodClause>,
+        pub with: Option<ColumnsWithClause>,
+        pub on_commit: Option<OnCommitClause>,
+        pub tablespace: Option<TablespaceClause>,
     }
 }
 
@@ -1674,12 +1719,17 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// AS-query table body: `AS { SELECT ... | EXECUTE name [(args)] } [WITH [NO] DATA]`.
+    /// gram.y `create_as_target AS { SelectStmt | EXECUTE name ... }
+    /// opt_with_data`, after the table name: `[(col, ...)] [USING am]
+    /// [WITH (...) | WITHOUT OIDS] [ON COMMIT ...] [TABLESPACE name] AS
+    /// source [WITH [NO] DATA]` (REL_17_11 gram.y 4723-4737).
     #[derive(Debug)]
     pub struct AsQueryBody {
-        /// Optional `WITH (param = value, ...)` storage parameters before `AS`.
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
-        /// Optional `TABLESPACE name` before `AS`.
+        /// gram.y `opt_column_list`.
+        pub columns: Option<CtasColumnList>,
+        pub using: Option<UsingAccessMethodClause>,
+        pub with: Option<ColumnsWithClause>,
+        pub on_commit: Option<OnCommitClause>,
         pub tablespace: Option<TablespaceClause>,
         #[tok(AS, this)]
         pub source: CtasSource,
@@ -1701,20 +1751,6 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `(col, col, ...) [ON COMMIT ...] AS source [WITH [NO] DATA]` — CTAS with
-    /// column list. The source is a query or an `EXECUTE` of a prepared
-    /// statement, as in `CREATE TABLE t (a) AS EXECUTE data_sel WITH DATA`.
-    #[derive(Debug)]
-    pub struct ColumnsAsQueryBody {
-        pub columns: CtasColumnList,
-        pub on_commit: Option<OnCommitClause>,
-        #[tok(AS, this)]
-        pub source: CtasSource,
-        pub with_data: Option<WithDataClause>,
-    }
-}
-
-recursa::ast_node! {
     /// Required, non-empty CTAS output-column list.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
@@ -1725,45 +1761,94 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`.
+    /// The body of a CREATE TABLE statement after `CREATE [TEMP] TABLE name`:
+    /// gram.y `CreateStmt` and `CreateAsStmt`.
     ///
-    /// Variant ordering: AsQuery (`AS`) and PartitionOf (`PARTITION`) start with
-    /// keywords; Columns starts with `(`. Longest-match-wins disambiguates.
+    /// Variant ordering: `PartitionOf` (`PARTITION`) and `OfType` (`OF`)
+    /// start with keywords. `AsQuery` and `Columns` can both start with `(`:
+    /// a column list of names is `AsQuery`, and a list of column definitions
+    /// is `Columns`, decided by the token after the first name.
     #[derive(Debug)]
     pub enum CreateTableBody {
         AsQuery(AsQueryBody),
         PartitionOf(PartitionOfBody),
-        /// `OF type_name [(column_options)]` — typed table.
-        /// Distinct first token `OF`, no ambiguity with other variants.
+        /// `OF type_name [(column_options)] ...` — typed table.
         OfType(OfTypeBody),
-        /// `(col, ...) AS query` — CTAS with explicit column list.
-        /// Listed before `Columns` so the `( ... ) AS` form wins over the
-        /// columns-only `( ... )` form via longer match.
-        ColumnsAsQuery(ColumnsAsQueryBody),
+        Columns(ColumnsBody),
+    }
+}
+
+recursa::ast_node! {
+    /// The body of gram.y `CreateStmt`: every form of [`CreateTableBody`]
+    /// but `AS`. A CREATE SCHEMA element takes only this form (gram.y
+    /// `schema_stmt: CreateStmt | ...`, REL_17_11 gram.y 1598; issue #57).
+    #[derive(Debug)]
+    pub enum CreatePlainTableBody {
+        PartitionOf(PartitionOfBody),
+        OfType(OfTypeBody),
         Columns(ColumnsBody),
     }
 }
 
 recursa::ast_node! {
     /// ```sql
-    /// CREATE [TEMP] TABLE statement.
+    /// CREATE [TEMP | UNLOGGED] TABLE [IF NOT EXISTS] name body
     /// ```
+    ///
+    /// gram.y `OptTemp` holds one persistence keyword: `TEMP` and `UNLOGGED`
+    /// together are a syntax error (REL_17_11 gram.y 3705-3725; issue #57).
     #[derive(Debug)]
     #[tok(CREATE, this)]
     pub struct CreateTableStmt {
-        pub temp: Option<TempKw>,
-        #[tok(this, TABLE)]
-        #[presence(UNLOGGED)]
-        pub unlogged: bool,
+        pub persistence: Option<crate::ast::ddl::sequence::CreatePersistence>,
+        pub table: TableKeyword,
         #[presence(IF, NOT, EXISTS)]
         pub if_not_exists: bool,
         pub name: crate::ast::shared::names::QualifiedName,
-        /// `USING am` between the table name and an `AS query` body, e.g.
-        /// `CREATE TABLE t USING heap2 AS SELECT ...`. When the body starts
-        /// with `(`, this clause is absent and `USING` appears after the
-        /// column list inside `ColumnsBody`.
-        pub using: Option<UsingAccessMethodClause>,
         pub body: CreateTableBody,
+    }
+}
+
+recursa::ast_node! {
+    /// The `TABLE` keyword after the optional persistence keyword. It is a
+    /// field of its own, so it stays when the persistence is absent, and the
+    /// `IF NOT EXISTS` presence after it stays inline in the rule (as
+    /// [`SequenceKeyword`](crate::ast::ddl::sequence::SequenceKeyword)).
+    #[derive(Debug)]
+    pub enum TableKeyword {
+        #[tok(TABLE)]
+        Table,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `CreateAsStmt`, the only CREATE TABLE form that EXPLAIN takes
+    /// (`ExplainableStmt: ... | CreateAsStmt`, REL_17_11 gram.y 11979-11990;
+    /// issue #58).
+    #[derive(Debug)]
+    #[tok(CREATE, this)]
+    pub struct CreateTableAsStmt {
+        pub persistence: Option<crate::ast::ddl::sequence::CreatePersistence>,
+        pub table: TableKeyword,
+        #[presence(IF, NOT, EXISTS)]
+        pub if_not_exists: bool,
+        pub name: crate::ast::shared::names::QualifiedName,
+        pub body: AsQueryBody,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `CreateStmt`, the CREATE TABLE form that a CREATE SCHEMA
+    /// element takes (issue #57).
+    #[derive(Debug)]
+    #[tok(CREATE, this)]
+    pub struct CreatePlainTableStmt {
+        pub persistence: Option<crate::ast::ddl::sequence::CreatePersistence>,
+        pub table: TableKeyword,
+        #[presence(IF, NOT, EXISTS)]
+        pub if_not_exists: bool,
+        pub name: crate::ast::shared::names::QualifiedName,
+        pub body: CreatePlainTableBody,
     }
 }
 
@@ -1775,7 +1860,6 @@ impl<'input> CreateTableStmt<'input> {
             CreateTableBody::Columns(b) => Some(b.columns.0.as_slice()),
             CreateTableBody::PartitionOf(_)
             | CreateTableBody::AsQuery(_)
-            | CreateTableBody::ColumnsAsQuery(_)
             | CreateTableBody::OfType(_) => None,
         }
     }
@@ -1818,11 +1902,30 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// PARTITION BY LIST (col) clause.
+    /// PARTITION BY LIST (col) clause: gram.y `PartitionSpec: PARTITION BY
+    /// ColId '(' part_params ')'`.
+    ///
+    /// From 16 the action reads the strategy with `parsePartitionStrategy`,
+    /// which compares the name with `list`, `range` and `hash` and ignores
+    /// case (`pg_strcasecmp`). It rejects each other name (REL_16_15 gram.y
+    /// 18756; REL_17_11 gram.y 19361; issue #55). Before 16 the raw parser
+    /// keeps the name as it is (REL_15_19 gram.y `PartitionSpec`).
+    // Added in 16: commit 5fca91025e0 moved `parsePartitionStrategy` into
+    // gram.y (REL_16_15 gram.y 4384).
+    #[config_attr(since = pg16, classify(strategy, fold = crate::ident::fold_name_caseless))]
+    #[config_attr(
+        since = pg16,
+        reject(
+            not_in(strategy, "list", "range", "hash"),
+            code = "22023",
+            message = "unrecognized partitioning strategy",
+            cite = "REL_16_15 gram.y 18756; REL_17_11 gram.y 19361, parsePartitionStrategy",
+        )
+    )]
     #[derive(Debug)]
     pub struct PartitionByClause {
         #[tok(PARTITION, BY, this)]
-        pub strategy: literal::AliasName,
+        pub strategy: crate::tokens::ColId,
         /// Partition key items — may be plain column names or expressions like
         /// `((a+b)/2)`, optionally followed by a trailing opclass name.
         pub columns: PartitionKeyList,
@@ -1884,39 +1987,59 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `MODULUS n` entry.
+    /// `MODULUS n`: one gram.y `hash_partbound_elem: NonReservedWord Iconst`
+    /// (REL_17_11 gram.y 3196-3201). The value is an `Iconst` (issue #57).
     #[derive(Debug)]
     pub struct ModulusEntry {
         #[tok(MODULUS, this)]
-        pub value: Expr,
+        pub value: literal::IntegerLit,
     }
 }
 
 recursa::ast_node! {
-    /// `REMAINDER n` entry.
+    /// `REMAINDER n`: one gram.y `hash_partbound_elem`.
     #[derive(Debug)]
     pub struct RemainderEntry {
         #[tok(REMAINDER, this)]
-        pub value: Expr,
-    }
-}
-
-recursa::ast_node! {
-    /// One item in `WITH (...)` for hash partitioning: MODULUS n or REMAINDER n.
-    #[derive(Debug)]
-    pub enum HashPartItem {
-        Modulus(ModulusEntry),
-        Remainder(RemainderEntry),
+        pub value: literal::IntegerLit,
     }
 }
 
 recursa::ast_node! {
     /// `WITH (MODULUS n, REMAINDER m)` hash partition spec.
+    ///
+    /// The action of gram.y `PartitionBoundSpec` rejects a list that has no
+    /// `modulus` or no `remainder`, or one of them twice, and every other
+    /// name (REL_17_11 gram.y 3103-3150; REL_14_24 gram.y `PartitionBoundSpec`).
+    /// So the list is the two entries, in either order (issue #55).
+    ///
+    /// Variant ordering: the first entry decides.
+    #[derive(Debug)]
+    pub enum WithModulusSpec {
+        ModulusFirst(HashBoundModulusFirst),
+        RemainderFirst(HashBoundRemainderFirst),
+    }
+}
+
+recursa::ast_node! {
+    /// `WITH (MODULUS n, REMAINDER m)`.
     #[derive(Debug)]
     #[tok(WITH, LPAREN, this, RPAREN)]
-    pub struct WithModulusSpec {
-        #[sep(COMMA)]
-        pub items: one_or_many!(HashPartItem),
+    pub struct HashBoundModulusFirst {
+        pub modulus: ModulusEntry,
+        #[tok(COMMA, this)]
+        pub remainder: RemainderEntry,
+    }
+}
+
+recursa::ast_node! {
+    /// `WITH (REMAINDER m, MODULUS n)`.
+    #[derive(Debug)]
+    #[tok(WITH, LPAREN, this, RPAREN)]
+    pub struct HashBoundRemainderFirst {
+        pub remainder: RemainderEntry,
+        #[tok(COMMA, this)]
+        pub modulus: ModulusEntry,
     }
 }
 
@@ -2203,9 +2326,8 @@ recursa::ast_node! {
     /// - `RESET (reloptions)` — disjoint from `SET …`.
     /// - `CLUSTER ON name`, `INHERIT name`, `NO INHERIT name`, `OF type_name`,
     ///   `NOT OF`, `OWNER TO role`, `REPLICA IDENTITY …`, `FORCE ROW LEVEL
-    ///   SECURITY`, `NO FORCE ROW LEVEL SECURITY`, `VALIDATE CONSTRAINT name`,
-    ///   `DEPENDS ON EXTENSION name` / `NO DEPENDS ON EXTENSION name` — each
-    ///   commits on a unique leading keyword (with `NO …` and `NOT …` carefully
+    ///   SECURITY`, `NO FORCE ROW LEVEL SECURITY`, `VALIDATE CONSTRAINT name`
+    ///   — each commits on a unique leading keyword (with `NO …` and `NOT …` carefully
     ///   placed against single-keyword variants).
     /// - `GenericOptions` (FOREIGN-TABLE OPTIONS clause) last — `OPTIONS` is a
     ///   unique leading keyword.
@@ -2275,8 +2397,6 @@ recursa::ast_node! {
         Owner(OwnerTo),
         // VALIDATE CONSTRAINT name.
         ValidateConstraint(ValidateConstraintCmd),
-        // [NO] DEPENDS ON EXTENSION name.
-        DependsOnExtension(DependsOnExtension),
         // OPTIONS (...)  — foreign-table alter_generic_options. Listed last so
         // every keyword-led variant above wins first.
         GenericOptions(AlterGenericOptions),
@@ -2368,13 +2488,31 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `ALTER [COLUMN] colname …` — the big `ALTER COLUMN` cmd. The `colname`
-    /// can also be a numeric column index for `SET STATISTICS` (used on indexes,
-    /// not on tables — but accepted here for symmetry).
+    /// `ALTER [COLUMN] colname …` — the big `ALTER COLUMN` cmd. A column
+    /// number in place of the name takes only `SET STATISTICS` (gram.y
+    /// `alter_table_cmd: ALTER opt_column Iconst SET STATISTICS
+    /// set_statistics_value`, REL_17_11 gram.y 2481).
     #[derive(Debug)]
     pub struct AlterColumnCmd {
         #[tok(ALTER, optional(COLUMN), this)]
-        pub col_ref: ColumnRef,
+        pub target: AlterColumnTarget,
+    }
+}
+
+recursa::ast_node! {
+    /// The column of an [`AlterColumnCmd`], with its action.
+    #[derive(Debug)]
+    pub enum AlterColumnTarget {
+        Number(crate::ast::ddl::index::AlterColumnNumberStatistics),
+        Name(AlterColumnName),
+    }
+}
+
+recursa::ast_node! {
+    /// `colname action`.
+    #[derive(Debug)]
+    pub struct AlterColumnName {
+        pub name: crate::tokens::ColId,
         pub action: AlterColumnAction,
     }
 }
