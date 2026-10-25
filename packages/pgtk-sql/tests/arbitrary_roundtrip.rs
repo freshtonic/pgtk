@@ -151,9 +151,7 @@ const fn known(
 /// failure counts it.
 #[rustfmt::skip]
 const KNOWN_FAILURES: &[KnownFailure] = &[
-    known(Parse, ROUND_TRIP, r#"TABLE ONLY\("#, r#"^unexpected "\)""#, "`TABLE ONLY (name)`"),
-    known(Parse, ROUND_TRIP, r#"(GROUP BY (DISTINCT|ALL) ?|GROUPING SETS)\(\s?\)"#, r#"^unexpected "\)""#, "an empty grouping list"),
-    known(Parse, ROUND_TRIP, r#""#, r#""#, "an expression without the parentheses that its place needs"),
+    known(Parse, ROUND_TRIP, r#""#, r#""#, "a value at a restricted expression site (b_expr, c_expr, func_expr_windowless) that the renderer writes without the parentheses that the site needs"),
     known(Fixpoint, ROUND_TRIP, r#""#, r#"^parentheses only"#, "an operand without the parentheses that its operator needs"),
     known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
     known(Oracle, EREPORTS, r#""#, r#"aggregates cannot have output arguments|duplicate trigger events|unrecognized row security option|CREATE SCHEMA IF NOT EXISTS cannot include schema elements|STDIN/STDOUT not allowed with PROGRAM|UNENCRYPTED PASSWORD is no longer supported|ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|column number must be in range|MATCH PARTIAL not yet implemented|unrecognized partitioning strategy|WITH TIES cannot be specified|WHERE clause not allowed with COPY TO|invalid publication object list|column specification not allowed for schema|invalid schema name|improper use of|unrecognized JSON encoding|type modifier cannot have parameter name|WITH CHECK OPTION not supported on recursive views|a column list with|WHERE clause not allowed for schema|unrecognized JSON|multiple ORDER BY clauses not allowed|frame start cannot be|frame end cannot be"#, "a statement that a gram.y action rejects with ereport()"),
