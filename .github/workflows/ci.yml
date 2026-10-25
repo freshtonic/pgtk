@@ -34,11 +34,20 @@ jobs:
       # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
       - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      # A build links the shared libraries of the runner image, such as libxml2. The key names the
+      # image release, so a new image does not restore a build that it cannot run.
+      - id: image
+        run: echo "release=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pgtk-sql/postgres
-          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+          key: postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       - run: cargo build --locked --workspace
+      # The examples. Each example names the features that it needs in `required-features`, and
+      # pgtk-test-features turns all of them on in a workspace build, so this step builds each
+      # example and uses the build of the step before. No example runs here: the examples that
+      # load a catalog from a server need a server.
+      - run: cargo build --locked --workspace --examples
       - run: cargo test --locked --workspace
 
   lint:
@@ -55,16 +64,79 @@ jobs:
       # clippy runs the build scripts, so the oracle crates need the PostgreSQL builds.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
       - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      # A build links the shared libraries of the runner image, such as libxml2. The key names the
+      # image release, so a new image does not restore a build that it cannot run.
+      - id: image
+        run: echo "release=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pgtk-sql/postgres
-          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+          key: postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       # One job at a time: two checks of the generated grammar crates at the same time use all of
       # the 8 GB of the runner, and the runner stops.
       - run: cargo clippy --locked --workspace --all-targets -j 1 -- -D warnings
       - run: cargo doc --locked --workspace --no-deps -j 1
         env:
           RUSTDOCFLAGS: -D warnings
+
+  commits:
+    name: Conventional commits
+    # Only a pull request has a range of new commits. Merge commits are not checked.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: scripts/check-conventional-commits "origin/${{ github.base_ref }}" "${{ github.event.pull_request.head.sha }}"
+
+  llms-txt:
+    name: llms.txt links
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # llms.txt is written by hand. Each link to a file of the repository must point to a file
+      # that exists.
+      - run: scripts/check-llms-txt
+
+  msrv:
+    name: Rust 1.88 (rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The published crates declare rust-version = "1.88". rust-toolchain.toml pins a newer
+      # toolchain for development, so give the version to each command.
+      - run: rustup toolchain install 1.88.0 --profile minimal
+      # The version features of pgtk-sql are mutually exclusive, so --all-features is not
+      # possible for it. The default version (pg17) with its other features is the check. One job
+      # at a time, for the memory of the runner (see the lint job).
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-sql --lib --features spans,arbitrary
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-catalog --lib --all-features
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-analyze --lib
+      - run: cargo +1.88.0 check --locked -j 1 -p pgtk-psql --lib
+
+  licenses:
+    name: Licences of the published dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # deny.toml gives the permitted licences. pgtk-analyze includes pgtk-sql and pgtk-catalog.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-catalog/Cargo.toml
+          command: check licenses
+          arguments: --all-features
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-analyze/Cargo.toml
+          command: check licenses
+          arguments: --all-features
+      # pgtk-psql: its version features are mutually exclusive, so the default version is the
+      # check. deny.toml leaves out the dev-dependencies, the psql oracle among them.
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: packages/pgtk-psql/Cargo.toml
+          command: check licenses
 
   buck2:
     name: Buck2 build and test

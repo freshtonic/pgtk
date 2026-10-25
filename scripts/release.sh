@@ -10,7 +10,8 @@
 #   1. Check the tools, the tokens, and that main is clean and in step with
 #      origin/main.
 #   2. Run the default test suite (skip with --skip-tests).
-#   3. `release-plz update`: bump the versions and the changelogs.
+#   3. `release-plz update`: bump the versions and the changelogs. For pgtk-catalog and
+#      pgtk-analyze, cargo-semver-checks decides if the bump is a minor or a patch bump.
 #   4. Show the diff, commit it signed, and push main.
 #   5. `cargo publish --workspace --dry-run`, then `release-plz release`: publish to
 #      crates.io, push the `<crate>-v<version>` tags, make the GitHub releases.
@@ -56,6 +57,10 @@ step "Checking tools and tokens"
 for tool in git cargo release-plz gh jq; do
   command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
+# release-plz runs cargo-semver-checks for the crates with semver_check = true
+# (docs/semver-checks.md).
+cargo semver-checks --version >/dev/null 2>&1 \
+  || die "cargo-semver-checks is not installed: cargo install --locked cargo-semver-checks"
 
 if [[ -z ${CARGO_REGISTRY_TOKEN:-} ]] \
   && ! grep -qs '^token' "${CARGO_HOME:-$HOME/.cargo}/credentials.toml"; then

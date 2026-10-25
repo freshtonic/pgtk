@@ -28,14 +28,28 @@
 //! - A column of type `regproc`, such as `pg_operator.oprcode` or
 //!   `pg_aggregate.aggfnoid`, is cast to `oid` before `text`. A direct cast
 //!   to `text` gives the function name, not the OID.
-//! - The SQL is the same for PostgreSQL 14, 15, 16, and 17.
+//! - A query keeps one text for each supported version when it can.
+//!
+//! # Versions
+//!
+//! [`sql`] takes the major version of the server. A query has a second text
+//! only when a column that it reads does not exist in older servers. A
+//! `CASE` on the version cannot hide such a column, because the server
+//! resolves each column name before it runs the query. Each text of one
+//! query gives the same columns, so the parser does not change by version:
+//! the text for the older servers gives the value that those servers imply.
+//! [`QueryId::Constraints`] is the only query with two texts. Its text for
+//! PostgreSQL 18 and later reads `conenforced` and `conperiod`.
 //!
 //! # Extraction markers
 //!
 //! `scripts/check-queries.sh` reads the SQL out of this file. It holds no
 //! second copy. The convention is:
 //!
-//! - A line `//@sql <VariantName>` comes directly before the constant.
+//! - A line `//@sql <VariantName>` comes directly before the constant. A
+//!   text for a range of versions adds the range: `//@sql <VariantName> 14-17`
+//!   or `//@sql <VariantName> 18-`. The script runs that text only on the
+//!   versions of its range.
 //! - The constant opens a raw string on the next line. That line ends with
 //!   `r#"`.
 //! - A line that holds only `"#;` closes the SQL.
@@ -47,6 +61,7 @@
 /// The Loader runs every query in [`QueryId::ALL`] and feeds the rows back.
 /// [`sql`] gives the SQL text of each one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum QueryId {
     /// The server version number, as `server_version_num`.
     Version,
@@ -131,10 +146,13 @@ impl QueryId {
     ];
 }
 
-/// Gives the SQL text of one query.
+/// Gives the SQL text of one query for a server of the major version
+/// `major`.
 ///
-/// The text is the same for PostgreSQL 14 through 17.
-pub fn sql(id: QueryId) -> &'static str {
+/// Each text of one query gives the same columns. See the
+/// [module documentation](self) for the queries with a text for each range
+/// of versions.
+pub fn sql(id: QueryId, major: u16) -> &'static str {
     match id {
         QueryId::Version => VERSION,
         QueryId::Database => DATABASE,
@@ -158,7 +176,8 @@ pub fn sql(id: QueryId) -> &'static str {
         QueryId::Triggers => TRIGGERS,
         QueryId::Parameters => PARAMETERS,
         QueryId::Collations => COLLATIONS,
-        QueryId::Constraints => CONSTRAINTS,
+        QueryId::Constraints if major >= 18 => CONSTRAINTS_18,
+        QueryId::Constraints => CONSTRAINTS_14,
         QueryId::OperatorClasses => OPERATOR_CLASSES,
     }
 }
@@ -410,7 +429,9 @@ ORDER BY c.oid
 //   4  atttypmod  type modifier, -1 when there is none
 //   5  attnotnull `t` when the attribute has NOT NULL
 //   6  atthasdef  `t` when the attribute has a default
-//   7  generated  `t` when the attribute is a generated column
+//   7  generated  generated letter: s for STORED, v for VIRTUAL (PostgreSQL
+//                 18 and later), NULL when the attribute is not a generated
+//                 column
 //   8  identity   identity letter: a for ALWAYS, d for BY DEFAULT, NULL when
 //                 the attribute is not an identity column
 //   9  attcollation  OID of the collation of the attribute, 0 when there is
@@ -425,7 +446,7 @@ SELECT
     a.atttypmod::text,
     (CASE WHEN a.attnotnull THEN 't' ELSE 'f' END)::text AS attnotnull,
     (CASE WHEN a.atthasdef THEN 't' ELSE 'f' END)::text AS atthasdef,
-    (CASE WHEN a.attgenerated <> '' THEN 't' ELSE 'f' END)::text AS generated,
+    NULLIF(a.attgenerated, '')::text AS generated,
     NULLIF(a.attidentity, '')::text AS identity,
     a.attcollation::text
 FROM pg_catalog.pg_attribute a
@@ -832,13 +853,20 @@ ORDER BY c.oid
 //   0  oid            constraint OID
 //   1  conrelid       OID of the relation
 //   2  conname        constraint name
-//   3  contype        kind letter: p u c f x t
+//   3  contype        kind letter: p u c f x t, and n (PostgreSQL 18 and
+//                     later)
 //   4  condeferrable  `t` when the constraint is deferrable
 //   5  n              position of the column in `conkey`, from 1, or NULL
 //   6  attnum         attribute number of the column, 0 for an expression of
 //                     an exclusion constraint, or NULL
-//@sql Constraints
-const CONSTRAINTS: &str = r#"
+//   7  conenforced    `t` when the constraint is enforced
+//   8  conperiod      `t` when the constraint has WITHOUT OVERLAPS or PERIOD
+//
+// PostgreSQL 14 to 17 have no `conenforced` and no `conperiod`. They enforce
+// each constraint and have no temporal constraint, so their text gives `t`
+// and `f`. The two texts are the same in each other column.
+//@sql Constraints 14-17
+const CONSTRAINTS_14: &str = r#"
 SELECT
     k.oid::text,
     k.conrelid::text,
@@ -846,7 +874,35 @@ SELECT
     k.contype::text,
     (CASE WHEN k.condeferrable THEN 't' ELSE 'f' END)::text AS condeferrable,
     a.n::text,
-    a.attnum::text
+    a.attnum::text,
+    't'::text AS conenforced,
+    'f'::text AS conperiod
+FROM pg_catalog.pg_constraint k
+JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN LATERAL unnest(k.conkey) WITH ORDINALITY AS a(attnum, n) ON true
+WHERE k.conrelid <> 0
+  AND c.relkind IN ('r', 'v', 'm', 'f', 'p', 'S')
+  AND n.nspname NOT LIKE 'pg\_toast%'
+  AND (n.nspname NOT LIKE 'pg\_temp%'
+       OR n.oid = pg_catalog.pg_my_temp_schema())
+ORDER BY k.conrelid, k.conname, a.n
+"#;
+
+// The text of the Constraints query for PostgreSQL 18 and later. The columns
+// are those of the text for 14 to 17.
+//@sql Constraints 18-
+const CONSTRAINTS_18: &str = r#"
+SELECT
+    k.oid::text,
+    k.conrelid::text,
+    k.conname::text,
+    k.contype::text,
+    (CASE WHEN k.condeferrable THEN 't' ELSE 'f' END)::text AS condeferrable,
+    a.n::text,
+    a.attnum::text,
+    (CASE WHEN k.conenforced THEN 't' ELSE 'f' END)::text AS conenforced,
+    (CASE WHEN k.conperiod THEN 't' ELSE 'f' END)::text AS conperiod
 FROM pg_catalog.pg_constraint k
 JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace

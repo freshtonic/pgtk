@@ -30,11 +30,9 @@ recursa::tokens! {
         COLON => ":",
         // psqlscan.l:681 — the only terminator psqlscan.l itself returns.
         SEMI => ";",
-        // Not scanned by psqlscan.l: `psqlscanslash.l` owns backslash
-        // commands. A backslash that starts none of the send commands is
-        // ordinary text, so that unmodelled meta-commands render verbatim
-        // instead of failing to lex.
-        BACKSLASH => "\\",
+        // A backslash always starts a meta-command token
+        // (`crate::ast::MetaCommand`), or `\;` or `\:`
+        // (`crate::ast::SqlAtom::Escaped`), so it has no token of its own.
         // Characters excluded from the `Punct` run below because a longer
         // token can start with them.
         MINUS => "-",
