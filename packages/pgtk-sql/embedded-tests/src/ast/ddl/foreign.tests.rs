@@ -12,7 +12,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = DropForeignStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.kind, ForeignObjectKind::DataWrapper));
+        assert!(matches!(stmt.kind, ForeignObjectKind::DataWrapper(_)));
         assert!(input.is_eof());
     }
 
@@ -23,8 +23,10 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = DropForeignStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.kind, ForeignObjectKind::Table));
-        assert_eq!(stmt.names.len(), 2);
+        let ForeignObjectKind::Table(table) = &stmt.kind else {
+            panic!("expected DROP FOREIGN TABLE");
+        };
+        assert_eq!(table.names.len(), 2);
         assert!(input.is_eof());
     }
 

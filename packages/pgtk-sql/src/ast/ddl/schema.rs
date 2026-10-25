@@ -89,7 +89,7 @@ recursa::ast_node! {
     #[tok(DROP, SCHEMA, this)]
     pub struct DropSchemaStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }

@@ -25,7 +25,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CompositeTypeCollate {
         #[tok(COLLATE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -83,11 +83,61 @@ recursa::ast_node! {
     /// - `CREATE TYPE name AS ENUM (labels)` — enum
     /// - `CREATE TYPE name AS RANGE (def_list)` — range
     /// - `CREATE TYPE name (def_list)` — base type
+    ///
+    /// The name is gram.y `any_name`, but the action of the composite form
+    /// reads it with `makeRangeVarFromAnyName` (REL_17_11 gram.y 6299), which
+    /// rejects a name of more than three parts. So a name of four parts or
+    /// more takes no composite body (issue #50).
     #[derive(Debug)]
     pub struct CreateTypeStmt {
         #[tok(CREATE, TYPE, this)]
+        pub target: CreateTypeTarget,
+    }
+}
+
+recursa::ast_node! {
+    /// The name and the body of `CREATE TYPE`, split on the length of the
+    /// name.
+    ///
+    /// Variant ordering: both start with the same three name parts; `Long`
+    /// takes the `.` after the third.
+    #[derive(Debug)]
+    pub enum CreateTypeTarget {
+        Long(CreateLongType),
+        Short(CreateShortType),
+    }
+}
+
+recursa::ast_node! {
+    /// `CREATE TYPE name [body]` with a name of at most three parts: every
+    /// body.
+    #[derive(Debug)]
+    pub struct CreateShortType {
         pub name: QualifiedName,
         pub body: Option<CreateTypeBody>,
+    }
+}
+
+recursa::ast_node! {
+    /// `CREATE TYPE name [body]` with a name of four parts or more: no
+    /// composite body.
+    #[derive(Debug)]
+    pub struct CreateLongType {
+        pub name: crate::ast::shared::names::LongAnyName,
+        pub body: Option<CreateLongTypeBody>,
+    }
+}
+
+recursa::ast_node! {
+    /// The bodies of `CREATE TYPE` whose action reads the name as an
+    /// `any_name` list: every body but the composite one.
+    ///
+    /// Variant ordering: as in [`CreateTypeBody`].
+    #[derive(Debug)]
+    pub enum CreateLongTypeBody {
+        Enum(CreateTypeEnum),
+        Range(CreateTypeRange),
+        Base(DefList),
     }
 }
 
@@ -279,10 +329,65 @@ recursa::ast_node! {
     /// `AlterEnumStmt` / `RenameStmt` / `AlterOwnerStmt` /
     /// `AlterObjectSchemaStmt` branches for types, plus the composite-type
     /// `alter_type_cmds` set (ADD/DROP/ALTER ATTRIBUTE, comma-separated).
+    ///
+    /// The name is gram.y `any_name`, but the actions of `alter_type_cmds`
+    /// and `RENAME ATTRIBUTE` read it with `makeRangeVarFromAnyName`
+    /// (REL_17_11 gram.y 3227 and 9857), which rejects a name of more than
+    /// three parts. So a name of four parts or more takes neither (issue
+    /// #50).
     #[derive(Debug)]
     pub struct AlterTypeStmt {
         #[tok(ALTER, TYPE, this)]
+        pub target: AlterTypeTarget,
+    }
+}
+
+recursa::ast_node! {
+    /// The name and the action of `ALTER TYPE`, split on the length of the
+    /// name.
+    ///
+    /// Variant ordering: both start with the same three name parts; `Long`
+    /// takes the `.` after the third.
+    #[derive(Debug)]
+    pub enum AlterTypeTarget {
+        Long(AlterLongType),
+        Short(AlterShortType),
+    }
+}
+
+recursa::ast_node! {
+    /// `ALTER TYPE name action` with a name of at most three parts: every
+    /// action.
+    #[derive(Debug)]
+    pub struct AlterShortType {
         pub name: QualifiedName,
         pub action: AlterTypeAction,
+    }
+}
+
+recursa::ast_node! {
+    /// `ALTER TYPE name action` with a name of four parts or more: no
+    /// attribute action.
+    #[derive(Debug)]
+    pub struct AlterLongType {
+        pub name: crate::ast::shared::names::LongAnyName,
+        pub action: AlterLongTypeAction,
+    }
+}
+
+recursa::ast_node! {
+    /// The actions of `ALTER TYPE` whose action reads the name as an
+    /// `any_name` list: every action but `RENAME ATTRIBUTE` and the
+    /// `alter_type_cmds`.
+    ///
+    /// Variant ordering: as in [`AlterTypeAction`].
+    #[derive(Debug)]
+    pub enum AlterLongTypeAction {
+        RenameValue(AlterTypeRenameValue),
+        Rename(RenameTo),
+        Owner(OwnerTo),
+        SetSchema(SetSchemaClause),
+        SetDef(SetDefinitionClause),
+        AddValue(AlterTypeAddValue),
     }
 }

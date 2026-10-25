@@ -64,7 +64,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct OpclassSpec {
         /// gram.y `opt_qualified_name`: an `any_name`, so `s.text_ops`.
-        pub name: crate::ast::shared::names::QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub options: Option<OpclassOptions>,
     }
 }
@@ -177,7 +177,7 @@ recursa::ast_node! {
     pub struct IndexCollate {
         /// gram.y:8231 `opt_collate: COLLATE any_name`.
         #[tok(COLLATE, this)]
-        pub name: crate::ast::shared::names::QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -278,7 +278,7 @@ recursa::ast_node! {
         pub if_exists: Option<IfExists>,
         #[sep(COMMA)]
         /// gram.y `any_name_list`: one or more names.
-        pub names: one_or_many!(crate::ast::shared::names::QualifiedName),
+        pub names: one_or_many!(crate::ast::shared::names::AnyName),
         pub behavior: Option<DropBehavior>,
     }
 }

@@ -5,6 +5,14 @@ mod tests {
     use super::*;
     use crate::ast::test_support::*;
 
+    /// The body of a `CREATE TYPE` whose name has at most three parts.
+    fn short_body<'a, 'i>(stmt: &'a CreateTypeStmt<'i>) -> &'a Option<CreateTypeBody<'i>> {
+        match &stmt.target {
+            CreateTypeTarget::Short(target) => &target.body,
+            CreateTypeTarget::Long(_) => panic!("expected a name of at most three parts"),
+        }
+    }
+
     #[test]
     fn parse_drop_type_list() {
         let lexed = crate::lex("DROP TYPE IF EXISTS t1, t2");
@@ -134,7 +142,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTypeStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.body.is_none());
+        assert!(short_body(stmt).is_none());
         assert!(input.is_eof());
     }
 
@@ -145,7 +153,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTypeStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.body, Some(CreateTypeBody::Composite(_))));
+        assert!(matches!(short_body(stmt), Some(CreateTypeBody::Composite(_))));
         assert!(input.is_eof());
     }
 
@@ -156,7 +164,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTypeStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.body, Some(CreateTypeBody::Enum(_))));
+        assert!(matches!(short_body(stmt), Some(CreateTypeBody::Enum(_))));
         assert!(input.is_eof());
     }
 
@@ -167,7 +175,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTypeStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.body, Some(CreateTypeBody::Range(_))));
+        assert!(matches!(short_body(stmt), Some(CreateTypeBody::Range(_))));
         assert!(input.is_eof());
     }
 
@@ -178,7 +186,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateTypeStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(stmt.body, Some(CreateTypeBody::Base(_))));
+        assert!(matches!(short_body(stmt), Some(CreateTypeBody::Base(_))));
         assert!(input.is_eof());
     }
 }

@@ -1031,10 +1031,50 @@ recursa::ast_node! {
     /// `COLLATION FOR (...)` special form can dispatch without competing with a
     /// generic named relation. Qualified names retain PostgreSQL's ordinary
     /// `ColId` admission.
+    ///
+    /// A relation name is gram.y `qualified_name`, whose action rejects a
+    /// name of more than three parts (issue #50), so the dotted arm has at
+    /// most three. A function name of four parts or more is
+    /// [`LongFunctionTableRef`], which takes only the function tail.
     #[derive(Debug)]
     pub enum TableFunctionName {
-        Qualified(crate::ast::shared::expr::FuncCallQualifiedName),
+        Qualified(NamedTableQualifiedName),
         Name(crate::tokens::table_function_name),
+    }
+}
+
+recursa::ast_node! {
+    /// `name.name` or `name.name.name`: the dotted arm of
+    /// [`TableFunctionName`], gram.y `ColId indirection` of `qualified_name`
+    /// and of `func_name`, with at most three parts.
+    #[derive(Debug)]
+    pub struct NamedTableQualifiedName {
+        pub first: crate::tokens::ColId,
+        pub second: crate::ast::shared::expr::FuncCallNamePart,
+        pub third: Option<crate::ast::shared::expr::FuncCallNamePart>,
+    }
+}
+
+recursa::ast_node! {
+    /// A function in FROM whose name has four parts or more: gram.y
+    /// `func_table` with a `func_name` that no `qualified_name` can be, so
+    /// only the function tail can follow it.
+    #[derive(Debug)]
+    pub struct LongFunctionTableRef {
+        pub name: LongFuncCallName,
+        pub tail: NamedFunctionTableTail,
+    }
+}
+
+recursa::ast_node! {
+    /// A dotted `func_name` of four parts or more.
+    #[derive(Debug)]
+    pub struct LongFuncCallName {
+        pub first: crate::tokens::ColId,
+        pub second: crate::ast::shared::expr::FuncCallNamePart,
+        pub third: crate::ast::shared::expr::FuncCallNamePart,
+        pub fourth: crate::ast::shared::expr::FuncCallNamePart,
+        pub more: zero_or_many!(crate::ast::shared::expr::FuncCallNamePart),
     }
 }
 
@@ -1304,6 +1344,9 @@ recursa::ast_node! {
         Paren(ParenTableRef),
         Only(OnlyTableRef),
         ColName(ColNameTableRef),
+        /// A function whose name has four parts or more. It shares its first
+        /// three name parts with `Named` and takes the `.` after the third.
+        LongFunction(boxed!(LongFunctionTableRef)),
         Named(boxed!(NamedTableRef)),
     }
 }

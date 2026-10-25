@@ -29,7 +29,7 @@ recursa::ast_node! {
         #[tok(TYPE, this)]
         pub am_type: AccessMethodType,
         #[tok(HANDLER, this)]
-        pub handler_name: QualifiedName,
+        pub handler_name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -39,7 +39,7 @@ recursa::ast_node! {
     #[tok(DROP, ACCESS, METHOD, this)]
     pub struct DropAccessMethodStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }

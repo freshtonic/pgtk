@@ -14,13 +14,13 @@ recursa::ast_node! {
         #[tok(CREATE, this, CONVERSION)]
         #[presence(DEFAULT)]
         pub default: bool,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(FOR, this)]
         pub src_encoding: literal::StringLit,
         #[tok(TO, this)]
         pub dest_encoding: literal::StringLit,
         #[tok(FROM, this)]
-        pub func_name: QualifiedName,
+        pub func_name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -56,7 +56,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterConversionStmt {
         #[tok(ALTER, CONVERSION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterConversionAction,
     }
 }
