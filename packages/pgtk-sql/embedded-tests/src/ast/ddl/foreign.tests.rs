@@ -30,33 +30,28 @@ mod tests {
         assert!(input.is_eof());
     }
 
-    /// Bare `ALTER FOREIGN DATA WRAPPER name` — PG itself rejects this
-    /// (`AlterFdwStmt` requires at least one fdw_option or
-    /// alter_generic_options), but the parser is over-permissive to avoid
-    /// surfacing as a file-level parse error; the differential
-    /// oracle accepts the PG-rejected case because pgtk-sql's reformat is
-    /// also PG-rejected.
+    /// Bare `ALTER FOREIGN DATA WRAPPER name` is a syntax error:
+    /// `AlterFdwStmt` requires at least one fdw_option or
+    /// alter_generic_options (issue #56).
     #[test]
     fn parse_alter_fdw_bare() {
         let lexed = crate::lex("ALTER FOREIGN DATA WRAPPER foo");
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
-        let _stmt_parsed = AlterForeignStmt::parse(&mut input).unwrap();
-        let _stmt = _stmt_parsed.ast();
-        assert!(input.is_eof());
+        let parsed = AlterForeignStmt::parse(&mut input);
+        assert!(parsed.is_err() || !input.is_eof());
     }
 
-    /// Bare `ALTER SERVER name` — similar over-permissive acceptance for
-    /// the bare form (gram.y `AlterForeignServerStmt` requires version,
-    /// options, or both).
+    /// Bare `ALTER SERVER name` is a syntax error: gram.y
+    /// `AlterForeignServerStmt` requires version, options, or both (issue
+    /// #56).
     #[test]
     fn parse_alter_server_bare() {
         let lexed = crate::lex("ALTER SERVER s0");
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
-        let _stmt_parsed = AlterServerStmt::parse(&mut input).unwrap();
-        let _stmt = _stmt_parsed.ast();
-        assert!(input.is_eof());
+        let parsed = AlterServerStmt::parse(&mut input);
+        assert!(parsed.is_err() || !input.is_eof());
     }
 
     #[test]

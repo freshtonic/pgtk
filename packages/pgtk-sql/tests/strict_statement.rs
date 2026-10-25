@@ -825,3 +825,221 @@ fn a_name_list_holds_plain_names() {
         "CREATE INDEX i ON t (a) WITH (a.b = 1)",
     ]);
 }
+
+/// gram.y `Typename` and `SimpleTypename` (issue #51).
+#[test]
+fn type_names_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `opt_array_bounds` or `ARRAY`, never both.
+            "DROP TYPE A[0] ARRAY",
+            "DROP DOMAIN INT[] ARRAY",
+            "DROP FUNCTION A(A A[0] ARRAY)",
+            "SELECT 1::int[] ARRAY[2]",
+            // `opt_type_modifiers` is `'(' expr_list ')'`, never empty.
+            "DROP TYPE A()[0]",
+            "DROP DOMAIN BIT()[]",
+            "CREATE DOMAIN city BIT()[]",
+            "SELECT 1::numeric()",
+            // `%TYPE` follows `type_function_name attrs`, a dotted name.
+            "DROP FUNCTION A(A A% TYPE)",
+            "DROP PROCEDURE A(A A% TYPE)",
+            "CREATE FUNCTION A(A A% TYPE) RETURNS int AS ''",
+            // `SeqOptElem: AS SimpleTypename` and `XMLSERIALIZE(... AS
+            // SimpleTypename)` take no array decoration.
+            "CREATE SEQUENCE score AS INTEGER[]",
+            "ALTER SEQUENCE amount AS UNKNOWN ARRAY",
+            "CREATE UNLOGGED SEQUENCE country AS JSON[]",
+            "CREATE TABLE t (a int GENERATED ALWAYS AS IDENTITY (AS int[]))",
+            "SELECT XMLSERIALIZE(CONTENT x AS text[])",
+            // `ConstInterval '(' Iconst ')' Sconst` takes no qualifier.
+            "SELECT INTERVAL(0) '' YEAR",
+            "CREATE POLICY currency ON item.uuid FOR ALL USING(INTERVAL(0) '' YEAR TO MONTH)",
+            "ALTER POLICY d ON end_date TO CURRENT_ROLE WITH CHECK(INTERVAL(0) '' DAY)",
+        ],
+        "the type name is not a gram.y Typename",
+    );
+    assert_accepts(&[
+        "DROP TYPE A[0][]",
+        "DROP TYPE A ARRAY[0]",
+        "DROP TYPE A(1)",
+        "CREATE FUNCTION A(A a.b% TYPE) RETURNS int AS ''",
+        "CREATE FUNCTION A(A a.b[]) RETURNS int AS ''",
+        "CREATE SEQUENCE score AS INTEGER",
+        "SELECT XMLSERIALIZE(CONTENT x AS varchar(3))",
+        "SELECT INTERVAL(0) ''",
+        "SELECT INTERVAL '' YEAR TO MONTH",
+    ]);
+}
+
+/// The non-empty lists and the one-time clauses of gram.y (issue #56).
+#[test]
+fn lists_and_clauses_keep_the_cardinality_of_gram_y() {
+    assert_rejects(
+        &[
+            // A list that gram.y has as non-empty.
+            "DROP AGGREGATE",
+            "DROP AGGREGATE IF EXISTS CASCADE",
+            "UPDATE t SET",
+            "UPDATE t SET () = (1)",
+            "CREATE TRIGGER t AFTER INSERT ON x REFERENCING FOR ROW EXECUTE FUNCTION f()",
+            "WITH RECURSIVE a AS (SELECT 1) CYCLE SET c USING p SELECT 1",
+            "VACUUM ()",
+            "CLUSTER ()",
+            "REINDEX () TABLE t",
+            "EXECUTE p()",
+            "CREATE INDEX ON t ()",
+            "CREATE INDEX ON t USING m ()",
+            "CREATE INDEX ON t (a) INCLUDE ()",
+            "CREATE INDEX ON t (a) WITH ()",
+            "CREATE TABLESPACE s LOCATION '' WITH ()",
+            "ALTER TABLESPACE s SET ()",
+            "ALTER TABLESPACE s RESET ()",
+            "INSERT INTO t VALUES ()",
+            "VALUES ()",
+            "SELECT DISTINCT ON () 1",
+            "SELECT 1 GROUP BY GROUPING SETS ()",
+            "SELECT * FROM ROWS FROM (f() AS ())",
+            "CREATE TABLE t (a int, PRIMARY KEY ())",
+            "CREATE TABLE t (a int, UNIQUE ())",
+            "CREATE TABLE t (a int, FOREIGN KEY () REFERENCES u)",
+            "CREATE TABLE t (a int, PRIMARY KEY (a) INCLUDE ())",
+            "CREATE TABLE t (a int) WITH ()",
+            "CREATE TABLE t PARTITION OF u () DEFAULT",
+            "CREATE TABLE t OF u ()",
+            "CREATE TABLE t (a int) PARTITION BY RANGE ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES IN ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES FROM () TO (1)",
+            "CREATE TABLE t PARTITION OF u FOR VALUES FROM (1) TO ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES WITH ()",
+            "CREATE TABLE t () INHERITS ()",
+            "CREATE FOREIGN TABLE t PARTITION OF u () DEFAULT SERVER s",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS ()) AS t",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (NESTED '$' COLUMNS ())) AS t",
+            // A statement that needs an action.
+            "ALTER SERVER s",
+            "ALTER FOREIGN DATA WRAPPER w",
+            // One option list, one FROM SQL and one TO SQL.
+            "DROP DATABASE d (FORCE), (FORCE)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f, TO SQL WITH FUNCTION f)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, FROM SQL WITH FUNCTION f)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, TO SQL WITH FUNCTION f, \
+             TO SQL WITH FUNCTION f)",
+            // `CREATE AGGREGATE` needs its definition list.
+            "CREATE AGGREGATE a(*)",
+        ],
+        "gram.y wants another number of items",
+    );
+    assert_accepts(&[
+        "CREATE TABLE t ()",
+        "CREATE FOREIGN TABLE t () SERVER s",
+        "CREATE TYPE t AS ()",
+        "CREATE TYPE t AS ENUM ()",
+        "CREATE RULE r AS ON INSERT TO t DO ()",
+        "SELECT 1 GROUP BY ()",
+        "SELECT 1 GROUP BY GROUPING SETS (())",
+        "CREATE TRIGGER t AFTER INSERT ON x EXECUTE FUNCTION f()",
+        "DROP DATABASE d (FORCE)",
+        "DROP DATABASE d WITH (FORCE)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f, FROM SQL WITH FUNCTION g)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, TO SQL WITH FUNCTION g)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f)",
+        "ALTER SERVER s VERSION '2'",
+        "ALTER FOREIGN DATA WRAPPER w NO VALIDATOR",
+    ]);
+}
+
+/// The places where gram.y wants a narrower form than an expression (issue
+/// #59).
+#[test]
+fn narrow_places_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `CURRENT OF` is only in `where_or_current_clause`.
+            "SELECT WHERE CURRENT OF rating",
+            "SELECT ALL WHERE CURRENT OF product",
+            "CREATE INDEX ON t (a) WHERE CURRENT OF c",
+            "SELECT count(*) FILTER (WHERE CURRENT OF c) FROM t",
+            // `UESCAPE` follows only a Unicode identifier.
+            "SELECT 1 AS product UESCAPE ''",
+            "DELETE FROM t RETURNING X'' AS description UESCAPE ''",
+            // A `def_arg` type takes `opt_type_modifiers`, an `expr_list`.
+            "CREATE OPERATOR ~<=~ (country = A(BIT(.0)))",
+            "CREATE OPERATOR <@ (tag = A(BIT ARRAY) ARRAY)",
+            "ALTER TYPE email SET (order_date = A(JSON ARRAY[0]))",
+            "CREATE AGGREGATE a(int) (SFUNC = f(bit(1)), STYPE = int)",
+            // An operator class parameter is a `def_arg`.
+            "CREATE INDEX ON t (a ops (x = ARRAY[]))",
+            "CREATE INDEX ON t (a ops (x = U&'' | 1))",
+            // `XMLATTRIBUTES` is only the first argument of `XMLELEMENT`.
+            "SELECT XMLATTRIBUTES(1 AS a)",
+            "CALL p(XMLATTRIBUTES(X'' AS enabled))",
+            "SELECT XMLELEMENT(NAME a, 'c', XMLATTRIBUTES(1 AS b))",
+            // `XMLEXISTS` and `XMLTABLE` take `c_expr`.
+            "SELECT XMLEXISTS('a' || 'b' PASSING x)",
+            "SELECT XMLEXISTS('a' PASSING x IS NOT NULL)",
+            "SELECT * FROM XMLTABLE('a' || 'b' PASSING x COLUMNS a int) t",
+            // The legacy form of `JSON_OBJECT` takes no clauses, and the
+            // `VALUE` form takes a `c_expr` key.
+            "SELECT JSON_OBJECT(a RETURNING text)",
+            "SELECT JSON_OBJECT(a NULL ON NULL)",
+            "SELECT JSON_OBJECT(DEFAULT VALUE 1)",
+            "SELECT JSON_OBJECTAGG(DEFAULT VALUE 1)",
+            // An array constructor holds elements or sub-arrays, not both.
+            "SELECT ARRAY[1, [2]]",
+            "SELECT ARRAY[[1], 2]",
+            "SELECT ARRAY[[$0, []]]",
+            // `json_behavior_clause_opt` is ON EMPTY, then ON ERROR.
+            "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON EMPTY)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR NULL ON EMPTY)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR NULL ON ERROR)",
+            // `JSON_EXISTS` and `JSON_TABLE` take only ON ERROR.
+            "SELECT JSON_EXISTS(a, '$' TRUE ON EMPTY)",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int) NULL ON EMPTY) AS t",
+        ],
+        "gram.y wants a narrower form",
+    );
+    assert_accepts(&[
+        "UPDATE t SET a = 1 WHERE CURRENT OF c",
+        "DELETE FROM t WHERE CURRENT OF c",
+        "SELECT 1 AS U&\"a\" UESCAPE '!'",
+        "CREATE AGGREGATE a(int) (SFUNC = balkifnull(int8, int4), STYPE = int8)",
+        "CREATE AGGREGATE a(int) (SFUNC = f(a.b, 1), STYPE = int8)",
+        "CREATE INDEX ON t (a ops (x = 1))",
+        "CREATE INDEX ON t (a ops (x = 'y'))",
+        "SELECT XMLELEMENT(NAME a, XMLATTRIBUTES(1 AS b), 'c')",
+        "SELECT XMLEXISTS(('a' || 'b') PASSING x)",
+        "SELECT JSON_OBJECT(a, b)",
+        "SELECT JSON_OBJECT(a => 1)",
+        "SELECT JSON_OBJECT(a : b RETURNING text)",
+        "SELECT JSON_OBJECT(DEFAULT : 1)",
+        "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
+        "SELECT JSON_OBJECTAGG(a VALUE 1)",
+        "SELECT ARRAY[[1], [2]]",
+        "SELECT ARRAY[[], []]",
+        "SELECT ARRAY[]",
+        "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
+        "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
+        "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
+    ]);
+}
+
+/// A `)` before a set operator is the merged kind `RPAREN_SELECT_LA`, so
+/// each closing rule that can end a `select_clause` must take it (issue
+/// #60).
+#[test]
+fn a_close_before_a_set_operator_parses() {
+    assert_accepts(&[
+        "TABLE ONLY (t) UNION TABLE u",
+        "TABLE ONLY (s.t) INTERSECT TABLE ONLY (u)",
+        "(TABLE ONLY (t) EXCEPT TABLE u)",
+        "SELECT * FROM ONLY (t) UNION TABLE u",
+        "SELECT 1 GROUP BY () UNION SELECT 2",
+        "SELECT 1 GROUP BY ALL () INTERSECT SELECT 2",
+        "SELECT 1 GROUP BY ROLLUP (a) UNION SELECT 2",
+        "SELECT 1 GROUP BY CUBE (a) UNION SELECT 2",
+        "SELECT 1 GROUP BY GROUPING SETS (a, ()) EXCEPT SELECT 2",
+        "TABLE ONLY (t) ORDER BY 1",
+        "SELECT 1 GROUP BY () ORDER BY 1",
+    ]);
+}

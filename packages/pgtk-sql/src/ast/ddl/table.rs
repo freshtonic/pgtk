@@ -1010,17 +1010,9 @@ recursa::ast_node! {
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct IndexedConstraintColumnList(
-        // A narrowing, not an addition (ADR 0010, `docs/minimum-version.md`):
-        // 18 accepts fewer lists than 14, so a list that 18 accepts needs no
-        // version above the baseline. Both arms only remove; neither records.
-        #[cfg(not(feature = "since-pg18"))]
-        #[sep(COMMA)]
-        #[deref]
-        pub zero_or_many!(crate::tokens::ColId),
-        /// From 18 the list is gram.y `columnList`, which is not empty: an
-        /// empty list would let `(WITHOUT OVERLAPS)` parse, which REL_18_6
-        /// gram.y `ConstraintElem` rejects.
-        #[cfg(feature = "since-pg18")]
+        /// gram.y `columnList`, which is not empty in each target version
+        /// (REL_14_24 gram.y 3800 and 3831, REL_17_11 4144 and 4178, REL_18_6
+        /// 4230 and 4265; issue #56).
         #[sep(COMMA)]
         #[deref]
         pub one_or_many!(crate::tokens::ColId),
@@ -1071,7 +1063,7 @@ recursa::ast_node! {
     #[tok(INCLUDE, LPAREN, this, RPAREN)]
     pub struct IncludeColumns {
         #[sep(COMMA)]
-        pub columns: zero_or_many!(crate::tokens::ColId),
+        pub columns: one_or_many!(crate::tokens::ColId),
     }
 }
 
@@ -1103,17 +1095,8 @@ recursa::ast_node! {
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct ForeignKeyColumnList(
-        // A narrowing, not an addition (ADR 0010, `docs/minimum-version.md`):
-        // 18 accepts fewer lists than 14, so a list that 18 accepts needs no
-        // version above the baseline. Both arms only remove; neither records.
-        #[cfg(not(feature = "since-pg18"))]
-        #[sep(COMMA)]
-        #[deref]
-        pub zero_or_many!(crate::tokens::ColId),
-        /// From 18 the list is gram.y `columnList`, which is not empty: an
-        /// empty list would let `(, PERIOD c)` parse, which REL_18_6 gram.y
-        /// `ConstraintElem` rejects.
-        #[cfg(feature = "since-pg18")]
+        /// gram.y `columnList`, which is not empty in each target version
+        /// (REL_14_24 gram.y 3881, REL_17_11 4231, REL_18_6 4319; issue #56).
         #[sep(COMMA)]
         #[deref]
         pub one_or_many!(crate::tokens::ColId),
@@ -1448,7 +1431,7 @@ recursa::ast_node! {
     #[tok(INHERITS, LPAREN, this, RPAREN)]
     pub struct InheritsClause {
         #[sep(COMMA)]
-        pub parents: zero_or_many!(crate::tokens::ColId),
+        pub parents: one_or_many!(crate::tokens::ColId),
     }
 }
 
@@ -1476,7 +1459,7 @@ recursa::ast_node! {
     pub struct ColumnsStorageParams(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(crate::ast::ddl::index::StorageParam),
+        pub one_or_many!(crate::ast::ddl::index::StorageParam),
     );
 }
 
@@ -1627,7 +1610,7 @@ recursa::ast_node! {
     pub struct PartitionColumnOptionList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(PartitionColumnOption),
+        pub one_or_many!(PartitionColumnOption),
     );
 }
 
@@ -1853,7 +1836,7 @@ recursa::ast_node! {
     pub struct PartitionKeyList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(PartitionKeyItem),
+        pub one_or_many!(PartitionKeyItem),
     );
 }
 
@@ -1864,7 +1847,7 @@ recursa::ast_node! {
     #[tok(FOR, VALUES, IN, LPAREN, this, RPAREN)]
     pub struct ForValuesInClause {
         #[sep(COMMA)]
-        pub values: zero_or_many!(Expr),
+        pub values: one_or_many!(Expr),
     }
 }
 
@@ -1886,7 +1869,7 @@ recursa::ast_node! {
     pub struct PartitionValues(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(Expr),
+        pub one_or_many!(Expr),
     );
 }
 
@@ -1896,7 +1879,7 @@ recursa::ast_node! {
     #[tok(IN, LPAREN, this, RPAREN)]
     pub struct InListSpec {
         #[sep(COMMA)]
-        pub values: zero_or_many!(Expr),
+        pub values: one_or_many!(Expr),
     }
 }
 
@@ -1933,7 +1916,7 @@ recursa::ast_node! {
     #[tok(WITH, LPAREN, this, RPAREN)]
     pub struct WithModulusSpec {
         #[sep(COMMA)]
-        pub items: zero_or_many!(HashPartItem),
+        pub items: one_or_many!(HashPartItem),
     }
 }
 
@@ -1974,7 +1957,7 @@ recursa::ast_node! {
     pub struct PartitionColumnDefList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(PartitionColumnDef),
+        pub one_or_many!(PartitionColumnDef),
     );
 }
 

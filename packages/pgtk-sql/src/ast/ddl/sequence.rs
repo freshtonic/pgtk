@@ -8,11 +8,12 @@ use crate::ast::shared::numbers::*;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
-    /// `AS TypeName` sequence option.
+    /// gram.y `SeqOptElem: AS SimpleTypename` (REL_17_11 4891): a type with
+    /// no array decoration, so `AS int[]` is a syntax error (issue #51).
     #[derive(Debug)]
     pub struct SeqAsOption {
         #[tok(AS, this)]
-        pub type_name: CastType,
+        pub type_name: CastTypeHead,
     }
 }
 

@@ -53,7 +53,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateDomainStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert_eq!(stmt.type_name.array_suffixes.len(), 1);
+        assert_eq!(stmt.type_name.array.as_ref().unwrap().bounds().len(), 1);
         assert!(input.is_eof());
     }
     // `ALTER DOMAIN ... ADD NOT NULL` is added in 17: research, PostgreSQL 17, "Changes to existing statements".

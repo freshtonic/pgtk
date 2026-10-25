@@ -173,7 +173,7 @@ recursa::ast_node! {
         pub open: TypeModifierOpen,
         #[sep(COMMA)]
         #[deref]
-        pub args: zero_or_many!(TypeModifierArg),
+        pub args: one_or_many!(TypeModifierArg),
         pub close: TypeModifierClose,
     }
 }
@@ -1664,16 +1664,18 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One element of an `ARRAY[...]` constructor: either an ordinary
-    /// expression or a nested bracketed sub-list (for multi-dimensional
-    /// literals like `ARRAY[[1,2],[3,4]]`).
+    /// The elements of an `ARRAY[...]` constructor: gram.y `array_expr: '['
+    /// expr_list ']' | '[' array_expr_list ']' | '[' ']'` (REL_17_11 gram.y
+    /// 16754-16772). The elements are all expressions or all bracketed
+    /// sub-lists (for multi-dimensional literals like `ARRAY[[1,2],[3,4]]`),
+    /// never both, so `ARRAY[1, [2]]` is a syntax error (issue #59).
     ///
     /// Variant ordering: `Nested` leads with `[`, which no expression atom
     /// does, so dispatch is unambiguous.
     #[derive(Debug)]
-    pub enum ArrayElement {
-        Nested(NestedArrayElements),
-        Expr(boxed!(Expr)),
+    pub enum ArrayElements {
+        Nested(#[sep(COMMA)] one_or_many!(NestedArrayElements)),
+        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
     }
 }
 
@@ -1682,8 +1684,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(LBRACKET, this, RBRACKET)]
     pub struct NestedArrayElements {
-        #[sep(COMMA)]
-        pub elements: zero_or_many!(ArrayElement),
+        pub elements: Option<ArrayElements>,
     }
 }
 
@@ -1698,8 +1699,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(ARRAY, LBRACKET, this, RBRACKET)]
     pub struct ArrayBracket {
-        #[sep(COMMA)]
-        pub elements: zero_or_many!(ArrayElement),
+        pub elements: Option<ArrayElements>,
     }
 }
 
@@ -1931,20 +1931,44 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Cast type with a base-specific modifier and zero-or-more array suffixes:
+    /// gram.y `Typename` without `SETOF` (REL_17_11 14294-14327): a
+    /// `SimpleTypename` with an optional array decoration. Examples:
     /// `numeric(10,0)`, `timestamp with time zone`, `interval day to minute`,
-    /// `integer[]`, `int4[][][]`, `varchar(4)[2][3]`.
+    /// `integer[]`, `int4[][][]`, `varchar(4)[2][3]`, `text ARRAY[4]`.
     #[derive(Debug, PartialEq, Eq)]
     pub struct CastType {
         pub head: CastTypeHead,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        /// PG gram.y also accepts `SimpleTypename ARRAY` and
-        /// `SimpleTypename ARRAY '[' Iconst ']'` — the keyword form for
-        /// declaring an array type (e.g. `integer ARRAY[4]`, `text ARRAY`).
-        /// In practice this is mutually exclusive with `array_suffixes`, but the
-        /// grammar admits the suffix appearing AFTER the keyword form, so the
-        /// field is parsed last.
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
+    }
+}
+
+recursa::ast_node! {
+    /// The array decoration of gram.y `Typename` (REL_17_11 14294-14327):
+    /// `opt_array_bounds` (one or more `[]` or `[n]`) or the SQL-standard
+    /// `ARRAY` or `ARRAY[n]`, never both. So `int[0] ARRAY` is a syntax error
+    /// (issue #51).
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum TypeArray {
+        Bounds(one_or_many!(ArraySuffix)),
+        Keyword(ArrayKwSuffix),
+    }
+}
+
+impl<'input> TypeArray<'input> {
+    /// The `[]` and `[n]` bounds. The `ARRAY` form has none.
+    pub fn bounds(&self) -> &[ArraySuffix<'input>] {
+        match self {
+            TypeArray::Bounds(bounds) => bounds,
+            TypeArray::Keyword(_) => &[],
+        }
+    }
+
+    /// The `ARRAY` or `ARRAY[n]` form, if it is this form.
+    pub fn keyword(&self) -> Option<&ArrayKwSuffix<'input>> {
+        match self {
+            TypeArray::Bounds(_) => None,
+            TypeArray::Keyword(keyword) => Some(keyword),
+        }
     }
 }
 
@@ -2229,14 +2253,43 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `INTERVAL 'str' [qualifier]`.
+    /// gram.y `AexprConst: ConstInterval Sconst opt_interval | ConstInterval
+    /// '(' Iconst ')' Sconst` (REL_17_11 17267 and 17274): `INTERVAL 'str'
+    /// [qualifier]` or `INTERVAL(p) 'str'`. The form with a precision takes
+    /// no qualifier, so `INTERVAL(0) '' YEAR` is a syntax error (issue #51).
     #[derive(Debug)]
     pub struct IntervalLit {
         pub interval: IntervalKeyword,
-        /// Optional precision, e.g. `interval(2)` or `interval(0)`.
-        pub precision: Option<IconstPrecision>,
+        pub form: IntervalLitForm,
+    }
+}
+
+recursa::ast_node! {
+    /// The two forms of an [`IntervalLit`] after `INTERVAL`.
+    #[derive(Debug)]
+    pub enum IntervalLitForm {
+        /// `'str' [qualifier]`.
+        Qualified(IntervalLitQualified),
+        /// `(p) 'str'`, e.g. `interval(2) '1 s'`.
+        Precision(IntervalLitPrecision),
+    }
+}
+
+recursa::ast_node! {
+    /// `'str' [qualifier]` after `INTERVAL`.
+    #[derive(Debug)]
+    pub struct IntervalLitQualified {
         pub value: literal::StringLit,
         pub qualifier: Option<IntervalQualifier>,
+    }
+}
+
+recursa::ast_node! {
+    /// `(p) 'str'` after `INTERVAL`.
+    #[derive(Debug)]
+    pub struct IntervalLitPrecision {
+        pub precision: IconstPrecision,
+        pub value: literal::StringLit,
     }
 }
 
@@ -2278,8 +2331,10 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `xmlattributes(expr [AS alias], ...)` — used as a positional argument
-    /// to `xmlelement`, but also can be parsed standalone.
+    /// `xmlattributes(expr [AS alias], ...)`: gram.y `xml_attributes`, which
+    /// only `xmlelement` takes, as its first argument after the name
+    /// (REL_17_11 gram.y 15882-15893 and 16128). It is no expression, so
+    /// `SELECT xmlattributes(1)` is a syntax error (issue #59).
     #[derive(Debug)]
     #[tok(XMLATTRIBUTES, LPAREN, this, RPAREN)]
     pub struct XmlAttributes {
@@ -2308,12 +2363,15 @@ recursa::ast_node! {
     }
 }
 
-/// Body of `xmlelement(NAME ident [, xmlattributes(...)] [, content_exprs])`.
-///
-/// Variant ordering: the `WithAttrs` form starts with `, xmlattributes(`
-/// (longer match) and must be tried before `WithContent` which starts with
-/// just `,`. Both trail an `xmlelement(NAME ident` head.
-pub type XmlElementTail<'input> = XmlElementContentTail<'input>;
+recursa::ast_node! {
+    /// What follows the name of an `xmlelement`: `, xmlattributes(...) [,
+    /// content_exprs]` or `, content_exprs`.
+    #[derive(Debug)]
+    pub enum XmlElementTail {
+        Attrs(XmlElementAttrsTail),
+        Content(XmlElementContentTail),
+    }
+}
 
 recursa::ast_node! {
     /// Inner contents of an `xmlelement(...)` call.
@@ -2410,8 +2468,10 @@ recursa::ast_node! {
     pub struct XmlSerializeInner {
         pub which: XmlDocOrContent,
         pub value: boxed!(Expr),
+        /// gram.y `AS SimpleTypename`, with no array decoration (REL_17_11
+        /// 15930; issue #51).
         #[tok(AS, this)]
-        pub ty: CastType,
+        pub ty: CastTypeHead,
         // Added in 16: see `XmlIndentOption`.
         #[config(since = pg16)]
         pub indent: Option<XmlIndentOption>,
@@ -2532,9 +2592,14 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// Inner of `XMLEXISTS ( ‹xpath› PASSING [BY {REF|VALUE}] ‹doc› [BY {REF|VALUE}] )`.
+    ///
+    /// gram.y `XMLEXISTS '(' c_expr xmlexists_argument ')'` and
+    /// `xmlexists_argument: PASSING ... c_expr ...` (REL_17_11 15894 and
+    /// 16168-16185): the path and the document are each a `c_expr`, so an
+    /// operator expression needs parentheses (issue #59).
     #[derive(Debug)]
     pub struct XmlExistsInner {
-        pub xpath: boxed!(Expr),
+        pub xpath: boxed!(CExpr),
         pub passing: XmlExistsPassing,
     }
 }
@@ -2554,7 +2619,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum XmlExistsDocument {
         Qualified(XmlExistsQualifiedDocument),
-        Plain(boxed!(Expr)),
+        Plain(boxed!(CExpr)),
     }
 }
 
@@ -2562,7 +2627,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct XmlExistsQualifiedDocument {
         pub by: XmlPassingBy,
-        pub doc: boxed!(Expr),
+        pub doc: boxed!(CExpr),
     }
 }
 
@@ -3141,13 +3206,15 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// Key/value separator inside a `JSON_OBJECT` entry: `:` or the `VALUE` keyword.
+    /// gram.y `json_name_and_value` (REL_17_11 gram.y 17006-17017): one
+    /// key/value entry of `JSON_OBJECT` or `JSON_OBJECTAGG`. Its two forms
+    /// take different keys: `c_expr VALUE_P json_value_expr` and `a_expr ':'
+    /// json_value_expr`. So `JSON_OBJECT(DEFAULT VALUE 1)` is a syntax error
+    /// (issue #59). The rule is the same in each target version from 16.
     #[derive(Debug)]
-    pub enum JsonKeyValueSep {
-        #[tok(COLON)]
-        Colon,
-        #[tok(VALUE)]
-        Value,
+    pub enum JsonKeyValue {
+        Value(JsonValueKeyValue),
+        Colon(JsonColonKeyValue),
     }
 }
 
@@ -3156,10 +3223,11 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// The `{: | VALUE} ‹value› [FORMAT JSON ...]` part of a `JSON_OBJECT` item.
+    /// `‹c_expr› VALUE ‹value› [FORMAT JSON ...]`.
     #[derive(Debug)]
-    pub struct JsonObjectEntryValue {
-        pub sep: JsonKeyValueSep,
+    pub struct JsonValueKeyValue {
+        pub key: boxed!(CExpr),
+        #[tok(VALUE, this)]
         pub value: boxed!(Expr),
         pub format: Option<JsonFormat>,
     }
@@ -3170,30 +3238,34 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// One item of a `JSON_OBJECT` list: either a SQL/JSON
-    /// `[KEY] ‹key› {: | VALUE} ‹value› [FORMAT JSON ...]` entry, or one
-    /// argument of PostgreSQL's legacy `json_object(text[])` /
-    /// `json_object(text[], text[])` function form.
-    ///
-    /// gram.y keeps those as separate productions — `JSON_OBJECT` is a
-    /// `COL_NAME` keyword and can never be an ordinary `FuncCall` name, so the
-    /// legacy call gets its own `JSON_OBJECT '(' func_arg_list ')'` rule. Both
-    /// are comma-separated and expression-led, with an arbitrarily long shared
-    /// prefix. They therefore share this node, and the presence of the key/value
-    /// separator is what tells the two forms apart.
+    /// `‹a_expr› : ‹value› [FORMAT JSON ...]`.
+    #[derive(Debug)]
+    pub struct JsonColonKeyValue {
+        pub key: boxed!(Expr),
+        #[tok(COLON, this)]
+        pub value: boxed!(Expr),
+        pub format: Option<JsonFormat>,
+    }
+}
+
+// Added in 16: research, PostgreSQL 16, "Queries and expressions"
+// (REL_16_15 gram.y `json_value_expr`, `json_output_clause_opt` and the
+// `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
+#[cfg(feature = "since-pg16")]
+recursa::ast_node! {
+    /// One argument of PostgreSQL's legacy `json_object(text[])` /
+    /// `json_object(text[], text[])` function form, gram.y `JSON_OBJECT '('
+    /// func_arg_list ')'` (REL_17_11 gram.y 15941). `func_arg_expr` has two
+    /// named-argument arms (REL_17_11 gram.y 16549), `name => value` and
+    /// `name := value`.
     ///
     /// Variant ordering: `Named` first. Its `type_function_name` and arrow
-    /// are the `func_arg_expr` named spelling, which `Value`'s key would
+    /// are the `func_arg_expr` named spelling, which `Positional` would
     /// otherwise start to read as a column reference.
     #[derive(Debug)]
-    pub enum JsonObjectEntry {
-        /// `name => value` or `name := value` — gram.y `func_arg_expr`'s two
-        /// named-argument arms, reachable only through the legacy
-        /// `JSON_OBJECT '(' func_arg_list ')'` production (REL_17_11 gram.y
-        /// 15941, `func_arg_expr` 16549). A named argument carries no
-        /// key/value separator, so it is its own variant.
+    pub enum JsonObjectLegacyArg {
         Named(NamedFuncArg),
-        Value(JsonObjectEntryKeyValue),
+        Positional(boxed!(Expr)),
     }
 }
 
@@ -3202,13 +3274,13 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// A `JSON_OBJECT` item that leads with an expression: a SQL/JSON
-    /// `‹key› {: | VALUE} ‹value›` entry, or one positional argument of the
-    /// legacy `json_object(...)` function form.
+    /// The argument list of the legacy `json_object(...)` function form. It
+    /// takes none of the `ON NULL`, `UNIQUE` and `RETURNING` clauses, so
+    /// `JSON_OBJECT(a RETURNING text)` is a syntax error (issue #59).
     #[derive(Debug)]
-    pub struct JsonObjectEntryKeyValue {
-        pub key: boxed!(Expr),
-        pub value: Option<JsonObjectEntryValue>,
+    pub struct JsonObjectLegacyArgs {
+        #[sep(COMMA)]
+        pub args: one_or_many!(JsonObjectLegacyArg),
     }
 }
 
@@ -3217,28 +3289,15 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// One `‹key› {: | VALUE} ‹value› [FORMAT JSON ...]` entry of
-    /// `JSON_OBJECTAGG`, whose gram.y production admits only the SQL/JSON
-    /// spelling and therefore requires the value.
-    #[derive(Debug)]
-    pub struct JsonObjectAggEntry {
-        pub key: boxed!(Expr),
-        pub value: JsonObjectEntryValue,
-    }
-}
-
-// Added in 16: research, PostgreSQL 16, "Queries and expressions"
-// (REL_16_15 gram.y `json_value_expr`, `json_output_clause_opt` and the
-// `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
-#[cfg(feature = "since-pg16")]
-recursa::ast_node! {
-    /// Non-empty item list of `JSON_OBJECT`, followed by the optional `ON NULL`,
-    /// `UNIQUE` and `RETURNING` clauses. Those clauses belong to the SQL/JSON
-    /// entry production only; the legacy function form never carries them.
+    /// gram.y `JSON_OBJECT '(' json_name_and_value_list
+    /// json_object_constructor_null_clause_opt
+    /// json_key_uniqueness_constraint_opt json_returning_clause_opt ')'`
+    /// (REL_17_11 gram.y 15947): the key/value entries, followed by the
+    /// optional `ON NULL`, `UNIQUE` and `RETURNING` clauses.
     #[derive(Debug)]
     pub struct JsonObjectArgs {
         #[sep(COMMA)]
-        pub entries: one_or_many!(JsonObjectEntry),
+        pub entries: one_or_many!(JsonKeyValue),
         pub on_null: Option<JsonOnNull>,
         pub unique: Option<JsonUniqueKeys>,
         pub returning: Option<JsonReturning>,
@@ -3250,12 +3309,18 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// `JSON_OBJECT` has distinct PostgreSQL productions for a non-empty item
-    /// list and for the empty/returning-only form. Keeping those paths distinct
-    /// prevents the expression-led entry parser from claiming the reserved
-    /// `RETURNING` token as an entry key.
+    /// `JSON_OBJECT` has distinct PostgreSQL productions for the legacy
+    /// function form, for a non-empty key/value list and for the
+    /// empty/returning-only form. Keeping those paths distinct prevents the
+    /// expression-led entry parser from claiming the reserved `RETURNING`
+    /// token as an entry key.
+    ///
+    /// The legacy and the key/value forms share an expression-led prefix of
+    /// any length. The LR parser parts them at the token after the first
+    /// expression, the way gram.y does.
     #[derive(Debug)]
     pub enum JsonObject {
+        Legacy(#[tok(JSON_OBJECT, LPAREN, this, RPAREN)] JsonObjectLegacyArgs),
         Entries(#[tok(JSON_OBJECT, LPAREN, this, RPAREN)] JsonObjectArgs),
         Returning(#[tok(JSON_OBJECT, LPAREN, this, RPAREN)] JsonReturning),
         #[tok(JSON_OBJECT, LPAREN, RPAREN)]
@@ -3443,26 +3508,11 @@ recursa::ast_node! {
 // (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// `EMPTY` or `ERROR` — the trigger of an `ON` behavior clause.
+    /// `‹behavior› ON EMPTY`.
     #[derive(Debug)]
-    pub enum EmptyOrError {
-        #[tok(EMPTY)]
-        Empty,
-        #[tok(ERROR)]
-        Error,
-    }
-}
-
-// Added in 17: research, PostgreSQL 17, "Queries and expressions"
-// (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
-#[cfg(feature = "since-pg17")]
-recursa::ast_node! {
-    /// `‹behavior› ON {EMPTY|ERROR}` clause.
-    #[derive(Debug)]
-    pub struct JsonOnBehavior {
+    pub struct JsonOnEmpty {
+        #[tok(this, ON, EMPTY)]
         pub behavior: JsonBehavior,
-        #[tok(ON, this)]
-        pub trigger: EmptyOrError,
     }
 }
 
@@ -3470,15 +3520,40 @@ recursa::ast_node! {
 // (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// gram.y `json_behavior_clause_opt`: `json_behavior ON EMPTY`,
-    /// `json_behavior ON ERROR`, or both. Each `JsonOnBehavior` names its own
-    /// trigger, so the pair is order-independent and the second slot is simply
-    /// optional; two independent optional slots would leave a single clause
-    /// ambiguous between them.
+    /// `‹behavior› ON ERROR`: gram.y `json_on_error_clause_opt` (REL_17_11
+    /// gram.y 16896), which `JSON_EXISTS` and `JSON_TABLE` take. They take no
+    /// `ON EMPTY` (issue #59).
     #[derive(Debug)]
-    pub struct JsonBehaviorClause {
-        pub first: JsonOnBehavior,
-        pub second: Option<JsonOnBehavior>,
+    pub struct JsonOnError {
+        #[tok(this, ON, ERROR)]
+        pub behavior: JsonBehavior,
+    }
+}
+
+// Added in 17: research, PostgreSQL 17, "Queries and expressions"
+// (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// gram.y `json_behavior_clause_opt` (REL_17_11 gram.y 16885-16894):
+    /// `json_behavior ON EMPTY`, `json_behavior ON ERROR`, or the two in
+    /// this order. So a second `ON EMPTY`, or `ON EMPTY` after `ON ERROR`, is
+    /// a syntax error (issue #59).
+    #[derive(Debug)]
+    pub enum JsonBehaviorClause {
+        Empty(JsonOnEmptyClause),
+        Error(JsonOnError),
+    }
+}
+
+// Added in 17: research, PostgreSQL 17, "Queries and expressions"
+// (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `‹behavior› ON EMPTY [‹behavior› ON ERROR]`.
+    #[derive(Debug)]
+    pub struct JsonOnEmptyClause {
+        pub on_empty: JsonOnEmpty,
+        pub on_error: Option<JsonOnError>,
     }
 }
 
@@ -3575,7 +3650,7 @@ recursa::ast_node! {
         #[tok(COMMA, this)]
         pub path: boxed!(Expr),
         pub passing: Option<JsonPassing>,
-        pub on_error: Option<JsonOnBehavior>,
+        pub on_error: Option<JsonOnError>,
     }
 }
 
@@ -3668,7 +3743,7 @@ recursa::ast_node! {
     /// Inner contents of `JSON_OBJECTAGG`.
     #[derive(Debug)]
     pub struct JsonObjectAggInner {
-        pub entry: JsonObjectAggEntry,
+        pub entry: JsonKeyValue,
         pub on_null: Option<JsonOnNull>,
         pub unique: Option<JsonUniqueKeys>,
         pub returning: Option<JsonReturning>,
@@ -4365,8 +4440,6 @@ recursa::ast_node! {
         XmlElement(boxed!(XmlElement)),
         /// `xmlforest(expr [AS alias], ...)`. Before `Func` for the same reason.
         XmlForest(XmlForest),
-        /// `xmlattributes(expr [AS alias], ...)`. Before `Func`.
-        XmlAttributes(XmlAttributes),
         /// `xmlpi(NAME ident [, content])`. Before `Func`.
         XmlPi(XmlPi),
         /// `XMLSERIALIZE({DOCUMENT|CONTENT} expr AS type [[NO] INDENT])`. Before `Func`.
@@ -4675,7 +4748,6 @@ recursa::ast_node! {
         CastFunc,
         XmlElement,
         XmlForest,
-        XmlAttributes,
         XmlPi,
         XmlSerialize,
         XmlParse,
@@ -4772,7 +4844,6 @@ recursa::ast_node! {
         CastFunc,
         XmlElement,
         XmlForest,
-        XmlAttributes,
         XmlPi,
         XmlSerialize,
         XmlParse,

@@ -96,7 +96,7 @@ recursa::ast_node! {
     #[tok(LPAREN, this, RPAREN)]
     pub struct ExecuteParams {
         #[sep(COMMA)]
-        pub params: zero_or_many!(Expr),
+        pub params: one_or_many!(Expr),
     }
 }
 

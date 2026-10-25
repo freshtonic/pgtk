@@ -45,7 +45,7 @@ recursa::ast_node! {
     #[tok(VALUES, this)]
     pub struct InsertValueRows {
         #[sep(COMMA)]
-        pub rows: zero_or_many!(ValueList),
+        pub rows: one_or_many!(ValueList),
     }
 }
 
@@ -301,6 +301,6 @@ recursa::ast_node! {
     pub struct ValueList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(Expr),
+        pub one_or_many!(Expr),
     );
 }

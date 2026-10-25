@@ -237,17 +237,14 @@ recursa::ast_node! {
     /// `ALTER SERVER name action` — Postgres' `AlterForeignServerStmt`
     /// plus the foreign-server branches of `RenameStmt` / `AlterOwnerStmt`.
     ///
-    /// `action` is `Option` for the same reason as [`AlterFdwBody`]: gram.y's
-    /// `AlterForeignServerStmt` requires at least one of `version` or
-    /// `options`, so the bare `ALTER SERVER name` is a syntax error in PG, but
-    /// the parser accepts it to avoid a
-    /// file-level parse error (the differential oracle stays
-    /// valid because both sides round-trip rejected).
+    /// gram.y `AlterForeignServerStmt` (REL_17_11 5519-5547) requires at
+    /// least one of `version` or `options`, so the bare `ALTER SERVER name`
+    /// is a syntax error (issue #56).
     #[derive(Debug)]
     pub struct AlterServerStmt {
         #[tok(ALTER, SERVER, this)]
         pub name: crate::tokens::ColId,
-        pub action: Option<AlterServerAction>,
+        pub action: AlterServerAction,
     }
 }
 
@@ -309,16 +306,13 @@ recursa::ast_node! {
     ///
     /// `gram.y` requires at least one of `fdw_options` or
     /// `alter_generic_options` (or one of the RENAME/OWNER branches),
-    /// so `ALTER FOREIGN DATA WRAPPER foo;` is a syntax error in PG.
-    /// The `action` slot is `Option` so the bare form parses into the
-    /// structured AST rather than surfacing as a
-    /// file-level parse error; the differential oracle still
-    /// passes because the round-tripped output is also PG-rejected.
+    /// so `ALTER FOREIGN DATA WRAPPER foo;` is a syntax error (REL_17_11
+    /// gram.y 5371-5389; issue #56).
     #[derive(Debug)]
     pub struct AlterFdwBody {
         #[tok(DATA, WRAPPER, this)]
         pub name: crate::tokens::ColId,
-        pub action: Option<AlterFdwAction>,
+        pub action: AlterFdwAction,
     }
 }
 
@@ -526,13 +520,14 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// Optional parenthesized partition-column option list on a foreign table.
-    /// This is a zero-or-more list to preserve the legacy `Seq0` cardinality.
+    /// gram.y `OptTypedTableElementList: '(' TypedTableElementList ')'`: with
+    /// the parentheses, the list is not empty (issue #56).
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct ForeignTablePartitionColumnOptions(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(crate::ast::ddl::table::PartitionColumnOption),
+        pub one_or_many!(crate::ast::ddl::table::PartitionColumnOption),
     );
 }
 
