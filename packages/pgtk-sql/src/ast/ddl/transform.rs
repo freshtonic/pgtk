@@ -61,8 +61,10 @@ recursa::ast_node! {
         #[presence(OR, REPLACE)]
         pub or_replace: bool,
         pub type_name: crate::ast::shared::names::TypeName,
+        /// gram.y `LANGUAGE name` (REL_17_11 gram.y 9136): a `ColId`, never
+        /// a string (issue #52).
         #[tok(LANGUAGE, this)]
-        pub lang_name: crate::ast::ddl::function::LanguageName,
+        pub lang_name: crate::tokens::ColId,
         pub elements: TransformElementList,
     }
 }
@@ -75,8 +77,10 @@ recursa::ast_node! {
         pub if_exists: Option<IfExists>,
         #[tok(FOR, this)]
         pub type_name: crate::ast::shared::names::TypeName,
+        /// gram.y `LANGUAGE name` (REL_17_11 gram.y 9168): a `ColId`, never
+        /// a string (issue #52).
         #[tok(LANGUAGE, this)]
-        pub lang_name: crate::ast::ddl::function::LanguageName,
+        pub lang_name: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
     }
 }

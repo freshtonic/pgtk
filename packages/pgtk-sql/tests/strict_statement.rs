@@ -563,3 +563,76 @@ fn function_calls_keep_variadic_and_typed_literal_boundaries() {
         );
     }
 }
+
+/// Asserts that each of `sources` lexes and that the strict parse rejects it.
+fn assert_rejects(sources: &[&str], why: &str) {
+    for source in sources {
+        let lexed = lex(source);
+        assert!(
+            lexed.errors().next().is_none(),
+            "lexical errors in {source:?}"
+        );
+        let mut input = lexed.input();
+        let parsed = Statement::parse(&mut input);
+        assert!(
+            parsed.is_err() || !input.is_eof(),
+            "{why}, but {source:?} parsed"
+        );
+    }
+}
+
+/// Asserts that each of `sources` parses as one complete statement.
+fn assert_accepts(sources: &[&str]) {
+    for source in sources {
+        let lexed = lex(source);
+        assert!(
+            lexed.errors().next().is_none(),
+            "lexical errors in {source:?}"
+        );
+        let mut input = lexed.input();
+        Statement::parse(&mut input)
+            .unwrap_or_else(|error| panic!("strict statement {source:?}: {error}"));
+        assert!(input.is_eof(), "strict parse left input for {source:?}");
+    }
+}
+
+/// gram.y `Sconst` is `SCONST` only: a bit string or a hex string is no
+/// `Sconst` (issue #52).
+#[test]
+fn a_bit_or_hex_string_is_no_sconst() {
+    assert_rejects(
+        &[
+            "CREATE DATABASE id A X''",
+            "ALTER USER A PASSWORD B''",
+            "CREATE ROLE A PASSWORD B''",
+            "CREATE ROLE A VALID UNTIL X''",
+            "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (host B'')",
+            "CREATE SUBSCRIPTION s CONNECTION X'' PUBLICATION p",
+            "COPY t FROM STDIN WITH DELIMITER B'1'",
+        ],
+        "a bit or hex string is no Sconst",
+    );
+    assert_accepts(&[
+        "CREATE ROLE A PASSWORD 'secret'",
+        "CREATE ROLE A PASSWORD E'secret'",
+        "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (host U&'h')",
+    ]);
+}
+
+/// The language of a transform is gram.y `name`, never a string (issue #52).
+#[test]
+fn the_language_of_a_transform_is_a_name() {
+    assert_rejects(
+        &[
+            "DROP TRANSFORM FOR A LANGUAGE ''",
+            "CREATE TRANSFORM FOR A LANGUAGE ''(TO SQL WITH FUNCTION A)",
+            "CREATE OR REPLACE TRANSFORM FOR A LANGUAGE ''(TO SQL WITH FUNCTION A)",
+        ],
+        "the language of a transform is a name",
+    );
+    assert_accepts(&[
+        "DROP TRANSFORM FOR A LANGUAGE plpgsql",
+        "CREATE TRANSFORM FOR A LANGUAGE plpgsql (TO SQL WITH FUNCTION A)",
+    ]);
+}
+
