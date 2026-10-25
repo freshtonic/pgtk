@@ -133,7 +133,7 @@ recursa::ast_node! {
     #[tok(WITH, LPAREN, this, RPAREN)]
     pub struct WithStorage {
         #[sep(COMMA)]
-        pub params: zero_or_many!(StorageParam),
+        pub params: one_or_many!(StorageParam),
     }
 }
 
@@ -143,7 +143,7 @@ recursa::ast_node! {
     #[tok(INCLUDE, LPAREN, this, RPAREN)]
     pub struct IncludeClause {
         #[sep(COMMA)]
-        pub columns: zero_or_many!(crate::tokens::ColId),
+        pub columns: one_or_many!(crate::tokens::ColId),
     }
 }
 
@@ -195,17 +195,15 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Parenthesized, comma-separated index-element list.
-    ///
-    /// The legacy grammar represented this as `Seq0`, so this wrapper retains a
-    /// zero-or-more [`Vec`] while applying the delimiters to the whole list rather
-    /// than to each element.
+    /// Parenthesized, comma-separated index-element list: gram.y
+    /// `'(' index_params ')'`, which is not empty (issue #56). The delimiters
+    /// wrap the whole list rather than each element.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct IndexElementList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(IndexElem),
+        pub one_or_many!(IndexElem),
     );
 }
 

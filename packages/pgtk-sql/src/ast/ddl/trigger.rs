@@ -141,7 +141,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(REFERENCING, this)]
     pub struct TriggerReferencing {
-        pub transitions: zero_or_many!(TriggerTransition),
+        pub transitions: one_or_many!(TriggerTransition),
     }
 }
 

@@ -113,7 +113,6 @@ use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
 // The issue of each group of known failures.
 const EREPORTS: u32 = 55;
-const LISTS: u32 = 56;
 const CREATE_FORMS: u32 = 57;
 const OTHER_FORMS: u32 = 58;
 const EXPRESSIONS: u32 = 59;
@@ -159,24 +158,19 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
     known(Oracle, EREPORTS, r#""#, r#"aggregates cannot have output arguments|duplicate trigger events|unrecognized row security option|CREATE SCHEMA IF NOT EXISTS cannot include schema elements|STDIN/STDOUT not allowed with PROGRAM|UNENCRYPTED PASSWORD is no longer supported|ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|column number must be in range|MATCH PARTIAL not yet implemented|unrecognized partitioning strategy|WITH TIES cannot be specified|WHERE clause not allowed with COPY TO|invalid publication object list|column specification not allowed for schema|invalid schema name|improper use of|unrecognized JSON encoding|type modifier cannot have parameter name|WITH CHECK OPTION not supported on recursive views|a column list with|WHERE clause not allowed for schema|unrecognized JSON|multiple ORDER BY clauses not allowed|frame start cannot be|frame end cannot be"#, "a statement that a gram.y action rejects with ereport()"),
     known(Oracle, EREPORTS, r#"UESCAPE"#, r#"invalid Unicode escape"#, "an invalid UESCAPE character"),
-    known(Oracle, LISTS, r#"^DROP [A-Z ]+?( IF EXISTS)?( CASCADE| RESTRICT)?$"#, r#"end of input"#, "DROP with no object"),
-    known(Oracle, LISTS, r#"TRANSFORM (IF EXISTS )?FOR "#, r#""(FROM|TO|,)""#, "a transform with more than one FROM SQL or TO SQL element"),
-    known(Oracle, LISTS, r#"^ALTER (SERVER|FOREIGN DATA WRAPPER) \S+$"#, r#"end of input"#, "ALTER SERVER or ALTER FOREIGN DATA WRAPPER with no action"),
-    known(Oracle, LISTS, r#"^DROP DATABASE .*\), \("#, r#"",""#, "DROP DATABASE with more than one option list"),
     known(Oracle, OTHER_FORMS, r#"^ALTER (STATISTICS|INDEX|MATERIALIZED VIEW|TABLE|VIEW|SEQUENCE|FOREIGN TABLE) "#, r#""(SCHEMA|DEPENDS|RENAME|OWNER|SET|ATTACH)""#, "an ALTER action that PostgreSQL rejects for this object or with IF EXISTS"),
     known(Oracle, CREATE_FORMS, r#"(TEMP|TEMPORARY) UNLOGGED"#, r#""UNLOGGED""#, "TEMP and UNLOGGED together"),
     known(Oracle, OTHER_FORMS, r#"^EXPLAIN(\(.*?\))? CREATE (TEMP |TEMPORARY |UNLOGGED )?TABLE "#, r#""[^)]|end of input"#, "EXPLAIN of a CREATE TABLE that is not CREATE TABLE AS"),
+    known(Oracle, OTHER_FORMS, r#"^EXPLAIN(\(.*?\))? CREATE (TEMP |TEMPORARY |UNLOGGED )?TABLE (IF NOT EXISTS )?[\w.]+\(\)"#, r#""\)""#, "EXPLAIN of a CREATE TABLE with an empty column list"),
     known(Oracle, CREATE_FORMS, r#"USING [a-z_]+( OF|\()"#, r#""(OF|\(|USING)""#, "the clauses of CREATE TABLE in an order PostgreSQL rejects"),
     known(Oracle, CREATE_FORMS, r#"INDEX (CONCURRENTLY )?IF NOT EXISTS ON"#, r#""ON""#, "CREATE INDEX IF NOT EXISTS with no index name"),
     known(Oracle, OTHER_FORMS, r#"^SECURITY LABEL (FOR \S+ )?ON (OPERATOR|TRIGGER|POLICY|CONSTRAINT|RULE|CAST|COLLATION|CONVERSION|TEXT SEARCH|STATISTICS|TRANSFORM|ACCESS METHOD|EXTENSION|FOREIGN DATA|SERVER|OPERATOR CLASS|OPERATOR FAMILY|USER MAPPING|DEFAULT)"#, r#""#, "SECURITY LABEL on an object type that PostgreSQL rejects"),
     known(Oracle, OTHER_FORMS, r#"ON PROCEDURES"#, r#""PROCEDURES""#, "ALTER DEFAULT PRIVILEGES ON PROCEDURES"),
     known(Oracle, OTHER_FORMS, r#"^(EXPLAIN )?(VACUUM|CLUSTER|ANALYZE|ANALYSE)"#, r#""(FULL|FREEZE|VERBOSE|ANALYZE|\(|ON)""#, "parenthesized options mixed with the old option keywords"),
     known(Oracle, OTHER_FORMS, r#"DEFAULT VALUES"#, r#""DEFAULT""#, "DEFAULT VALUES with a column list or OVERRIDING"),
-    known(Oracle, LISTS, r#"UPDATE .* SET( |$|\)|;)"#, r#""(RETURNING|WHERE|FROM|\)|;)"|end of input"#, "UPDATE with no SET item"),
     known(Oracle, OTHER_FORMS, r#"TABLES IN SCHEMA \w+\("#, r#""\(""#, "a column list on TABLES IN SCHEMA"),
     known(Oracle, CREATE_FORMS, r#"(MODULUS|REMAINDER) ?[^0-9 ]"#, r#""#, "a hash partition bound that is not an integer"),
     known(Oracle, CREATE_FORMS, r#"PARTITION OF"#, r#""(SERVER|ON|TABLESPACE|DEFAULT)"|end of input"#, "PARTITION OF with no partition bound, or with both a bound and DEFAULT"),
-    known(Oracle, LISTS, r#"REFERENCING (FOR|EXECUTE|WHEN)"#, r#""(FOR|EXECUTE|WHEN)""#, "REFERENCING with no transition relation"),
     known(Oracle, CREATE_FORMS, r#"VIEW .*USING"#, r#""USING""#, "a view with an access method"),
     known(Oracle, CREATE_FORMS, r#"TABLE .*(USING \S+ PARTITION OF|PARTITION OF .* USING|OF )"#, r#""(PARTITION|USING|WITH|LIKE|OF)""#, "the clauses of CREATE TABLE in an order PostgreSQL rejects"),
     known(Oracle, CREATE_FORMS, r#"^CREATE STATISTICS IF NOT EXISTS( ON|\()"#, r#""(\(|ON)""#, "CREATE STATISTICS IF NOT EXISTS with no name"),
@@ -197,8 +191,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, EXPRESSIONS, r#"JSON_OBJECT\("#, r#""(RETURNING|NULL|ABSENT|WITH|WITHOUT)""#, "RETURNING after the old argument form of JSON_OBJECT"),
     known(Oracle, EXPRESSIONS, r#"(INDEX|EXCLUDE)\b.*[\w)] [a-z_][a-z_. ]*\(\s?[a-z_]+ = "#, r#""#, "an expression as an operator class parameter of an index"),
     known(Oracle, OTHER_FORMS, r#"ON CONFLICT"#, r#""(\)|WHERE)""#, "ON CONFLICT with an empty target, or WHERE with no column target"),
-    known(Oracle, LISTS, r#"SET\(\s?\) ="#, r#""\)""#, "UPDATE SET () = ... with no column"),
-    known(Oracle, LISTS, r#"CYCLE SET"#, r#""#, "CYCLE with no column list"),
     known(Oracle, EXPRESSIONS, r#"(XMLTABLE|XMLEXISTS)\("#, r#""#, "an operator expression where XMLTABLE or XMLEXISTS wants `c_expr`"),
     known(Oracle, OTHER_FORMS, r#"^ALTER TYPE .* SET\("#, r#""(\)|,)""#, "an ALTER TYPE SET option with no value"),
     known(Oracle, CREATE_FORMS, r#"INTO (UNLOGGED |TEMP |TEMPORARY )?[\w.][\w. ]* USING"#, r#""USING""#, "SELECT INTO with an access method"),
@@ -207,8 +199,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, EXPRESSIONS, r#"JSON_TABLE\("#, r#""#, "a JSON_TABLE path that is not a string constant"),
     known(Oracle, OTHER_FORMS, r#"^ALTER "#, r#"",""#, "a list of ALTER actions where PostgreSQL allows one"),
     known(Oracle, CREATE_FORMS, r#"RECURSIVE VIEW .* WITH"#, r#""WITH""#, "a recursive view with options"),
-    known(Oracle, LISTS, r#"AGGREGATE [^(]*\(.*\)$"#, r#"end of input"#, "CREATE AGGREGATE with no definition list"),
-    known(Oracle, LISTS, r#"\(\)"#, r#""\)""#, "an empty parenthesized list where PostgreSQL wants an item"),
 ];
 
 struct Failure {

@@ -191,7 +191,7 @@ recursa::ast_node! {
     pub struct DropAggregateStmt {
         pub if_exists: Option<IfExists>,
         #[sep(COMMA)]
-        pub targets: zero_or_many!(DropAggregateTarget),
+        pub targets: one_or_many!(DropAggregateTarget),
         pub behavior: Option<DropBehavior>,
     }
 }

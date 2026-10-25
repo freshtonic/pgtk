@@ -57,7 +57,7 @@ recursa::ast_node! {
     pub struct SetTargetList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(SetTarget),
+        pub one_or_many!(SetTarget),
     );
 }
 
@@ -151,7 +151,7 @@ recursa::ast_node! {
         #[sep(COMMA)]
         #[pretty(indent)]
         #[deref]
-        pub zero_or_many!(SetAssignment),
+        pub one_or_many!(SetAssignment),
     );
 }
 

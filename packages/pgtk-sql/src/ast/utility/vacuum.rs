@@ -26,7 +26,7 @@ recursa::ast_node! {
     #[tok(LPAREN, this, RPAREN)]
     pub struct VacuumOptions {
         #[sep(COMMA)]
-        pub list: zero_or_many!(VacuumOption),
+        pub list: one_or_many!(VacuumOption),
     }
 }
 

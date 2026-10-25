@@ -56,7 +56,7 @@ recursa::ast_node! {
     #[tok(SET, LPAREN, this, RPAREN)]
     pub struct AlterTablespaceSetAction {
         #[sep(COMMA)]
-        pub params: zero_or_many!(StorageParam),
+        pub params: one_or_many!(StorageParam),
     }
 }
 
@@ -70,7 +70,7 @@ recursa::ast_node! {
     #[tok(RESET, LPAREN, this, RPAREN)]
     pub struct AlterTablespaceResetAction {
         #[sep(COMMA)]
-        pub params: zero_or_many!(StorageParam),
+        pub params: one_or_many!(StorageParam),
     }
 }
 

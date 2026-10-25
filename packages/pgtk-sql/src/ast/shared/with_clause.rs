@@ -68,7 +68,7 @@ recursa::ast_node! {
     #[tok(CYCLE, this)]
     pub struct CycleClause {
         #[sep(COMMA)]
-        pub columns: zero_or_many!(literal::AliasName),
+        pub columns: one_or_many!(literal::AliasName),
         #[tok(SET, this)]
         pub set_column: CycleSetColumn,
         #[tok(USING, this)]

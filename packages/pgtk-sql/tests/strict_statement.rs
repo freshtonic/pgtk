@@ -871,3 +871,78 @@ fn type_names_keep_the_forms_of_gram_y() {
         "SELECT INTERVAL '' YEAR TO MONTH",
     ]);
 }
+
+/// The non-empty lists and the one-time clauses of gram.y (issue #56).
+#[test]
+fn lists_and_clauses_keep_the_cardinality_of_gram_y() {
+    assert_rejects(
+        &[
+            // A list that gram.y has as non-empty.
+            "DROP AGGREGATE",
+            "DROP AGGREGATE IF EXISTS CASCADE",
+            "UPDATE t SET",
+            "UPDATE t SET () = (1)",
+            "CREATE TRIGGER t AFTER INSERT ON x REFERENCING FOR ROW EXECUTE FUNCTION f()",
+            "WITH RECURSIVE a AS (SELECT 1) CYCLE SET c USING p SELECT 1",
+            "VACUUM ()",
+            "CLUSTER ()",
+            "REINDEX () TABLE t",
+            "EXECUTE p()",
+            "CREATE INDEX ON t ()",
+            "CREATE INDEX ON t USING m ()",
+            "CREATE INDEX ON t (a) INCLUDE ()",
+            "CREATE INDEX ON t (a) WITH ()",
+            "CREATE TABLESPACE s LOCATION '' WITH ()",
+            "ALTER TABLESPACE s SET ()",
+            "ALTER TABLESPACE s RESET ()",
+            "INSERT INTO t VALUES ()",
+            "VALUES ()",
+            "SELECT DISTINCT ON () 1",
+            "SELECT 1 GROUP BY GROUPING SETS ()",
+            "SELECT * FROM ROWS FROM (f() AS ())",
+            "CREATE TABLE t (a int, PRIMARY KEY ())",
+            "CREATE TABLE t (a int, UNIQUE ())",
+            "CREATE TABLE t (a int, FOREIGN KEY () REFERENCES u)",
+            "CREATE TABLE t (a int, PRIMARY KEY (a) INCLUDE ())",
+            "CREATE TABLE t (a int) WITH ()",
+            "CREATE TABLE t PARTITION OF u () DEFAULT",
+            "CREATE TABLE t OF u ()",
+            "CREATE TABLE t (a int) PARTITION BY RANGE ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES IN ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES FROM () TO (1)",
+            "CREATE TABLE t PARTITION OF u FOR VALUES FROM (1) TO ()",
+            "CREATE TABLE t PARTITION OF u FOR VALUES WITH ()",
+            "CREATE TABLE t () INHERITS ()",
+            "CREATE FOREIGN TABLE t PARTITION OF u () DEFAULT SERVER s",
+            // A statement that needs an action.
+            "ALTER SERVER s",
+            "ALTER FOREIGN DATA WRAPPER w",
+            // One option list, one FROM SQL and one TO SQL.
+            "DROP DATABASE d (FORCE), (FORCE)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f, TO SQL WITH FUNCTION f)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, FROM SQL WITH FUNCTION f)",
+            "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, TO SQL WITH FUNCTION f, \
+             TO SQL WITH FUNCTION f)",
+            // `CREATE AGGREGATE` needs its definition list.
+            "CREATE AGGREGATE a(*)",
+        ],
+        "gram.y wants another number of items",
+    );
+    assert_accepts(&[
+        "CREATE TABLE t ()",
+        "CREATE FOREIGN TABLE t () SERVER s",
+        "CREATE TYPE t AS ()",
+        "CREATE TYPE t AS ENUM ()",
+        "CREATE RULE r AS ON INSERT TO t DO ()",
+        "SELECT 1 GROUP BY ()",
+        "SELECT 1 GROUP BY GROUPING SETS (())",
+        "CREATE TRIGGER t AFTER INSERT ON x EXECUTE FUNCTION f()",
+        "DROP DATABASE d (FORCE)",
+        "DROP DATABASE d WITH (FORCE)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f, FROM SQL WITH FUNCTION g)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (FROM SQL WITH FUNCTION f, TO SQL WITH FUNCTION g)",
+        "CREATE TRANSFORM FOR int LANGUAGE l (TO SQL WITH FUNCTION f)",
+        "ALTER SERVER s VERSION '2'",
+        "ALTER FOREIGN DATA WRAPPER w NO VALIDATOR",
+    ]);
+}
