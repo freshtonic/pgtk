@@ -8,7 +8,7 @@ mod tests {
     };
     // Added in 16: research, PostgreSQL 16, "Queries and expressions".
     #[cfg(feature = "since-pg16")]
-    use crate::ast::shared::expr::{JsonObject, JsonObjectEntry};
+    use crate::ast::shared::expr::{JsonKeyValue, JsonObject, JsonObjectLegacyArg};
     use crate::ast::dml::values::{SelectClause, Subquery};
 
     /// Parse `src` as an `Expr` through the logos lex pass.
@@ -3803,10 +3803,10 @@ mod tests {
         let JsonObject::Entries(args) = object.as_ref() else {
             panic!("expected the entry form");
         };
-        let JsonObjectEntry::Value(entry) = args.entries.first() else {
-            panic!("expected an expression-led entry");
-        };
-        assert!(entry.value.is_some(), "expected a key/value entry");
+        assert!(
+            matches!(args.entries.first(), JsonKeyValue::Colon(_)),
+            "expected a key/value entry",
+        );
         // The typed literal keeps its keyword-named spelling, which is
         // gram.y's `ConstTypename Sconst` and takes a string, never a colon.
         assert!(matches!(
@@ -4678,11 +4678,11 @@ mod tests {
         let Expr::JsonObject(object) = parsed.ast() else {
             panic!("expected the SQL/JSON constructor node");
         };
-        let JsonObject::Entries(args) = object.as_ref() else {
-            panic!("expected the entry form");
+        let JsonObject::Legacy(args) = object.as_ref() else {
+            panic!("expected the legacy function form");
         };
         assert!(
-            matches!(args.entries.first(), JsonObjectEntry::Named(_)),
+            matches!(args.args.first(), JsonObjectLegacyArg::Named(_)),
             "expected a named argument",
         );
         crate::ast::test_support::check_statement_forms(
