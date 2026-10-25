@@ -3074,10 +3074,11 @@ recursa::ast_node! {
     pub struct PositionInner {
         // gram.y `position_list: b_expr IN_P b_expr`: the restricted
         // expression stops the needle before `IN`, so `IN` can only be the
-        // delimiter here.
+        // delimiter here. The haystack is a `b_expr` too, so `NOT`, `IS`
+        // and the other boolean forms need parentheses there (issue #60).
         pub needle: boxed!(BExpr),
         #[tok(IN, this)]
-        pub haystack: boxed!(Expr),
+        pub haystack: boxed!(BExpr),
     }
 }
 
