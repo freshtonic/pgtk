@@ -114,7 +114,6 @@ use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 // The issue of each group of known failures.
 const NAMES: u32 = 50;
 const TYPES: u32 = 51;
-const STRINGS: u32 = 52;
 const ROLES: u32 = 53;
 const SIGNATURES: u32 = 54;
 const EREPORTS: u32 = 55;
@@ -171,8 +170,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, TYPES, r#"\w\(\)( ARRAY|\[)"#, r#""\)""#, "a type name with an empty type modifier list `()`"),
     known(Oracle, TYPES, r#"(BIT|VARYING|CHAR|CHARACTER|VARCHAR|NCHAR|TEXT|BOOL|BOOLEAN|INT|INTEGER|SMALLINT|BIGINT|REAL|FLOAT|DEC|DECIMAL|NUMERIC|SERIAL|UNKNOWN|JSON|INTERVAL|TIME|TIMESTAMP|PRECISION)\(\)"#, r#""\)""#, "a type name with an empty type modifier list `()`"),
     known(Oracle, LISTS, r#"^DROP [A-Z ]+?( IF EXISTS)?( CASCADE| RESTRICT)?$"#, r#"end of input"#, "DROP with no object"),
-    known(Oracle, STRINGS, r#"[XB]''"#, r#""[XB]''""#, "a bit or hex string where PostgreSQL wants `Sconst`"),
-    known(Oracle, STRINGS, r#"TRANSFORM (IF EXISTS )?FOR .* LANGUAGE ''"#, r#""''""#, "a string as the language name of a transform"),
     known(Oracle, LISTS, r#"TRANSFORM (IF EXISTS )?FOR "#, r#""(FROM|TO|,)""#, "a transform with more than one FROM SQL or TO SQL element"),
     known(Oracle, SIGNATURES, r#"^CREATE EVENT TRIGGER .* EXECUTE (PROCEDURE|FUNCTION) .*\(.+\)$"#, r#""#, "arguments to the function of an event trigger"),
     known(Oracle, SIGNATURES, r#"NONE"#, r#""NONE""#, "`NONE` in an operator signature where PostgreSQL rejects it"),
