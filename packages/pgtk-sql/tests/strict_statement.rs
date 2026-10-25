@@ -1400,3 +1400,84 @@ fn a_json_table_exists_column_has_no_wrapper_or_format() {
         "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a jsonb FORMAT JSON PATH '$.a' WITH WRAPPER KEEP QUOTES NULL ON EMPTY))",
     ]);
 }
+
+/// gram.y `a_expr: row OVERLAPS row` takes a row on each side: `ROW(...)` or
+/// `(a, b)` (issue #59). A row takes no indirection: `(a, b).x` is a syntax
+/// error, because only `'(' a_expr ')' opt_indirection` has one.
+#[test]
+fn overlaps_takes_a_row_on_each_side() {
+    assert_rejects(
+        &[
+            "SELECT a OVERLAPS (3, 4) FROM t",
+            "SELECT (a) OVERLAPS (3, 4) FROM t",
+            "SELECT (1, 2) OVERLAPS (3)",
+            "SELECT ARRAY[] OVERLAPS (1, 2)",
+            "SELECT (1, 2) OVERLAPS ((3, 4))",
+            "SELECT (1, 2) OVERLAPS (3, 4) OVERLAPS (5, 6)",
+            "DELETE FROM t WHERE E'' OVERLAPS ARRAY[]",
+            "SELECT (1, 2).x",
+        ],
+        "an operand of OVERLAPS is a row",
+    );
+    assert_accepts(&[
+        "SELECT (1, 2) OVERLAPS (3, 4)",
+        "SELECT ROW(1, 2) OVERLAPS ROW(3, 4)",
+        "SELECT (1, 2) OVERLAPS ROW(3, 4)",
+        "SELECT x < (1, 2) OVERLAPS (3, 4) FROM t",
+        "SELECT NOT (1, 2) OVERLAPS (3, 4) AND true",
+        "SELECT * FROM t WHERE (a, b) OVERLAPS (c, d) IS TRUE",
+        "SELECT (1, 2, 3), ((1, 2)), ((1, 2)).f1",
+        "SELECT (a).x, (a).* FROM t",
+    ]);
+}
+
+/// gram.y `func_name: ColId indirection` and `check_func_name`: a function
+/// name or the type name of a typed literal is dotted attribute names only,
+/// never a `.*` or a subscript (issue #59). `check_indirection` refuses a `.*`
+/// that is not the last element (issue #55).
+#[test]
+fn a_qualified_name_keeps_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            "EXECUTE p(t.* ())",
+            "SELECT t.*() FROM t",
+            "SELECT t.a.*(1) FROM t",
+            "SELECT t.a[1](2) FROM t",
+            "SELECT t.a[1] 'x' FROM t",
+            "SELECT t.a[1](2) 'x' FROM t",
+            "SELECT t.*.a FROM t",
+            "SELECT t.*.* FROM t",
+            "SELECT t.a[1].*.b FROM t",
+            "SELECT t.a.*[1] FROM t",
+        ],
+        "gram.y refuses this qualified name",
+    );
+    assert_accepts(&[
+        "SELECT pg_catalog.int4 '1'",
+        "SELECT pg_catalog.numeric(10, 2) '1'",
+        "SELECT s.f(1), s.f(1) 'x'",
+        "SELECT t.*, t.a.*, t.a[1].*, t.a[1].b, t.a[1:2][3].c.d FROM t",
+    ]);
+}
+
+/// The path of `JSON_TABLE` is a string constant, in parentheses or not: the
+/// gram.y action refuses each other value (issue #59).
+#[cfg(feature = "since-pg17")]
+#[test]
+fn the_path_of_json_table_is_a_string_constant() {
+    assert_rejects(
+        &[
+            "SELECT * FROM JSON_TABLE(j, p COLUMNS (a int))",
+            "SELECT * FROM JSON_TABLE(j, '$' || '' COLUMNS (a int))",
+            "SELECT * FROM JSON_TABLE(j, B'1' COLUMNS (a int))",
+            "SELECT * FROM JSON_TABLE(j, text '$' COLUMNS (a int))",
+        ],
+        "the path is a string constant",
+    );
+    assert_accepts(&[
+        "SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int))",
+        "SELECT * FROM JSON_TABLE(j, E'$' COLUMNS (a int))",
+        "SELECT * FROM JSON_TABLE(j, $p$$$p$ COLUMNS (a int))",
+        "SELECT * FROM JSON_TABLE(j, (('$')) AS p COLUMNS (a int))",
+    ]);
+}

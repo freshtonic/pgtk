@@ -3,13 +3,13 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 380,
+    "skipped": 381,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 49,
+    "skipped_parse_failed": 50,
     "skipped_aborted_transaction": 206,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
-    "agree": 41730,
+    "agree": 41729,
     "known_divergence": 792,
     "disagree": 0
   },
@@ -2116,13 +2116,13 @@
     },
     "sqljson_jsontable.sql": {
       "items": 117,
-      "skipped": 3,
+      "skipped": 4,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 3,
+      "skipped_parse_failed": 4,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
-      "agree": 114,
+      "agree": 113,
       "known_divergence": 0,
       "disagree": 0
     },
