@@ -114,7 +114,6 @@ use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 // The issue of each group of known failures.
 const NAMES: u32 = 50;
 const TYPES: u32 = 51;
-const ROLES: u32 = 53;
 const SIGNATURES: u32 = 54;
 const EREPORTS: u32 = 55;
 const LISTS: u32 = 56;
@@ -163,7 +162,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
     known(Oracle, NAMES, r#""#, r#"improper qualified name"#, "a qualified name with more dotted parts than PostgreSQL allows"),
     known(Oracle, NAMES, r#""#, r#"at or near "\."$"#, "a qualified name where PostgreSQL wants a plain name"),
-    known(Oracle, ROLES, r#""#, r#"(CURRENT_USER|CURRENT_ROLE|SESSION_USER|USER) cannot be used as a role name here"#, "CURRENT_USER, CURRENT_ROLE or SESSION_USER where a role name must be a plain name"),
     known(Oracle, EREPORTS, r#""#, r#"aggregates cannot have output arguments|duplicate trigger events|unrecognized row security option|CREATE SCHEMA IF NOT EXISTS cannot include schema elements|STDIN/STDOUT not allowed with PROGRAM|UNENCRYPTED PASSWORD is no longer supported|ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|column number must be in range|MATCH PARTIAL not yet implemented|unrecognized partitioning strategy|WITH TIES cannot be specified|WHERE clause not allowed with COPY TO|invalid publication object list|column specification not allowed for schema|invalid schema name|improper use of|unrecognized JSON encoding|type modifier cannot have parameter name|WITH CHECK OPTION not supported on recursive views|a column list with|WHERE clause not allowed for schema|unrecognized JSON|multiple ORDER BY clauses not allowed|frame start cannot be|frame end cannot be"#, "a statement that a gram.y action rejects with ereport()"),
     known(Oracle, EREPORTS, r#"UESCAPE"#, r#"invalid Unicode escape"#, "an invalid UESCAPE character"),
     known(Oracle, TYPES, r#"\] ARRAY"#, r#""(ARRAY|\[|\])""#, "a type name that mixes `[n]` bounds and `ARRAY`"),
@@ -173,10 +171,8 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, LISTS, r#"TRANSFORM (IF EXISTS )?FOR "#, r#""(FROM|TO|,)""#, "a transform with more than one FROM SQL or TO SQL element"),
     known(Oracle, SIGNATURES, r#"^CREATE EVENT TRIGGER .* EXECUTE (PROCEDURE|FUNCTION) .*\(.+\)$"#, r#""#, "arguments to the function of an event trigger"),
     known(Oracle, SIGNATURES, r#"NONE"#, r#""NONE""#, "`NONE` in an operator signature where PostgreSQL rejects it"),
-    known(Oracle, ROLES, r#"^ALTER (ROLE|USER|GROUP) ALL "#, r#""#, "`ALTER ROLE ALL` with an action other than SET or RESET"),
     known(Oracle, LISTS, r#"^ALTER (SERVER|FOREIGN DATA WRAPPER) \S+$"#, r#"end of input"#, "ALTER SERVER or ALTER FOREIGN DATA WRAPPER with no action"),
     known(Oracle, LISTS, r#"^DROP DATABASE .*\), \("#, r#"",""#, "DROP DATABASE with more than one option list"),
-    known(Oracle, ROLES, r#"^(GRANT|REVOKE)( \w+ OPTION FOR)? ALL"#, r#""(TO|FROM|ALL)""#, "`ALL` in a GRANT or REVOKE of a role"),
     known(Oracle, OTHER_FORMS, r#"^ALTER (STATISTICS|INDEX|MATERIALIZED VIEW|TABLE|VIEW|SEQUENCE|FOREIGN TABLE) "#, r#""(SCHEMA|DEPENDS|RENAME|OWNER|SET|ATTACH)""#, "an ALTER action that PostgreSQL rejects for this object or with IF EXISTS"),
     known(Oracle, CREATE_FORMS, r#"(TEMP|TEMPORARY) UNLOGGED"#, r#""UNLOGGED""#, "TEMP and UNLOGGED together"),
     known(Oracle, OTHER_FORMS, r#"^EXPLAIN(\(.*?\))? CREATE (TEMP |TEMPORARY |UNLOGGED )?TABLE "#, r#""[^)]|end of input"#, "EXPLAIN of a CREATE TABLE that is not CREATE TABLE AS"),
@@ -194,14 +190,11 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, TYPES, r#"% TYPE"#, r#""%""#, "`name%TYPE` without a dotted column reference"),
     known(Oracle, SIGNATURES, r#"AGGREGATE .*\w+ = "#, r#""(=|\()""#, "a default value in an aggregate signature"),
     known(Oracle, TYPES, r#"(SEQUENCE|IDENTITY|XMLSERIALIZE).*AS "#, r#""(\[|ARRAY)""#, "an array type where PostgreSQL wants `SimpleTypename`"),
-    known(Oracle, ROLES, r#"ROLE DEFAULT"#, r#""DEFAULT""#, "`SET ROLE DEFAULT` without TO or ="),
     known(Oracle, SIGNATURES, r#"^(DROP|ALTER|COMMENT ON|SECURITY LABEL|GRANT|REVOKE)|WITH FUNCTION|FUNCTION \d+|ON (FUNCTION|PROCEDURE|ROUTINE) "#, r#""(DEFAULT|=)""#, "a default value in a function signature that has no defaults"),
-    known(Oracle, ROLES, r#"ENCRYPTED PASSWORD NULL"#, r#""NULL""#, "`ENCRYPTED PASSWORD NULL`"),
     known(Oracle, CREATE_FORMS, r#"VIEW .*USING"#, r#""USING""#, "a view with an access method"),
     known(Oracle, CREATE_FORMS, r#"TABLE .*(USING \S+ PARTITION OF|PARTITION OF .* USING|OF )"#, r#""(PARTITION|USING|WITH|LIKE|OF)""#, "the clauses of CREATE TABLE in an order PostgreSQL rejects"),
     known(Oracle, CREATE_FORMS, r#"^CREATE STATISTICS IF NOT EXISTS( ON|\()"#, r#""(\(|ON)""#, "CREATE STATISTICS IF NOT EXISTS with no name"),
     known(Oracle, OTHER_FORMS, r#"^ALTER (INDEX|TABLE|FOREIGN TABLE) .* ALTER( COLUMN)? ?[-+]? ?\d"#, r#""(\(|\+|-|[A-Z]+)""#, "a signed column number, or an action that PostgreSQL rejects for a column number"),
-    known(Oracle, ROLES, r#"^CREATE SCHEMA .* GRANT "#, r#""TO""#, "a GRANT of a role as a CREATE SCHEMA element"),
     known(Oracle, TYPES, r#"INTERVAL\(\d+\) '[^']*' (YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)"#, r#""(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)""#, "`INTERVAL(p) '...'` with interval fields"),
     known(Oracle, EXPRESSIONS, r#"WHERE CURRENT OF"#, r#""(OF|WHERE)""#, "`CURRENT OF` outside UPDATE and DELETE"),
     known(Oracle, CREATE_FORMS, r#"RECURSIVE VIEW [a-z_. ]+ AS"#, r#""AS""#, "a recursive view with no column list"),

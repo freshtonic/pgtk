@@ -148,11 +148,13 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Role target in `SET ROLE`: role name, `NONE`, or `DEFAULT`.
+    /// Role target in `SET ROLE`: gram.y `set_rest_more: ROLE
+    /// NonReservedWord_or_Sconst` (REL_17_11 gram.y 1752). `NONE` is a role
+    /// name here. `DEFAULT` is a reserved keyword and no role name, so `SET
+    /// ROLE DEFAULT` is a syntax error; only `SET ROLE TO DEFAULT` and `SET
+    /// ROLE = DEFAULT` parse, through `generic_set` (issue #53).
     #[derive(Debug)]
     pub enum SetRoleTarget {
-        #[tok(DEFAULT)]
-        Default,
         Role(crate::tokens::ColId),
         String(literal::StringLit),
     }

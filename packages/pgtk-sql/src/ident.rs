@@ -122,6 +122,33 @@ pub fn fold_name(raw: &str) -> Option<Cow<'_, str>> {
     fold_identifier(raw).ok().map(|folded| folded.name)
 }
 
+/// Fold the source text of one gram.y `RoleSpec` word for the declared
+/// classification of `RoleId` and `RoleSpec` (REL_17_11 gram.y 17305-17385).
+///
+/// The actions read two things: the keyword of a pseudo-role
+/// (`CURRENT_ROLE`, `CURRENT_USER`, `SESSION_USER`), and the names `public`
+/// and `none`, which they compare as strings. So an unquoted pseudo-role
+/// keyword folds to its upper-case spelling, a name that folds to `public` or
+/// `none` folds to that name, and every other name folds to the empty text.
+/// No identifier folds to the empty text, and a quoted `"CURRENT_USER"` is a
+/// plain name, so the classes do not overlap.
+///
+/// Returns `None` when the scanner rejects the text.
+pub fn fold_role_name(raw: &str) -> Option<&'static str> {
+    const PSEUDO_ROLES: [&str; 3] = ["CURRENT_ROLE", "CURRENT_USER", "SESSION_USER"];
+    if let Some(keyword) = PSEUDO_ROLES
+        .into_iter()
+        .find(|keyword| raw.eq_ignore_ascii_case(keyword))
+    {
+        return Some(keyword);
+    }
+    Some(match fold_name(raw)?.as_ref() {
+        "public" => "public",
+        "none" => "none",
+        _ => "",
+    })
+}
+
 /// Fold a keyword that stands in an identifier position: its lowercase
 /// spelling, which is the text `ScanKeywordLookup` hands the grammar.
 ///

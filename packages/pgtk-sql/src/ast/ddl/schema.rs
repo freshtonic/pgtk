@@ -7,7 +7,7 @@ use crate::ast::shared::expr::*;
 use crate::ast::shared::flags::*;
 use crate::ast::shared::names::*;
 use crate::ast::shared::numbers::*;
-use crate::ast::utility::grant::GrantStmt;
+use crate::ast::utility::grant::GrantPrivilegeStmt;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
@@ -59,7 +59,7 @@ recursa::ast_node! {
     /// | SEQUENCE | TRIGGER }` second-token.
     #[derive(Debug)]
     pub enum SchemaElement {
-        Grant(GrantStmt),
+        Grant(GrantPrivilegeStmt),
         CreateView(boxed!(crate::ast::ddl::view::CreateViewStmt)),
         CreateTable(boxed!(crate::ast::ddl::table::CreateTableStmt)),
         CreateIndex(boxed!(crate::ast::ddl::index::CreateIndexStmt)),

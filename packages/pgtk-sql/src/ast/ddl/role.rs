@@ -182,34 +182,35 @@ recursa::ast_node! {
     pub enum PasswordValue {
         #[tok(NULL)]
         Null,
-        /// Any string-constant form: plain, `E'…'`, `U&'…'`, `B'…'`, `X'…'`.
+        /// An `Sconst`: plain, `E'…'` or `U&'…'`.
         String(CopySconst),
     }
 }
 
 recursa::ast_node! {
-    /// `[ENCRYPTED] PASSWORD value` — Postgres' role-attribute PASSWORD clause.
-    /// `ENCRYPTED` is a backward-compat noise word (passwords are always
-    /// encrypted today). The `UNENCRYPTED PASSWORD` form is also recognised by
-    /// PG's grammar but raises an immediate error, so we accept it and round-
-    /// trip it byte-faithfully.
+    /// `[ENCRYPTED | UNENCRYPTED] PASSWORD value` — the PASSWORD branches of
+    /// Postgres' `AlterOptRoleElem` (REL_17_11 gram.y 1209-1230):
+    ///
+    /// ```text
+    /// PASSWORD Sconst | PASSWORD NULL_P
+    /// | ENCRYPTED PASSWORD Sconst | UNENCRYPTED PASSWORD Sconst
+    /// ```
+    ///
+    /// Only the plain form takes `NULL`, so `ENCRYPTED PASSWORD NULL` is a
+    /// syntax error (issue #53). `ENCRYPTED` is a backward-compat noise word
+    /// (passwords are always encrypted today). The action of the
+    /// `UNENCRYPTED PASSWORD` form raises an error; pgtk-sql accepts the form
+    /// and round-trips it byte-faithfully.
+    ///
+    /// Variant ordering: the three forms part on their first keyword.
     #[derive(Debug)]
-    pub struct PasswordOption {
-        /// Optional `ENCRYPTED` or `UNENCRYPTED` modifier.
-        pub modifier: Option<PasswordModifier>,
-        #[tok(PASSWORD, this)]
-        pub value: PasswordValue,
-    }
-}
-
-recursa::ast_node! {
-    /// `ENCRYPTED | UNENCRYPTED` — the backward-compat password modifier.
-    #[derive(Debug)]
-    pub enum PasswordModifier {
-        #[tok(ENCRYPTED)]
-        Encrypted,
-        #[tok(UNENCRYPTED)]
-        Unencrypted,
+    pub enum PasswordOption {
+        /// `PASSWORD { Sconst | NULL }`.
+        Plain(#[tok(PASSWORD, this)] PasswordValue),
+        /// `ENCRYPTED PASSWORD Sconst`.
+        Encrypted(#[tok(ENCRYPTED, PASSWORD, this)] CopySconst),
+        /// `UNENCRYPTED PASSWORD Sconst`.
+        Unencrypted(#[tok(UNENCRYPTED, PASSWORD, this)] CopySconst),
     }
 }
 
@@ -351,7 +352,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateGroupStmt {
         #[tok(CREATE, GROUP, this)]
-        pub name: crate::tokens::NonReservedWord,
+        pub name: RoleId,
         // `this_each` states the element-wise attachment this site already
         // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
         // SUPERUSER` is accepted where gram.y `CREATE GROUP RoleId opt_with
@@ -376,7 +377,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateRoleStmt {
         #[tok(CREATE, ROLE, this)]
-        pub name: crate::tokens::NonReservedWord,
+        pub name: RoleId,
         // `this_each` states the element-wise attachment this site already
         // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
         // SUPERUSER` is accepted where gram.y `CREATE ROLE RoleId opt_with
@@ -401,7 +402,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateUserStmt {
         #[tok(CREATE, USER, this)]
-        pub name: crate::tokens::NonReservedWord,
+        pub name: RoleId,
         // `this_each` states the element-wise attachment this site already
         // lowers to: the lead-in wraps every option, so `WITH LOGIN WITH
         // SUPERUSER` is accepted where gram.y `CREATE USER RoleId opt_with
@@ -476,17 +477,13 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The role target on an `ALTER ROLE` / `ALTER USER` statement — either
-    /// a specific role spec or `ALL` (the latter only legal with `SET`/`RESET`
-    /// actions, per gram.y's `AlterRoleSetStmt`).
-    ///
-    /// Variant ordering: `ALL` (hard keyword) is keyword-disjoint from
-    /// `RoleSpec` (an `Ident` / non-reserved word), so order is for clarity.
+    /// `ALL [IN DATABASE name] SetResetClause` — gram.y `AlterRoleSetStmt:
+    /// ALTER ROLE ALL opt_in_database SetResetClause` (REL_17_11 gram.y 1386).
+    /// `ALL` takes only a SET or a RESET (issue #53).
     #[derive(Debug)]
-    pub enum AlterRoleTarget {
-        #[tok(ALL)]
-        All,
-        Role(RoleSpec),
+    pub struct AlterRoleAll {
+        #[tok(ALL, this)]
+        pub set_reset: AlterRoleSetReset,
     }
 }
 
@@ -553,20 +550,20 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One action on `ALTER ROLE`/`ALTER USER` — covers Postgres'
-    /// `AlterRoleStmt` (`[WITH] AlterOptRoleList`), `AlterRoleSetStmt`
-    /// (`[IN DATABASE name] SetResetClause`), and the `RENAME TO` branch
-    /// from `RenameStmt`.
+    /// One action on `ALTER ROLE role_spec`/`ALTER USER role_spec` — covers
+    /// Postgres' `AlterRoleStmt` (`[WITH] AlterOptRoleList`) and
+    /// `AlterRoleSetStmt` (`[IN DATABASE name] SetResetClause`). The `RENAME
+    /// TO` branch of `RenameStmt` names a `RoleId`, so it is
+    /// [`AlterRoleRename`].
     ///
-    /// Variant ordering: keyword-distinct branches first (`Rename` on
-    /// `RENAME`, `SetReset` on `IN`/`SET`/`RESET`, `With` on `WITH`). The
+    /// Variant ordering: keyword-distinct branches first (`SetReset` on
+    /// `IN`/`SET`/`RESET`, `With` on `WITH`). The
     /// catch-all `Options` is last; its peek is the union of all
     /// [`AlterRoleOption`] first tokens (the soft attribute keywords and
     /// `PASSWORD`/`CONNECTION`/`VALID`/`ENCRYPTED`/`UNENCRYPTED`/`USER`),
-    /// none of which collide with `RENAME`/`IN`/`SET`/`RESET`/`WITH`.
+    /// none of which collide with `IN`/`SET`/`RESET`/`WITH`.
     #[derive(Debug)]
     pub enum AlterRoleAction {
-        Rename(RenameTo),
         SetReset(AlterRoleSetReset),
         With(AlterRoleWithOptions),
         Options(AlterRoleOptionsOnly),
@@ -598,37 +595,82 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One action on `ALTER GROUP role_spec action` — covers Postgres'
-    /// `AlterGroupStmt` (`add_drop USER role_list`) and the `RENAME TO`
-    /// branch from `RenameStmt`. Both have disjoint first tokens
-    /// (`ADD`/`DROP` vs `RENAME`).
+    /// `RoleId RENAME TO RoleId` — the `RenameStmt` branches `ALTER ROLE
+    /// RoleId RENAME TO RoleId`, `ALTER USER RoleId RENAME TO RoleId` and
+    /// `ALTER GROUP_P RoleId RENAME TO RoleId` (REL_17_11 gram.y 9761, 9771
+    /// and 9358). Both names are `RoleId`, so `ALTER ROLE CURRENT_ROLE RENAME
+    /// TO r` is rejected (issue #53).
     #[derive(Debug)]
-    pub enum AlterGroupAction {
-        Rename(RenameTo),
-        AddDropUsers(AlterGroupUsers),
+    pub struct AlterRoleRename {
+        pub name: RoleId,
+        #[tok(RENAME, TO, this)]
+        pub new_name: RoleId,
     }
 }
 
 recursa::ast_node! {
-    /// `ALTER GROUP role_spec action` — Postgres' `AlterGroupStmt`
-    /// (`add_drop USER role_list`) plus the `RENAME TO` branch from
-    /// `RenameStmt`.
+    /// `role_spec { ADD | DROP } USER role_list` — gram.y `AlterGroupStmt`.
+    #[derive(Debug)]
+    pub struct AlterGroupMembers {
+        pub name: RoleSpec,
+        pub users: AlterGroupUsers,
+    }
+}
+
+recursa::ast_node! {
+    /// The body of `ALTER GROUP` — Postgres' `AlterGroupStmt` (`role_spec
+    /// add_drop USER role_list`) and the `RENAME TO` branch of `RenameStmt`.
+    ///
+    /// Variant ordering: both start with a role word and part on the
+    /// `RENAME`, `ADD` or `DROP` after it.
+    #[derive(Debug)]
+    pub enum AlterGroupBody {
+        Rename(AlterRoleRename),
+        Members(AlterGroupMembers),
+    }
+}
+
+recursa::ast_node! {
+    /// `ALTER GROUP …` — Postgres' `AlterGroupStmt` (`add_drop USER
+    /// role_list`) plus the `RENAME TO` branch from `RenameStmt`.
     #[derive(Debug)]
     pub struct AlterGroupStmt {
         #[tok(ALTER, GROUP, this)]
-        pub name: RoleSpec,
-        pub action: AlterGroupAction,
+        pub body: AlterGroupBody,
     }
 }
 
 recursa::ast_node! {
-    /// `ALTER ROLE { role_spec | ALL } action` — Postgres' `AlterRoleStmt`,
-    /// `AlterRoleSetStmt`, and the `RENAME TO` branch from `RenameStmt`.
+    /// `role_spec action` — `ALTER ROLE` or `ALTER USER` with a role and an
+    /// option list or a SET or RESET.
+    #[derive(Debug)]
+    pub struct AlterRoleSpecAction {
+        pub role: RoleSpec,
+        pub action: AlterRoleAction,
+    }
+}
+
+recursa::ast_node! {
+    /// The body of `ALTER ROLE` and `ALTER USER`: gram.y `AlterRoleStmt`,
+    /// `AlterRoleSetStmt` and the `RENAME TO` branch of `RenameStmt`.
+    ///
+    /// Variant ordering: `All` leads with its keyword. `Rename` and `Role`
+    /// start with a role word and part on the `RENAME` after it.
+    #[derive(Debug)]
+    pub enum AlterRoleBody {
+        All(AlterRoleAll),
+        Rename(AlterRoleRename),
+        Role(AlterRoleSpecAction),
+    }
+}
+
+recursa::ast_node! {
+    /// `ALTER ROLE …` — Postgres' `AlterRoleStmt`, `AlterRoleSetStmt`, and
+    /// the `RENAME TO` branch from `RenameStmt`.
     #[derive(Debug)]
     pub struct AlterRoleStmt {
         #[tok(ALTER, ROLE, this)]
-        pub target: AlterRoleTarget,
-        pub action: AlterRoleAction,
+        pub body: AlterRoleBody,
     }
 }
 
@@ -699,7 +741,7 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `ALTER USER { role_spec | ALL } action` — Postgres' `AlterRoleStmt`
+    /// `ALTER USER …` — Postgres' `AlterRoleStmt`
     /// / `AlterRoleSetStmt` (USER alias for ROLE) plus the `RENAME TO`
     /// branch from `RenameStmt`.
     ///
@@ -710,7 +752,6 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterUserStmt {
         #[tok(ALTER, USER, this)]
-        pub target: AlterRoleTarget,
-        pub action: AlterRoleAction,
+        pub body: AlterRoleBody,
     }
 }
