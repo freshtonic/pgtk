@@ -109,7 +109,7 @@ recursa::ast_node! {
         pub if_exists: Option<IfExists>,
         pub name: crate::tokens::ColId,
         #[tok(ON, this)]
-        pub table: QualifiedName,
+        pub table: crate::ast::shared::names::AnyName,
         pub behavior: Option<DropBehavior>,
     }
 }

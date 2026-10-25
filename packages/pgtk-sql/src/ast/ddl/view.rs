@@ -107,7 +107,7 @@ recursa::ast_node! {
         pub if_exists: bool,
         #[sep(COMMA)]
         /// gram.y `any_name_list`: one or more names.
-        pub names: one_or_many!(QualifiedName),
+        pub names: one_or_many!(crate::ast::shared::names::AnyName),
         pub behavior: Option<DropBehavior>,
     }
 }

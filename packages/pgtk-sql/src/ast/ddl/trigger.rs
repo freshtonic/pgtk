@@ -369,7 +369,7 @@ recursa::ast_node! {
         pub if_exists: Option<IfExists>,
         pub name: crate::tokens::ColId,
         #[tok(ON, this)]
-        pub table: QualifiedName,
+        pub table: crate::ast::shared::names::AnyName,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -434,7 +434,7 @@ recursa::ast_node! {
     #[tok(DROP, EVENT, TRIGGER, this)]
     pub struct DropEventTriggerStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }

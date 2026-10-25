@@ -138,7 +138,7 @@ use pgtk_sql::ast::shared::expr::{
     FlatJsonArray, FlatJsonArrayAgg, FlatJsonArrayArgs, FlatJsonFormat, FlatJsonObject,
     FlatJsonObjectAgg, FlatJsonObjectEntry, FlatJsonReturning, FlatNullOrAbsent, FlatWithOrWithout,
 };
-use pgtk_sql::ast::shared::names::FlatQualifiedName;
+use pgtk_sql::ast::shared::names::{FlatAnyName, FlatQualifiedName};
 use pgtk_sql::ast::shared::names::{FlatOnlyRelation, FlatRelationExpr};
 use pgtk_sql::ast::shared::with_clause::{
     FlatCteDefinition, FlatWithBody, FlatWithClause, FlatWithClauseHead, FlatWithStatement,
@@ -2286,15 +2286,43 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// The name a SHOW or a SET writes, folded and joined with dots.
-    fn parameter_name(&self, q: Handle<FlatQualifiedName>) -> Result<String> {
-        let q = self.get(q);
-        let (first, _) = self.col_id(q.first)?;
+    fn parameter_name(&self, q: Handle<FlatAnyName>) -> Result<String> {
+        Ok(self.any_name_parts(q)?.join("."))
+    }
+
+    /// The folded parts of a `qualified_name`, the first one first.
+    fn qualified_name_parts(&self, qn: Handle<FlatQualifiedName>) -> Result<Vec<String>> {
+        let qn = self.get(qn);
+        let (first, _) = self.col_id(qn.first)?;
         let mut parts = vec![first];
-        for part in self.list(q.rest) {
-            let part = self.get(*part);
-            parts.push(self.col_label(part.name)?);
+        if let Some(rest) = qn.rest {
+            let rest = self.get(rest);
+            parts.push(self.col_label(self.get(rest.second).name)?);
+            if let Some(third) = rest.third {
+                parts.push(self.col_label(self.get(third).name)?);
+            }
         }
-        Ok(parts.join("."))
+        Ok(parts)
+    }
+
+    /// The folded parts of an `any_name`, the first one first.
+    fn any_name_parts(&self, name: Handle<FlatAnyName>) -> Result<Vec<String>> {
+        match self.get(name) {
+            FlatAnyName::Short(qn) => self.qualified_name_parts(*qn),
+            FlatAnyName::Long(long) => {
+                let long = self.get(*long);
+                let (first, _) = self.col_id(long.first)?;
+                let mut parts = vec![
+                    first,
+                    self.col_label(self.get(long.second).name)?,
+                    self.col_label(self.get(long.third).name)?,
+                ];
+                for part in self.list1(long.more) {
+                    parts.push(self.col_label(self.get(*part).name)?);
+                }
+                Ok(parts)
+            }
+        }
     }
 
     /// An identifier token, folded.
@@ -4221,13 +4249,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         qn: Handle<FlatQualifiedName>,
         location: usize,
     ) -> Result<(Option<String>, String)> {
-        let qn = self.get(qn);
-        let (first, _) = self.col_id(qn.first)?;
-        let mut parts = vec![first];
-        for part in self.list(qn.rest) {
-            let part = self.get(*part);
-            parts.push(self.col_label(part.name)?);
-        }
+        let mut parts = self.qualified_name_parts(qn)?;
         if parts.len() > 2 {
             return Err(unsupported(
                 "catalog-qualified table name",
@@ -5218,16 +5240,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// name, as `DeconstructQualifiedName` allows.
     fn schema_and_name(
         &self,
-        qn: Handle<FlatQualifiedName>,
+        qn: Handle<FlatAnyName>,
         at: usize,
     ) -> Result<(Option<String>, String)> {
-        let qn = self.get(qn);
-        let (first, _) = self.col_id(qn.first)?;
-        let mut parts = vec![first];
-        for part in self.list(qn.rest) {
-            let part = self.get(*part);
-            parts.push(self.col_label(part.name)?);
-        }
+        let mut parts = self.any_name_parts(qn)?;
         if parts.len() > 2 {
             return Err(Diagnostic::new(
                 "42601",
@@ -5247,7 +5263,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     /// database encoding.
     fn lookup_collation(
         &self,
-        qn: Handle<FlatQualifiedName>,
+        qn: Handle<FlatAnyName>,
         at: usize,
     ) -> Result<pgtk_catalog::Handle<Collation>> {
         let (schema, name) = self.schema_and_name(qn, at)?;
@@ -9189,9 +9205,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         FlatTableFunctionName::Qualified(q) => {
                             let q = self.get(*q);
                             let (first, _) = self.col_id(q.first)?;
-                            let mut parts = vec![first];
-                            for part in self.list1(q.tail) {
-                                parts.push(self.name_part(*part)?);
+                            let mut parts = vec![first, self.name_part(q.second)?];
+                            if let Some(third) = q.third {
+                                parts.push(self.name_part(third)?);
                             }
                             if parts.len() > 2 {
                                 return Err(unsupported(
@@ -9238,16 +9254,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 FlatSimpleTableRef::Only(only) => {
                     let only = self.get(*only);
                     let qn = match self.get(only.name) {
-                        FlatOnlyRelationName::Parens(q) | FlatOnlyRelationName::Plain(q) => {
-                            self.get(*q)
-                        }
+                        FlatOnlyRelationName::Parens(q) | FlatOnlyRelationName::Plain(q) => *q,
                     };
-                    let (first, _) = self.col_id(qn.first)?;
-                    let mut parts = vec![first];
-                    for part in self.list(qn.rest) {
-                        let part = self.get(*part);
-                        parts.push(self.col_label(part.name)?);
-                    }
+                    let mut parts = self.qualified_name_parts(qn)?;
                     if parts.len() > 2 {
                         return Err(unsupported(
                             "catalog-qualified table name",
@@ -9338,6 +9347,30 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         });
                     }
                     return self.function_ref(scope, funcs, r.ordinality, r.alias, true, location);
+                }
+                FlatSimpleTableRef::LongFunction(r) => {
+                    // `DeconstructQualifiedName`: a function name has at most
+                    // three parts.
+                    let name = self.get(self.get(*r).name);
+                    let (first, _) = self.col_id(name.first)?;
+                    let mut parts = vec![
+                        first,
+                        self.name_part(name.second)?,
+                        self.name_part(name.third)?,
+                        self.name_part(name.fourth)?,
+                    ];
+                    for part in self.list(name.more) {
+                        parts.push(self.name_part(*part)?);
+                    }
+                    return Err(Diagnostic::new(
+                        "42601",
+                        format!(
+                            "improper qualified name (too many dotted names): {}",
+                            parts.join(".")
+                        ),
+                    )
+                    .at(location)
+                    .into());
                 }
                 FlatSimpleTableRef::SpecialFunc(r) => {
                     let r = self.get(*r);

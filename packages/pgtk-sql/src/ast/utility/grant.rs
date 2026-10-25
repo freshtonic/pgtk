@@ -200,7 +200,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ForeignDataWrapperTarget {
         #[tok(FOREIGN, DATA, WRAPPER, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -209,7 +209,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ForeignServerTarget {
         #[tok(FOREIGN, SERVER, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -248,7 +248,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DatabaseTarget {
         #[tok(DATABASE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -266,7 +266,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LanguageTarget {
         #[tok(LANGUAGE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -287,7 +287,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SchemaTarget {
         #[tok(SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -296,7 +296,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct TablespaceTarget {
         #[tok(TABLESPACE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -347,7 +347,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllTablesInSchemaTarget {
         #[tok(ALL, TABLES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -356,7 +356,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllSequencesInSchemaTarget {
         #[tok(ALL, SEQUENCES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -365,7 +365,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllFunctionsInSchemaTarget {
         #[tok(ALL, FUNCTIONS, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -374,7 +374,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllProceduresInSchemaTarget {
         #[tok(ALL, PROCEDURES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -383,7 +383,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllRoutinesInSchemaTarget {
         #[tok(ALL, ROUTINES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -897,7 +897,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DefAclInSchemaOption {
         #[tok(IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 

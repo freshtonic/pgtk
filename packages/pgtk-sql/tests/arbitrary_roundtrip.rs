@@ -112,7 +112,6 @@ enum FailureKind {
 use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
 // The issue of each group of known failures.
-const NAMES: u32 = 50;
 const TYPES: u32 = 51;
 const EREPORTS: u32 = 55;
 const LISTS: u32 = 56;
@@ -159,8 +158,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Parse, ROUND_TRIP, r#""#, r#""#, "an expression without the parentheses that its place needs"),
     known(Fixpoint, ROUND_TRIP, r#""#, r#"^parentheses only"#, "an operand without the parentheses that its operator needs"),
     known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
-    known(Oracle, NAMES, r#""#, r#"improper qualified name"#, "a qualified name with more dotted parts than PostgreSQL allows"),
-    known(Oracle, NAMES, r#""#, r#"at or near "\."$"#, "a qualified name where PostgreSQL wants a plain name"),
     known(Oracle, EREPORTS, r#""#, r#"aggregates cannot have output arguments|duplicate trigger events|unrecognized row security option|CREATE SCHEMA IF NOT EXISTS cannot include schema elements|STDIN/STDOUT not allowed with PROGRAM|UNENCRYPTED PASSWORD is no longer supported|ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|column number must be in range|MATCH PARTIAL not yet implemented|unrecognized partitioning strategy|WITH TIES cannot be specified|WHERE clause not allowed with COPY TO|invalid publication object list|column specification not allowed for schema|invalid schema name|improper use of|unrecognized JSON encoding|type modifier cannot have parameter name|WITH CHECK OPTION not supported on recursive views|a column list with|WHERE clause not allowed for schema|unrecognized JSON|multiple ORDER BY clauses not allowed|frame start cannot be|frame end cannot be"#, "a statement that a gram.y action rejects with ereport()"),
     known(Oracle, EREPORTS, r#"UESCAPE"#, r#"invalid Unicode escape"#, "an invalid UESCAPE character"),
     known(Oracle, TYPES, r#"\] ARRAY"#, r#""(ARRAY|\[|\])""#, "a type name that mixes `[n]` bounds and `ARRAY`"),

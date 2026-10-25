@@ -578,6 +578,12 @@ fn assert_rejects(sources: &[&str], why: &str) {
             parsed.is_err() || !input.is_eof(),
             "{why}, but {source:?} parsed"
         );
+        // The raw parser of the target version must agree.
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
     }
 }
 
@@ -593,6 +599,11 @@ fn assert_accepts(sources: &[&str]) {
         Statement::parse(&mut input)
             .unwrap_or_else(|error| panic!("strict statement {source:?}: {error}"));
         assert!(input.is_eof(), "strict parse left input for {source:?}");
+        // The raw parser of the target version must agree.
+        #[cfg(feature = "postgres-oracle")]
+        if let Some(error) = pgtk_oracle::parse_error(source) {
+            panic!("PostgreSQL rejects {source:?}: {error}");
+        }
     }
 }
 
@@ -724,5 +735,93 @@ fn signatures_keep_the_forms_of_gram_y() {
         "DROP FUNCTION A(IN A DECIMAL)",
         "CREATE FUNCTION f(a int = 1) RETURNS int LANGUAGE sql AS 'SELECT a'",
         "CREATE PROCEDURE p(a int DEFAULT 1) LANGUAGE sql AS ''",
+    ]);
+}
+
+/// gram.y `qualified_name` has at most three parts: its action rejects a
+/// longer name (issue #50). `any_name` takes every length.
+#[test]
+fn a_qualified_name_has_at_most_three_parts() {
+    assert_rejects(
+        &[
+            "LOCK tags.uuid .rating .priority",
+            "REINDEX INDEX tags.id .id .email",
+            "ANALYZE count.tags .priority .uuid",
+            "SELECT * FROM a.b.c.d",
+            "DELETE FROM t USING a.b.c.d",
+            "CREATE STATISTICS s ON a, b FROM a.b.c.d",
+            "INSERT INTO a.b.c.d VALUES (1)",
+            "CREATE TABLE a.b.c.d (x int)",
+            "ALTER TABLE a.b.c.d RENAME TO e",
+            "CREATE TRIGGER t AFTER INSERT ON a.b.c.d EXECUTE FUNCTION f()",
+            "SET CONSTRAINTS a.b.c.d IMMEDIATE",
+            "GRANT SELECT ON TABLE a.b.c.d TO r",
+            // The actions that read an `any_name` with
+            // `makeRangeVarFromAnyName`.
+            "CREATE TYPE a.b.c.d AS (x int)",
+            "ALTER TYPE a.b.c.d ADD ATTRIBUTE x int",
+            "ALTER TYPE a.b.c.d RENAME ATTRIBUTE x TO y",
+        ],
+        "a qualified_name has at most three parts",
+    );
+    assert_accepts(&[
+        "LOCK a.b.c",
+        "SELECT * FROM a.b.c",
+        "SELECT * FROM a.b.c.d()",
+        "DROP TABLE a.b.c.d",
+        "DROP RULE r ON a.b.c.d",
+        "COMMENT ON TABLE a.b.c.d IS ''",
+        "SELECT x COLLATE a.b.c.d",
+        "CREATE TYPE a.b.c AS (x int)",
+        "CREATE TYPE a.b.c.d AS ENUM ('x')",
+        "CREATE TYPE a.b.c.d",
+        "ALTER TYPE a.b.c ADD ATTRIBUTE x int",
+        "ALTER TYPE a.b.c.d RENAME TO e",
+        "ALTER TYPE a.b.c.d ADD VALUE 'x'",
+        "CREATE DOMAIN a.b.c.d AS int",
+        "SET a.b.c.d = 1",
+    ]);
+}
+
+/// gram.y `name_list` holds plain names (`ColId`), which take no dot (issue
+/// #50).
+#[test]
+fn a_name_list_holds_plain_names() {
+    assert_rejects(
+        &[
+            "DROP SERVER code.id",
+            "DROP SCHEMA city.url",
+            "DROP LANGUAGE url.tag",
+            "DROP PROCEDURAL LANGUAGE url.tag",
+            "DROP ACCESS METHOD a.b",
+            "DROP EVENT TRIGGER IF EXISTS a.b",
+            "DROP EXTENSION a.b CASCADE",
+            "DROP FOREIGN DATA WRAPPER a.b",
+            "DROP PUBLICATION a.b",
+            "GRANT USAGE ON SCHEMA a.b TO r",
+            "GRANT ALL ON DATABASE a.b TO r",
+            "GRANT ALL ON FOREIGN DATA WRAPPER a.b TO r",
+            "GRANT ALL ON FOREIGN SERVER a.b TO r",
+            "GRANT ALL ON LANGUAGE a.b TO r",
+            "GRANT ALL ON TABLESPACE a.b TO r",
+            "GRANT ALL ON ALL TABLES IN SCHEMA a.b TO r",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA a.b GRANT SELECT ON TABLES TO r",
+            "CREATE SCHEMA AUTHORIZATION r GRANT ALL ON TABLESPACE a.b TO r",
+            // `opt_definition` takes `definition`, a list of plain names.
+            "CREATE TABLE t (a int UNIQUE WITH (a.b))",
+            "CREATE TABLE t (a int, PRIMARY KEY (a) WITH (a.b = 1))",
+            "CREATE DOMAIN d AS int PRIMARY KEY WITH (a.b)",
+        ],
+        "a name_list holds plain names",
+    );
+    assert_accepts(&[
+        "DROP SCHEMA a, b CASCADE",
+        "DROP FOREIGN DATA WRAPPER a",
+        "DROP FOREIGN TABLE a.b.c.d",
+        "GRANT USAGE ON SCHEMA a, b TO r",
+        "GRANT USAGE ON TYPE a.b.c.d TO r",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA a GRANT SELECT ON TABLES TO r",
+        "CREATE TABLE t (a int UNIQUE WITH (fillfactor = 70))",
+        "CREATE INDEX i ON t (a) WITH (a.b = 1)",
     ]);
 }

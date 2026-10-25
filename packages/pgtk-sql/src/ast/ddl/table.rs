@@ -45,8 +45,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(PRIMARY, KEY, this)]
     pub struct PrimaryKeyConstraint {
-        /// `WITH (storage_param = value, ...)` — gram.y `opt_definition`.
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
+        /// `WITH definition` — gram.y `opt_definition`: plain `ColLabel` names,
+        /// so no `namespace.name` storage parameter (issue #50).
+        pub with_storage: Option<crate::ast::ddl::publication::WithDefinition>,
         pub index_tablespace: Option<UsingIndexTablespace>,
     }
 }
@@ -61,8 +62,9 @@ recursa::ast_node! {
         /// (REL_15_19 gram.y `opt_unique_null_treatment`).
         #[config(since = pg15)]
         pub nulls: Option<NullsDistinctQualifier>,
-        /// `WITH (storage_param = value, ...)` — gram.y `opt_definition`.
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
+        /// `WITH definition` — gram.y `opt_definition`: plain `ColLabel` names,
+        /// so no `namespace.name` storage parameter (issue #50).
+        pub with_storage: Option<crate::ast::ddl::publication::WithDefinition>,
         pub index_tablespace: Option<UsingIndexTablespace>,
     }
 }
@@ -913,7 +915,7 @@ recursa::ast_node! {
     pub struct CollateClause {
         /// gram.y `opt_collate_clause: COLLATE any_name`.
         #[tok(COLLATE, this)]
-        pub name: crate::ast::shared::names::QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -1040,8 +1042,9 @@ recursa::ast_node! {
     pub struct IndexedConstraintColumns {
         pub columns: IndexedConstraintColumnList,
         pub include: Option<IncludeColumns>,
-        /// `WITH (storage_param = value, ...)` — gram.y's `opt_definition`.
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
+        /// `WITH definition` — gram.y's `opt_definition`: plain `ColLabel`
+        /// names, so no `namespace.name` storage parameter (issue #50).
+        pub with_storage: Option<crate::ast::ddl::publication::WithDefinition>,
         /// `USING INDEX TABLESPACE name` — gram.y's `OptConsTableSpace`.
         pub index_tablespace: Option<UsingIndexTablespace>,
     }
@@ -1283,8 +1286,9 @@ recursa::ast_node! {
         pub exclusions: ExclusionConstraintList,
         /// `INCLUDE (col, ...)` covering-index clause.
         pub include: Option<IncludeColumns>,
-        /// `WITH (param = value, ...)` storage parameters (`opt_definition`).
-        pub with_storage: Option<crate::ast::ddl::index::WithStorage>,
+        /// `WITH definition` (`opt_definition`): plain `ColLabel` names, so no
+        /// `namespace.name` storage parameter (issue #50).
+        pub with_storage: Option<crate::ast::ddl::publication::WithDefinition>,
         /// `USING INDEX TABLESPACE name` (`OptConsTableSpace`).
         pub index_tablespace: Option<UsingIndexTablespace>,
         /// `WHERE (expr)` partial-constraint predicate (parens mandatory).
@@ -1658,7 +1662,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct OfTypeBody {
         #[tok(OF, this)]
-        pub type_name: crate::ast::shared::names::QualifiedName,
+        pub type_name: crate::ast::shared::names::AnyName,
         pub column_options: Option<PartitionColumnOptionList>,
     }
 }
@@ -1825,8 +1829,8 @@ recursa::ast_node! {
         /// gram.y `part_elem: ... opt_collate opt_qualified_name`: both are
         /// `any_name`.
         #[tok(COLLATE, this)]
-        pub collate: Option<crate::ast::shared::names::QualifiedName>,
-        pub opclass: Option<crate::ast::shared::names::QualifiedName>,
+        pub collate: Option<crate::ast::shared::names::AnyName>,
+        pub opclass: Option<crate::ast::shared::names::AnyName>,
     }
 }
 
@@ -2013,7 +2017,7 @@ recursa::ast_node! {
         pub if_exists: bool,
         #[sep(COMMA)]
         /// gram.y `any_name_list`: one or more names.
-        pub names: one_or_many!(QualifiedName),
+        pub names: one_or_many!(crate::ast::shared::names::AnyName),
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -2936,7 +2940,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct OfCmd {
         #[tok(OF, this)]
-        pub type_name: QualifiedName,
+        pub type_name: crate::ast::shared::names::AnyName,
     }
 }
 

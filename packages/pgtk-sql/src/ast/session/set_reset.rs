@@ -105,7 +105,7 @@ recursa::ast_node! {
     /// `CHARACTERISTICS` can decide the rest.
     #[derive(Debug)]
     pub struct GenericSetRest {
-        pub param: crate::ast::shared::names::QualifiedName,
+        pub param: crate::ast::shared::names::AnyName,
         pub sep: SetSep,
         pub value: GenericSetValue,
     }
@@ -119,7 +119,7 @@ recursa::ast_node! {
     /// an element of a list.
     #[derive(Debug)]
     pub struct GenericSetNull {
-        pub param: crate::ast::shared::names::QualifiedName,
+        pub param: crate::ast::shared::names::AnyName,
         #[tok(this, NULL)]
         pub sep: SetSep,
     }
@@ -326,7 +326,7 @@ recursa::ast_node! {
     /// the variable has in the current session.
     #[derive(Debug)]
     pub struct SetFromCurrentStmt {
-        pub param: crate::ast::shared::names::QualifiedName,
+        pub param: crate::ast::shared::names::AnyName,
         pub from_current: FromCurrent,
     }
 }
@@ -492,7 +492,7 @@ recursa::ast_node! {
     pub enum GenericReset {
         #[tok(ALL)]
         All,
-        Name(crate::ast::shared::names::QualifiedName),
+        Name(crate::ast::shared::names::AnyName),
     }
 }
 
@@ -541,7 +541,7 @@ recursa::ast_node! {
         TimeZone,
         #[tok(ALL)]
         All,
-        Param(crate::ast::shared::names::QualifiedName),
+        Param(crate::ast::shared::names::AnyName),
     }
 }
 

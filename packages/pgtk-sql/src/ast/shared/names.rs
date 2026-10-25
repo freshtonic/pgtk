@@ -3,16 +3,44 @@
 use crate::tokens::literal;
 
 recursa::ast_node! {
-    /// A comma-separated list of qualified (dotted) names — Postgres'
-    /// `any_name_list` / `name_list` in DROP-family statements.
+    /// A comma-separated list of dotted names — Postgres' `any_name_list`.
     #[derive(Debug, PartialEq, Eq, Hash)]
     pub struct NameList {
         #[sep(COMMA)]
-        pub names: one_or_many!(QualifiedName),
+        pub names: one_or_many!(AnyName),
     }
 }
 
 impl<'input> NameList<'input> {
+    /// Number of names in the list.
+    pub fn len(&self) -> usize {
+        self.names.len()
+    }
+
+    /// Whether the list is empty (always false — `Seq1` requires one entry).
+    pub fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `name_list: name | name_list ',' name`, where `name` is a
+    /// `ColId`: a list of plain names, which take no dot (issue #50).
+    ///
+    /// The objects that have no schema take it: `DROP` of an access method,
+    /// an event trigger, an extension, a foreign-data wrapper, a language, a
+    /// publication, a schema or a server (`drop_type_name`, REL_17_11 gram.y
+    /// 6980), the `GRANT` targets `DATABASE`, `FOREIGN DATA WRAPPER`,
+    /// `FOREIGN SERVER`, `LANGUAGE`, `SCHEMA`, `TABLESPACE` and `ALL ... IN
+    /// SCHEMA`, and `ALTER DEFAULT PRIVILEGES IN SCHEMA`.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    pub struct ColIdList {
+        #[sep(COMMA)]
+        pub names: one_or_many!(crate::tokens::ColId),
+    }
+}
+
+impl<'input> ColIdList<'input> {
     /// Number of names in the list.
     pub fn len(&self) -> usize {
         self.names.len()
@@ -187,26 +215,44 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A dotted name: `name`, `schema.name`, or `catalog.schema.name`.
+    /// gram.y `qualified_name: ColId | ColId indirection` (REL_17_11 gram.y
+    /// 17153): `name`, `schema.name` or `catalog.schema.name`. The name of a
+    /// relation.
     ///
-    /// This is the usual shape for table/view/sequence/type references in SQL.
-    /// Must NOT collide with `Expr::QualRef` because
-    /// `QualifiedName` is only used in non-expression positions (FROM targets,
-    /// DROP targets, ALTER targets, etc.).
+    /// The action of the second form (`makeRangeVarFromQualifiedName`,
+    /// REL_17_11 gram.y 19205-19236) rejects a name of more than three parts
+    /// ("improper qualified name (too many dotted names)"), so the type has
+    /// at most three (issue #50). The rejection is structural: a declared
+    /// rejection reads one item of a list, and has no rule that counts the
+    /// items. PostgreSQL 14 makes the same check in the `qualified_name`
+    /// action itself (REL_14_24 gram.y 15103).
+    ///
+    /// Must NOT collide with `Expr::QualRef` because `QualifiedName` is only
+    /// used in non-expression positions (FROM targets, DROP targets, ALTER
+    /// targets, etc.).
     #[derive(Debug, PartialEq, Eq, Hash)]
     pub struct QualifiedName {
-        /// gram.y `qualified_name: ColId | ColId indirection`: the first part is
-        /// a `ColId`, so `verbose`, `full` and the other `type_func_name`
-        /// keywords are not object names.
+        /// The first part is a `ColId`, so `verbose`, `full` and the other
+        /// `type_func_name` keywords are not object names.
         pub first: crate::tokens::ColId,
-        /// gram.y `indirection`: each part after a dot is `attr_name`, a
-        /// `ColLabel` (any keyword class).
-        pub rest: zero_or_many!(QualifiedNamePart),
+        /// The second and the third part.
+        pub rest: Option<boxed!(QualifiedNameRest)>,
     }
 }
 
 recursa::ast_node! {
-    /// One `'.' attr_name` of gram.y `indirection` inside a `qualified_name`.
+    /// The parts of a [`QualifiedName`] after its first: `.name` or
+    /// `.schema.name`.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    pub struct QualifiedNameRest {
+        pub second: QualifiedNamePart,
+        pub third: Option<QualifiedNamePart>,
+    }
+}
+
+recursa::ast_node! {
+    /// One `'.' attr_name` of gram.y `indirection` or `attrs`: each part
+    /// after a dot is `attr_name`, a `ColLabel` (any keyword class).
     #[derive(Debug, PartialEq, Eq, Hash)]
     pub struct QualifiedNamePart {
         #[tok(DOT, this)]
@@ -215,20 +261,109 @@ recursa::ast_node! {
 }
 
 impl<'input> QualifiedName<'input> {
+    /// The parts, the first one first.
+    pub fn parts(&self) -> Vec<&str> {
+        let mut parts = vec![self.first.text()];
+        if let Some(rest) = &self.rest {
+            parts.push(rest.second.name.text());
+            if let Some(third) = &rest.third {
+                parts.push(third.name.text());
+            }
+        }
+        parts
+    }
+
     /// Returns the final (object) name part.
     pub fn object(&self) -> &str {
-        match self.rest.last() {
-            Some(part) => part.name.text(),
+        match &self.rest {
+            Some(rest) => match &rest.third {
+                Some(third) => third.name.text(),
+                None => rest.second.name.text(),
+            },
             None => self.first.text(),
         }
     }
 
     /// Number of dotted parts, `catalog.schema.name` being three.
     pub fn len(&self) -> usize {
-        1 + self.rest.len()
+        match &self.rest {
+            None => 1,
+            Some(rest) => 2 + usize::from(rest.third.is_some()),
+        }
     }
 
     /// A qualified name always has one part.
+    pub fn is_empty(&self) -> bool {
+        false
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `any_name: ColId | ColId attrs` (REL_17_11 gram.y 7003): a
+    /// dotted name with any number of parts. The raw parser takes every
+    /// length; only the catalog lookup rejects a name that is too long.
+    ///
+    /// Variant ordering: both start with the same three parts; `Long` takes
+    /// the `.` after the third.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    pub enum AnyName {
+        /// Four parts or more.
+        Long(boxed!(LongAnyName)),
+        /// One, two or three parts.
+        Short(QualifiedName),
+    }
+}
+
+recursa::ast_node! {
+    /// An [`AnyName`] of four parts or more.
+    #[derive(Debug, PartialEq, Eq, Hash)]
+    pub struct LongAnyName {
+        pub first: crate::tokens::ColId,
+        pub second: QualifiedNamePart,
+        pub third: QualifiedNamePart,
+        pub more: one_or_many!(QualifiedNamePart),
+    }
+}
+
+impl<'input> LongAnyName<'input> {
+    /// The parts, the first one first.
+    pub fn parts(&self) -> Vec<&str> {
+        let mut parts = vec![
+            self.first.text(),
+            self.second.name.text(),
+            self.third.name.text(),
+        ];
+        parts.extend(self.more.iter().map(|part| part.name.text()));
+        parts
+    }
+}
+
+impl<'input> AnyName<'input> {
+    /// The parts, the first one first.
+    pub fn parts(&self) -> Vec<&str> {
+        match self {
+            Self::Long(name) => name.parts(),
+            Self::Short(name) => name.parts(),
+        }
+    }
+
+    /// Returns the final (object) name part.
+    pub fn object(&self) -> &str {
+        match self {
+            Self::Long(name) => name.more.last().name.text(),
+            Self::Short(name) => name.object(),
+        }
+    }
+
+    /// Number of dotted parts.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Long(name) => 3 + name.more.len(),
+            Self::Short(name) => name.len(),
+        }
+    }
+
+    /// A name always has one part.
     pub fn is_empty(&self) -> bool {
         false
     }

@@ -3,7 +3,7 @@
 //! destination map, SECURITY LABEL is placed here rather than in a
 //! dedicated file because its grammar mirrors COMMENT.
 
-use crate::ast::shared::names::{AggregateArgs, QualifiedName};
+use crate::ast::shared::names::AggregateArgs;
 use crate::tokens::literal;
 
 // --- COMMENT / SECURITY LABEL shared object grammar ---
@@ -107,7 +107,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentTableObject {
         #[tok(TABLE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -116,7 +116,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentSequenceObject {
         #[tok(SEQUENCE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -125,7 +125,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentViewObject {
         #[tok(VIEW, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -134,7 +134,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentIndexObject {
         #[tok(INDEX, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -143,7 +143,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentCollationObject {
         #[tok(COLLATION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -152,7 +152,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentConversionObject {
         #[tok(CONVERSION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -161,7 +161,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentStatisticsObject {
         #[tok(STATISTICS, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -170,7 +170,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentColumnObject {
         #[tok(COLUMN, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -179,7 +179,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentMatViewObject {
         #[tok(MATERIALIZED, VIEW, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -188,7 +188,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentForeignTableObject {
         #[tok(FOREIGN, TABLE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -197,7 +197,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentTsParserObject {
         #[tok(TEXT, SEARCH, PARSER, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -206,7 +206,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentTsDictionaryObject {
         #[tok(TEXT, SEARCH, DICTIONARY, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -215,7 +215,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentTsTemplateObject {
         #[tok(TEXT, SEARCH, TEMPLATE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -224,7 +224,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CommentTsConfigObject {
         #[tok(TEXT, SEARCH, CONFIGURATION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -370,7 +370,7 @@ recursa::ast_node! {
         #[tok(POLICY, this)]
         pub name: crate::tokens::ColId,
         #[tok(ON, this)]
-        pub table: QualifiedName,
+        pub table: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -381,7 +381,7 @@ recursa::ast_node! {
         #[tok(RULE, this)]
         pub name: crate::tokens::ColId,
         #[tok(ON, this)]
-        pub table: QualifiedName,
+        pub table: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -392,7 +392,7 @@ recursa::ast_node! {
         #[tok(TRIGGER, this)]
         pub name: crate::tokens::ColId,
         #[tok(ON, this)]
-        pub table: QualifiedName,
+        pub table: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -404,7 +404,7 @@ recursa::ast_node! {
         pub name: crate::tokens::ColId,
         #[presence(DOMAIN)]
         pub domain: bool,
-        pub container: QualifiedName,
+        pub container: crate::ast::shared::names::AnyName,
     }
 }
 

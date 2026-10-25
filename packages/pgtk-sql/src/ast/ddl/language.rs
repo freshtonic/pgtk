@@ -12,7 +12,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LanguageInlineHandler {
         #[tok(INLINE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -34,7 +34,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LanguageValidator {
         #[tok(VALIDATOR, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -44,7 +44,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LanguageHandlerClause {
         #[tok(HANDLER, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub inline: Option<LanguageInlineHandler>,
         pub validator: Option<LanguageValidatorClause>,
     }
@@ -74,7 +74,7 @@ recursa::ast_node! {
     #[tok(DROP, optional(PROCEDURAL), LANGUAGE, this)]
     pub struct DropLanguageStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }

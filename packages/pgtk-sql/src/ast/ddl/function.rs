@@ -567,7 +567,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SupportOption {
         #[tok(SUPPORT, this)]
-        pub name: crate::ast::shared::names::QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -861,7 +861,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterFuncSupportItem {
         #[tok(SUPPORT, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
