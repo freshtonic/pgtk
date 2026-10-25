@@ -114,7 +114,6 @@ use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 // The issue of each group of known failures.
 const NAMES: u32 = 50;
 const TYPES: u32 = 51;
-const SIGNATURES: u32 = 54;
 const EREPORTS: u32 = 55;
 const LISTS: u32 = 56;
 const CREATE_FORMS: u32 = 57;
@@ -169,8 +168,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, TYPES, r#"(BIT|VARYING|CHAR|CHARACTER|VARCHAR|NCHAR|TEXT|BOOL|BOOLEAN|INT|INTEGER|SMALLINT|BIGINT|REAL|FLOAT|DEC|DECIMAL|NUMERIC|SERIAL|UNKNOWN|JSON|INTERVAL|TIME|TIMESTAMP|PRECISION)\(\)"#, r#""\)""#, "a type name with an empty type modifier list `()`"),
     known(Oracle, LISTS, r#"^DROP [A-Z ]+?( IF EXISTS)?( CASCADE| RESTRICT)?$"#, r#"end of input"#, "DROP with no object"),
     known(Oracle, LISTS, r#"TRANSFORM (IF EXISTS )?FOR "#, r#""(FROM|TO|,)""#, "a transform with more than one FROM SQL or TO SQL element"),
-    known(Oracle, SIGNATURES, r#"^CREATE EVENT TRIGGER .* EXECUTE (PROCEDURE|FUNCTION) .*\(.+\)$"#, r#""#, "arguments to the function of an event trigger"),
-    known(Oracle, SIGNATURES, r#"NONE"#, r#""NONE""#, "`NONE` in an operator signature where PostgreSQL rejects it"),
     known(Oracle, LISTS, r#"^ALTER (SERVER|FOREIGN DATA WRAPPER) \S+$"#, r#"end of input"#, "ALTER SERVER or ALTER FOREIGN DATA WRAPPER with no action"),
     known(Oracle, LISTS, r#"^DROP DATABASE .*\), \("#, r#"",""#, "DROP DATABASE with more than one option list"),
     known(Oracle, OTHER_FORMS, r#"^ALTER (STATISTICS|INDEX|MATERIALIZED VIEW|TABLE|VIEW|SEQUENCE|FOREIGN TABLE) "#, r#""(SCHEMA|DEPENDS|RENAME|OWNER|SET|ATTACH)""#, "an ALTER action that PostgreSQL rejects for this object or with IF EXISTS"),
@@ -188,9 +185,7 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, CREATE_FORMS, r#"PARTITION OF"#, r#""(SERVER|ON|TABLESPACE|DEFAULT)"|end of input"#, "PARTITION OF with no partition bound, or with both a bound and DEFAULT"),
     known(Oracle, LISTS, r#"REFERENCING (FOR|EXECUTE|WHEN)"#, r#""(FOR|EXECUTE|WHEN)""#, "REFERENCING with no transition relation"),
     known(Oracle, TYPES, r#"% TYPE"#, r#""%""#, "`name%TYPE` without a dotted column reference"),
-    known(Oracle, SIGNATURES, r#"AGGREGATE .*\w+ = "#, r#""(=|\()""#, "a default value in an aggregate signature"),
     known(Oracle, TYPES, r#"(SEQUENCE|IDENTITY|XMLSERIALIZE).*AS "#, r#""(\[|ARRAY)""#, "an array type where PostgreSQL wants `SimpleTypename`"),
-    known(Oracle, SIGNATURES, r#"^(DROP|ALTER|COMMENT ON|SECURITY LABEL|GRANT|REVOKE)|WITH FUNCTION|FUNCTION \d+|ON (FUNCTION|PROCEDURE|ROUTINE) "#, r#""(DEFAULT|=)""#, "a default value in a function signature that has no defaults"),
     known(Oracle, CREATE_FORMS, r#"VIEW .*USING"#, r#""USING""#, "a view with an access method"),
     known(Oracle, CREATE_FORMS, r#"TABLE .*(USING \S+ PARTITION OF|PARTITION OF .* USING|OF )"#, r#""(PARTITION|USING|WITH|LIKE|OF)""#, "the clauses of CREATE TABLE in an order PostgreSQL rejects"),
     known(Oracle, CREATE_FORMS, r#"^CREATE STATISTICS IF NOT EXISTS( ON|\()"#, r#""(\(|ON)""#, "CREATE STATISTICS IF NOT EXISTS with no name"),

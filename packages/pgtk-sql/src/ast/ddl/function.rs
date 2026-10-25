@@ -709,8 +709,25 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FunctionWithArgs {
         pub name: crate::ast::shared::expr::FuncCallName,
-        pub args: FunctionParameters,
+        pub args: FunctionArgs,
     }
+}
+
+recursa::ast_node! {
+    /// gram.y `func_args: '(' func_args_list ')' | '(' ')'` (REL_17_11 gram.y
+    /// 8323-8331): the argument types that name an existing function.
+    ///
+    /// `func_args_list` is a list of `func_arg`, which has no default value.
+    /// Only `func_args_with_defaults` of `CREATE FUNCTION` and `CREATE
+    /// PROCEDURE` ([`FunctionParameters`]) takes one, so `DROP FUNCTION
+    /// f(int = 1)` is a syntax error (issue #54).
+    #[derive(Debug, derive_more :: Deref)]
+    #[tok(LPAREN, this, RPAREN)]
+    pub struct FunctionArgs(
+        #[sep(COMMA)]
+        #[deref]
+        pub zero_or_many!(FunctionArg),
+    );
 }
 
 impl<'input> DropFunctionTarget<'input> {
@@ -724,7 +741,7 @@ impl<'input> DropFunctionTarget<'input> {
     }
 
     /// The argument list, when the target has one.
-    pub fn args(&self) -> Option<&FunctionParameters<'input>> {
+    pub fn args(&self) -> Option<&FunctionArgs<'input>> {
         match self {
             DropFunctionTarget::WithArgs(target) => Some(&target.args),
             DropFunctionTarget::Qualified(_) | DropFunctionTarget::Name(_) => None,
