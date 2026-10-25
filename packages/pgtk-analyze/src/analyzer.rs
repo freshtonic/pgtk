@@ -8701,7 +8701,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         list: Handle<FlatJsonTableColumnList>,
         names: &mut Vec<String>,
     ) -> Result<()> {
-        for col in self.list(self.get(list).list).to_vec() {
+        for col in self.list1(self.get(list).list).to_vec() {
             match self.get(col) {
                 FlatJsonTableColumn::Nested(n) => {
                     let n = self.get(*n);
@@ -8804,7 +8804,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         passing: Option<Handle<FlatJsonPassing>>,
         columns: &mut Vec<(String, TypeRef, Typmod)>,
     ) -> Result<()> {
-        let cols = self.list(self.get(list).list).to_vec();
+        let cols = self.list1(self.get(list).list).to_vec();
         let mut ordinality_found = false;
         for col in &cols {
             let FlatJsonTableColumn::Valued(v) = self.get(*col) else {

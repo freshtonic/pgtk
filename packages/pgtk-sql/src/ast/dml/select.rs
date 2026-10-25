@@ -707,12 +707,13 @@ recursa::ast_node! {
 // REL_17_11 gram.y 14138-14283, `table_ref` 13519).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// `COLUMNS ( ‹column› [, ...] )` — the JSON_TABLE column list (may be empty).
+    /// `COLUMNS ( ‹column› [, ...] )`: gram.y `json_table_column_definition_list`
+    /// (REL_17_11 gram.y 14171), which is not empty (issue #56).
     #[derive(Debug)]
     #[tok(COLUMNS, LPAREN, this, RPAREN)]
     pub struct JsonTableColumnList {
         #[sep(COMMA)]
-        pub list: zero_or_many!(JsonTableColumn),
+        pub list: one_or_many!(JsonTableColumn),
     }
 }
 
