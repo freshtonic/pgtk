@@ -23,12 +23,12 @@ published.
 
 ## Use
 
-```rust,ignore
+```rust,no_run
 use pgtk_test_server::Server;
 
 // A server of the version of the current version feature.
 let server = Server::start();
-let mut client = postgres::Client::connect(&server.connection_string("postgres"), postgres::NoTls)?;
+let url = server.connection_string("postgres");
 
 // Or a server of a given version.
 let pg14 = Server::start_of("pg14");

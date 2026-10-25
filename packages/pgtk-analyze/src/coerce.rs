@@ -83,12 +83,16 @@ impl<'c> Coercer<'c> {
                 CastContext::Implicit => CoercionContext::Implicit,
                 CastContext::Assignment => CoercionContext::Assignment,
                 CastContext::Explicit => CoercionContext::Explicit,
+                // A context that a newer catalog adds is taken as the strictest.
+                _ => CoercionContext::Explicit,
             };
             if ccontext >= castcontext {
                 let path = match row.method {
                     CastMethod::Function(f) => CoercionPath::Func(f),
                     CastMethod::InOut => CoercionPath::CoerceViaIO,
                     CastMethod::Binary => CoercionPath::RelabelType,
+                    // A method that a newer catalog adds gives no coercion.
+                    _ => return None,
                 };
                 return Some(Pathway {
                     path,

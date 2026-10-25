@@ -19,16 +19,19 @@ filegroup(
     name = "pgtk-psql.crate",
     srcs = glob(["src/**/*.rs"]) + [
         "Cargo.toml",
+        # src/lib.rs includes the README as the crate documentation.
+        "README.md",
         "build.rs",
     ],
 )
 
-# build.rs includes ../pgtk-sql/build-support/target_version.rs, so the sources keep that layout.
+# build.rs includes build-support/target_version.rs, a link to the file of pgtk-sql. Buck maps the
+# file of pgtk-sql to that path.
 rust_binary(
     name = "pgtk-psql-build-script-build",
     srcs = [],
     mapped_srcs = {
-        "//packages/pgtk-sql:target_version.rs": "pgtk-sql/build-support/target_version.rs",
+        "//packages/pgtk-sql:target_version.rs": "pgtk-psql/build-support/target_version.rs",
         "build.rs": "pgtk-psql/build.rs",
     },
     crate = "build_script_build",

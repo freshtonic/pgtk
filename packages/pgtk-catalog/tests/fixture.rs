@@ -1,4 +1,5 @@
-//! Tests of the embedded stock PostgreSQL 17 catalog.
+//! Tests of the embedded stock catalogs. Most tests read the PostgreSQL 17
+//! catalog. The tests at the end read the catalog of each version.
 //!
 //! ```sh
 //! cargo test --features fixture --test fixture
@@ -569,7 +570,7 @@ fn the_builder_adds_a_table_to_the_fixture() {
             typmod: Typmod::NONE,
             not_null: true,
             has_default: false,
-            generated: false,
+            generated: None,
             collation: None,
             identity: None,
         }],
@@ -591,4 +592,70 @@ fn the_builder_adds_a_table_to_the_fixture() {
         catalog.as_builtin(catalog.builtin(Builtin::Text)),
         Some(Builtin::Text)
     );
+}
+
+/// Each fixture, with the major version of its server.
+fn every_fixture() -> Vec<(u16, Catalog)> {
+    #[allow(unused_mut)]
+    let mut fixtures = vec![
+        (14, pgtk_catalog::fixture::pg14()),
+        (15, pgtk_catalog::fixture::pg15()),
+        (16, pgtk_catalog::fixture::pg16()),
+        (17, pg17()),
+        (18, pgtk_catalog::fixture::pg18()),
+    ];
+    #[cfg(feature = "pg19-beta")]
+    fixtures.push((19, pgtk_catalog::fixture::pg19_beta()));
+    fixtures
+}
+
+#[test]
+fn each_fixture_holds_its_version_in_the_current_format() {
+    for (major, catalog) in every_fixture() {
+        assert_eq!(catalog.metadata().server_version.major, major);
+        assert_eq!(
+            catalog.metadata().format_version,
+            Catalog::FORMAT_VERSION,
+            "regenerate the fixture of {major} with `cargo xtask fixture`"
+        );
+    }
+}
+
+#[test]
+fn each_fixture_holds_exactly_the_builtins_of_its_version() {
+    for (major, catalog) in every_fixture() {
+        for builtin in Builtin::ALL {
+            assert_eq!(
+                catalog.try_builtin(*builtin).is_some(),
+                builtin.since() <= major,
+                "{builtin:?} in the fixture of {major}"
+            );
+        }
+    }
+}
+
+#[test]
+fn not_null_is_a_constraint_from_postgresql_18() {
+    for (major, catalog) in every_fixture() {
+        let pg_class = catalog
+            .relation_named(&QualifiedName::new("pg_catalog", "pg_class"))
+            .expect("pg_class is there");
+        let not_null = catalog[pg_class]
+            .constraints
+            .iter()
+            .filter(|c| c.kind == ConstraintKind::NotNull)
+            .count();
+        if major >= 18 {
+            assert!(not_null > 0, "the fixture of {major}");
+        } else {
+            assert_eq!(not_null, 0, "the fixture of {major}");
+        }
+        assert!(
+            catalog[pg_class]
+                .constraints
+                .iter()
+                .all(|c| c.enforced && !c.period),
+            "the fixture of {major}"
+        );
+    }
 }

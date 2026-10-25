@@ -40,6 +40,7 @@ pub struct CatalogBuilder {
 
 /// Why a build failed.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum BuildError {
     /// An entity holds a handle that no arena slot answers.
     #[error("{entity} handle {index} is out of range (arena has {len})")]
@@ -454,13 +455,22 @@ impl CatalogBuilder {
         Ok(())
     }
 
-    /// Check that the catalog holds every built-in type.
+    /// Check that the catalog holds each built-in type of its server version.
+    ///
+    /// A built-in that is newer than the server is not required. A catalog
+    /// with no server (major version 0) is checked as the oldest supported
+    /// version.
     fn check_builtins(&self) -> Result<(), BuildError> {
         if self.permit_missing_builtins {
             return Ok(());
         }
+        let major = self
+            .metadata
+            .server_version
+            .major
+            .max(crate::loader::MIN_MAJOR);
         let oids: HashSet<Oid> = self.types.iter().map(|t| t.oid).collect();
-        for builtin in Builtin::ALL {
+        for builtin in Builtin::ALL.iter().filter(|b| b.since() <= major) {
             if !oids.contains(&builtin.oid()) {
                 return Err(BuildError::MissingBuiltin {
                     builtin: *builtin,
@@ -477,7 +487,7 @@ impl CatalogBuilder {
     /// its arena, and every column of a primary key must be a column of its
     /// relation. Second, the OIDs of each arena must be unique, and so must
     /// the names of the parameters. Third, the
-    /// catalog must hold every built-in type, unless
+    /// catalog must hold each built-in type of its server version, unless
     /// [`permit_missing_builtins`](CatalogBuilder::permit_missing_builtins)
     /// says otherwise.
     ///

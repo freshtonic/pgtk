@@ -1,12 +1,7 @@
-//! Repository tasks: `cargo xtask gen-builtins <pg_type.dat>` and
-//! `cargo xtask fixture <postgres-url> [--out <file>]`. See `docs/spec.md`.
+#![doc = include_str!("../README.md")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
-
-/// The PostgreSQL release that `pg_type.dat` comes from. Change it when you
-/// generate the file from a different release.
-const PG_VERSION: &str = "17.9";
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -38,9 +33,15 @@ fn main() {
 // gen-builtins
 // --------------------------------------------------------------------------
 
-/// Writes `src/builtin/generated.rs` from a `pg_type.dat` file.
+/// Writes `src/builtin/generated.rs` from the `pg_type.dat` file of each
+/// supported major version.
+///
+/// Each source argument is `<major>=<pg_type.dat>`, for example
+/// `18=postgres-18/src/include/catalog/pg_type.dat`. The enum is the union of
+/// the versions, and each variant records the first major version that has
+/// it.
 fn gen_builtins(args: &[String]) -> Result<(), String> {
-    let mut dat: Option<PathBuf> = None;
+    let mut sources: Vec<(u16, PathBuf)> = Vec::new();
     let mut out: Option<PathBuf> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
@@ -54,20 +55,26 @@ fn gen_builtins(args: &[String]) -> Result<(), String> {
             other if other.starts_with("--") => {
                 return Err(format!("unknown option `{other}`"));
             }
-            other if dat.is_none() => dat = Some(PathBuf::from(other)),
-            other => return Err(format!("unexpected argument `{other}`")),
+            other => sources.push(source_arg(other)?),
         }
     }
-    let dat = dat.ok_or_else(|| {
-        "usage: cargo xtask gen-builtins <pg_type.dat> [--out <file>]".to_string()
-    })?;
+    if sources.is_empty() {
+        return Err(
+            "usage: cargo xtask gen-builtins <major>=<pg_type.dat>... [--out <file>]".to_string(),
+        );
+    }
     let out = out.unwrap_or_else(default_out);
 
-    let text = std::fs::read_to_string(&dat)
-        .map_err(|error| format!("cannot read {}: {error}", dat.display()))?;
-    let entries = parse_dat(&text)?;
-    let builtins = builtins(&entries)?;
-    let code = render(&builtins);
+    let mut versions = Vec::with_capacity(sources.len());
+    for (major, dat) in &sources {
+        let text = std::fs::read_to_string(dat)
+            .map_err(|error| format!("cannot read {}: {error}", dat.display()))?;
+        versions.push((*major, parse_dat(&text)?));
+    }
+    let builtins = union(&versions)?;
+    let mut majors: Vec<u16> = versions.iter().map(|(major, _)| *major).collect();
+    majors.sort_unstable();
+    let code = render(&builtins, &majors);
 
     if let Some(parent) = out.parent()
         && !parent.as_os_str().is_empty()
@@ -80,13 +87,32 @@ fn gen_builtins(args: &[String]) -> Result<(), String> {
     format_file(&out);
 
     println!(
-        "xtask: {} entries plus {} arrays = {} variants -> {}",
-        entries.len(),
-        builtins.len() - entries.len(),
+        "xtask: {} variants from PostgreSQL {} -> {}",
         builtins.len(),
+        version_list(&majors),
         out.display()
     );
     Ok(())
+}
+
+/// Reads one `<major>=<pg_type.dat>` argument.
+fn source_arg(arg: &str) -> Result<(u16, PathBuf), String> {
+    let (major, path) = arg
+        .split_once('=')
+        .ok_or_else(|| format!("`{arg}` is not `<major>=<pg_type.dat>`"))?;
+    let major = major
+        .parse()
+        .map_err(|_| format!("`{major}` in `{arg}` is not a major version"))?;
+    Ok((major, PathBuf::from(path)))
+}
+
+/// The major versions as text, such as `14, 15, 16`.
+fn version_list(majors: &[u16]) -> String {
+    majors
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// The default output path, below the workspace root.
@@ -150,6 +176,8 @@ struct Builtin {
     name: String,
     /// The Rust variant name.
     variant: String,
+    /// The first major version that has the type.
+    since: u16,
 }
 
 /// Reads every entry of a `pg_type.dat` file.
@@ -339,13 +367,14 @@ fn number(value: &str, line: usize) -> Result<u32, String> {
 ///
 /// Each entry makes one variant. An `array_type_oid` makes a second variant
 /// for the array of that entry.
-fn builtins(entries: &[Entry]) -> Result<Vec<Builtin>, String> {
+fn builtins(entries: &[Entry], since: u16) -> Result<Vec<Builtin>, String> {
     let mut builtins = Vec::with_capacity(entries.len() * 2);
     for entry in entries {
         builtins.push(Builtin {
             oid: entry.oid,
             name: entry.typname.clone(),
             variant: variant_name(&entry.typname),
+            since,
         });
         if let Some(oid) = entry.array_type_oid {
             let name = format!("_{}", entry.typname);
@@ -353,6 +382,7 @@ fn builtins(entries: &[Entry]) -> Result<Vec<Builtin>, String> {
                 oid,
                 variant: variant_name(&name),
                 name,
+                since,
             });
         }
     }
@@ -373,6 +403,48 @@ fn builtins(entries: &[Entry]) -> Result<Vec<Builtin>, String> {
         }
     }
     Ok(builtins)
+}
+
+/// Makes the variants of every version, ordered by OID.
+///
+/// `versions` holds the entries of each major version. A variant records the
+/// lowest major version that has it. The model holds no built-in that a newer
+/// version removed, so a type that an older version has and a newer version
+/// does not have is an error. One OID with two names is an error too.
+fn union(versions: &[(u16, Vec<Entry>)]) -> Result<Vec<Builtin>, String> {
+    let mut versions: Vec<&(u16, Vec<Entry>)> = versions.iter().collect();
+    versions.sort_by_key(|(major, _)| *major);
+    for pair in versions.windows(2) {
+        if pair[0].0 == pair[1].0 {
+            return Err(format!("PostgreSQL {} is given twice", pair[0].0));
+        }
+    }
+    let mut all: Vec<Builtin> = Vec::new();
+    for (major, entries) in versions {
+        let these = builtins(entries, *major)?;
+        for old in &all {
+            if !these.iter().any(|new| new.oid == old.oid) {
+                return Err(format!(
+                    "`{}` (OID {}) is in PostgreSQL {} but not in {major}",
+                    old.name, old.oid, old.since
+                ));
+            }
+        }
+        for new in these {
+            match all.iter().find(|old| old.oid == new.oid) {
+                Some(old) if old.name != new.name => {
+                    return Err(format!(
+                        "OID {} is `{}` in PostgreSQL {} and `{}` in {major}",
+                        new.oid, old.name, old.since, new.name
+                    ));
+                }
+                Some(_) => {}
+                None => all.push(new),
+            }
+        }
+    }
+    all.sort_by_key(|builtin| builtin.oid);
+    Ok(all)
 }
 
 /// Makes the Rust variant name of one `typname`.
@@ -406,22 +478,37 @@ fn variant_name(typname: &str) -> String {
 ///
 /// The code names only `Oid`. It is included from `src/builtin.rs`, so it
 /// uses nothing else from the crate.
-fn render(builtins: &[Builtin]) -> String {
-    let mut code = String::with_capacity(builtins.len() * 200);
+fn render(builtins: &[Builtin], majors: &[u16]) -> String {
+    let first = majors.iter().copied().min().unwrap_or(0);
+    let list = version_list(majors);
+    let mut code = String::with_capacity(builtins.len() * 250);
     code.push_str(&format!(
         "// GENERATED by `cargo xtask gen-builtins` from pg_type.dat \
-         (PostgreSQL {PG_VERSION}). Do not edit.\n\n"
+         (PostgreSQL {list}). Do not edit.\n\n"
     ));
 
     code.push_str("/// Every Type with a fixed OID that a SQL expression can name.\n");
+    code.push_str("///\n");
+    code.push_str(&format!(
+        "/// The enum is the union of PostgreSQL {list}. The documentation of a\n\
+         /// variant that only newer versions have names the first version, and\n\
+         /// [`Builtin::since`] gives it.\n"
+    ));
     code.push_str("#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]\n");
     code.push_str("#[repr(u16)]\n");
+    code.push_str("#[non_exhaustive]\n");
     code.push_str("pub enum Builtin {\n");
     for (index, builtin) in builtins.iter().enumerate() {
         code.push_str(&format!(
             "    /// `{}`, OID {}.\n",
             builtin.name, builtin.oid
         ));
+        if builtin.since > first {
+            code.push_str(&format!(
+                "    ///\n    /// PostgreSQL {} and later.\n",
+                builtin.since
+            ));
+        }
         if index == 0 {
             code.push_str(&format!("    {} = 0,\n", builtin.variant));
         } else {
@@ -446,6 +533,21 @@ fn render(builtins: &[Builtin]) -> String {
             "            Builtin::{} => Oid({}),\n",
             builtin.variant, builtin.oid
         ));
+    }
+    code.push_str("        }\n    }\n\n");
+
+    code.push_str("    /// The first major version of PostgreSQL that has the type.\n");
+    code.push_str("    pub const fn since(self) -> u16 {\n");
+    code.push_str("        match self {\n");
+    let newer: Vec<&Builtin> = builtins.iter().filter(|b| b.since > first).collect();
+    for builtin in &newer {
+        code.push_str(&format!(
+            "            Builtin::{} => {},\n",
+            builtin.variant, builtin.since
+        ));
+    }
+    if newer.len() < builtins.len() {
+        code.push_str(&format!("            _ => {first},\n"));
     }
     code.push_str("        }\n    }\n\n");
 
@@ -500,6 +602,7 @@ fn fixture(args: &[String]) -> Result<(), String> {
     let compressed = zstd::encode_all(json.as_slice(), ZSTD_LEVEL)
         .map_err(|error| format!("cannot compress the catalog: {error}"))?;
 
+    let out = out.unwrap_or_else(|| default_fixture_out(version.major));
     if let Some(parent) = out.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -529,7 +632,7 @@ fn fixture(args: &[String]) -> Result<(), String> {
 }
 
 /// Reads the connection string and the output path from the command line.
-fn fixture_args(args: &[String]) -> Result<(String, PathBuf), String> {
+fn fixture_args(args: &[String]) -> Result<(String, Option<PathBuf>), String> {
     let mut url: Option<String> = None;
     let mut out: Option<PathBuf> = None;
     let mut rest = args.iter();
@@ -550,12 +653,15 @@ fn fixture_args(args: &[String]) -> Result<(String, PathBuf), String> {
     }
     let url =
         url.ok_or_else(|| "usage: cargo xtask fixture <postgres-url> [--out <file>]".to_string())?;
-    Ok((url, out.unwrap_or_else(default_fixture_out)))
+    Ok((url, out))
 }
 
-/// The default fixture path, below the workspace root.
-fn default_fixture_out() -> PathBuf {
-    workspace_root().join("fixtures").join("pg17.json.zst")
+/// The default fixture path of a major version, below the workspace root,
+/// such as `fixtures/pg18.json.zst`.
+fn default_fixture_out(major: u16) -> PathBuf {
+    workspace_root()
+        .join("fixtures")
+        .join(format!("pg{major}.json.zst"))
 }
 
 #[cfg(test)]
@@ -608,7 +714,7 @@ mod tests {
             typname: "int4".to_string(),
             array_type_oid: Some(1007),
         }];
-        let builtins = builtins(&entries).expect("builds");
+        let builtins = builtins(&entries, 14).expect("builds");
         assert_eq!(builtins[0].variant, "Int4");
         assert_eq!(builtins[1].oid, 1007);
         assert_eq!(builtins[1].name, "_int4");
@@ -629,6 +735,54 @@ mod tests {
                 array_type_oid: None,
             },
         ];
-        assert!(builtins(&entries).is_err());
+        assert!(builtins(&entries, 14).is_err());
+    }
+
+    fn entry(oid: u32, typname: &str) -> Entry {
+        Entry {
+            oid,
+            typname: typname.to_string(),
+            array_type_oid: None,
+        }
+    }
+
+    #[test]
+    fn the_union_records_the_first_version_of_each_type() {
+        let versions = vec![
+            (19, vec![entry(23, "int4"), entry(6437, "oid8")]),
+            (14, vec![entry(23, "int4")]),
+        ];
+        let builtins = union(&versions).expect("builds");
+        assert_eq!(builtins.len(), 2);
+        assert_eq!((builtins[0].name.as_str(), builtins[0].since), ("int4", 14));
+        assert_eq!((builtins[1].name.as_str(), builtins[1].since), ("oid8", 19));
+    }
+
+    #[test]
+    fn a_removed_type_is_an_error() {
+        let versions = vec![
+            (14, vec![entry(23, "int4"), entry(24, "regproc")]),
+            (15, vec![entry(23, "int4")]),
+        ];
+        assert!(union(&versions).is_err());
+    }
+
+    #[test]
+    fn a_renamed_type_is_an_error() {
+        let versions = vec![
+            (14, vec![entry(23, "int4")]),
+            (15, vec![entry(23, "integer")]),
+        ];
+        assert!(union(&versions).is_err());
+    }
+
+    #[test]
+    fn a_source_names_its_major_version() {
+        assert_eq!(
+            source_arg("18=/x/pg_type.dat"),
+            Ok((18, PathBuf::from("/x/pg_type.dat")))
+        );
+        assert!(source_arg("/x/pg_type.dat").is_err());
+        assert!(source_arg("x=/x/pg_type.dat").is_err());
     }
 }

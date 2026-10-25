@@ -1,3 +1,7 @@
+#![doc = include_str!("../README.md")]
+//!
+//! # Details
+//!
 //! An oracle for psql's own client lexer.
 //!
 //! `pgtk-oracle` links PostgreSQL's raw parser so that pgtk-sql can be compared
@@ -19,23 +23,33 @@
 //!   value landed in the forwarded text;
 //! - one event for each `;` that submits the query buffer;
 //! - one event for each backslash command, with the command name exactly as
-//!   `psqlscanslash.l` reads it; and
+//!   `psqlscanslash.l` reads it, and the extent and value of each argument
+//!   that `psql_scan_slash_option` reads for it;
+//! - one event each time psql discards the query text of an inactive `\if`
+//!   branch; and
 //! - a final event saying whether the document ended with a complete query
 //!   buffer, and if not, which lexical state was still open.
 //!
 //! Those are the facts pgtk-psql models (`docs/adr/0007-give-psql-its-own-grammar-and-crate.md`).
 //!
+//! The shim reads the arguments of each command as `command.c` reads them. It
+//! applies `\set`, `\unset`, `\if`, `\elif`, `\else` and `\endif`, and it
+//! runs no other command and no backquoted shell command.
+//!
 //! # Two adaptations of psql's main loop
 //!
 //! psql reads one line at a time and resets the query buffer after every
 //! submission. pgtk-psql renders one buffer for a whole document. The shim
-//! therefore scans the whole document as one input and never resets the
-//! buffer, so that the two texts are comparable. `csrc/psql_oracle.c`
+//! therefore scans the SQL text of the whole document as one input and never
+//! resets the buffer, so that the two texts are comparable. `csrc/psql_oracle.c`
 //! documents both, and `docs/psql-oracle.md` records what each one costs.
 
+#[cfg(feature = "scanner")]
 use std::ffi::CStr;
 use std::ops::Range;
+#[cfg(feature = "scanner")]
 use std::os::raw::{c_char, c_int};
+#[cfg(feature = "scanner")]
 use std::sync::Mutex;
 
 /// The Git ref of the PostgreSQL release that this oracle is built from.
@@ -44,6 +58,7 @@ pub const POSTGRES_REF: &str = env!("PG_PSQL_ORACLE_POSTGRES_REF");
 /// The Git commit of the PostgreSQL release that this oracle is built from.
 pub const POSTGRES_COMMIT: &str = env!("PG_PSQL_ORACLE_POSTGRES_COMMIT");
 
+#[cfg(feature = "scanner")]
 #[repr(C)]
 struct RawEvent {
     kind: c_int,
@@ -56,6 +71,7 @@ struct RawEvent {
     text: *mut c_char,
 }
 
+#[cfg(feature = "scanner")]
 #[repr(C)]
 struct RawScan {
     events: *mut RawEvent,
@@ -66,6 +82,7 @@ struct RawScan {
     copy_from_stdin: c_int,
 }
 
+#[cfg(feature = "scanner")]
 unsafe extern "C" {
     fn pgpso_scan(
         source: *const c_char,
@@ -77,6 +94,7 @@ unsafe extern "C" {
     fn pgpso_free(scan: *mut RawScan);
 }
 
+#[cfg(feature = "scanner")]
 /// psql's lexer keeps state in file-scope flex tables; serialise every call.
 static LOCK: Mutex<()> = Mutex::new(());
 
@@ -90,7 +108,8 @@ pub enum Quote {
     Literal,
     /// `:"name"`.
     Identifier,
-    /// A backslash-command argument. This oracle never reads one.
+    /// A variable inside a backquoted argument. This oracle never runs a
+    /// backquoted command.
     ShellArgument,
 }
 
@@ -109,6 +128,7 @@ pub enum Prompt {
 }
 
 impl Prompt {
+    #[cfg(feature = "scanner")]
     fn from_raw(value: c_int) -> Self {
         match value {
             0 => Self::Ready,
@@ -146,9 +166,9 @@ pub enum Command {
     /// The command returns `PSQL_CMD_SEND` and its send mode puts the buffer
     /// text on the wire. `MainLoop()` then resets the buffer.
     Send,
-    /// The command returns `PSQL_CMD_SEND`, so the buffer ends, but its send
-    /// mode does not put the buffer text on the wire. All of these arrived in
-    /// PostgreSQL 18.
+    /// The buffer ends, but its text does not go on the wire: `\r`, and the
+    /// commands of PostgreSQL 18 that return `PSQL_CMD_SEND` with a send mode
+    /// that does not send the text.
     Discard,
     /// Every other command. It does not end the query buffer, so the text
     /// before and after it belongs to one statement.
@@ -162,14 +182,16 @@ pub enum Command {
 /// whether the send mode transmits the buffer text
 /// (`docs/research/psql-14-19-syntax-changes.md`, class (A) item A1).
 ///
-/// Two boundaries are outside the table, because they are not `PSQL_CMD_SEND`:
-/// `\watch` runs the buffer and resets it, and `\r` discards it. Both answer
-/// [`Command::Other`] here. `docs/psql-oracle.md` records this.
+/// Two more commands end the buffer, although they do not return
+/// `PSQL_CMD_SEND`: `\watch` runs the buffer and resets it (`command.c`
+/// 2993), so it is [`Command::Send`], and `\r` (`\reset`) clears it
+/// (`command.c` 2352), so it is [`Command::Discard`].
 pub fn classify(name: &str) -> Command {
     // `exec_command_g` serves both `\g` and `\gx`; `\gdesc` sends the buffer
     // with a Describe, so it transmits the text like the others.
     // `REL_17_11:command.c` 761, 1474, 1570, 1624, 1651.
-    const SEND: &[&str] = &["crosstabview", "g", "gx", "gdesc", "gexec", "gset"];
+    const SEND: &[&str] = &["crosstabview", "g", "gx", "gdesc", "gexec", "gset", "watch"];
+    const DISCARD: &[&str] = &["r", "reset"];
     // Added in 18: `REL_18_6:command.c` 2529 (`\parse`) and 2855
     // (`\sendpipeline`) send the buffer text.
     #[cfg(feature = "since-pg18")]
@@ -189,6 +211,9 @@ pub fn classify(name: &str) -> Command {
 
     if SEND.contains(&name) {
         return Command::Send;
+    }
+    if DISCARD.contains(&name) {
+        return Command::Discard;
     }
     #[cfg(feature = "since-pg18")]
     {
@@ -225,8 +250,10 @@ pub enum Event {
     },
     /// A `;` that submits the query buffer.
     Terminator {
-        /// The semicolon's extent in the document.
-        source: Range<usize>,
+        /// The semicolon's extent in the document. `None` when the
+        /// semicolon came from a substituted `:name` value, which psql
+        /// rescans.
+        source: Option<Range<usize>>,
         /// Its extent in the forwarded text. psql forwards the `;`.
         output: Range<usize>,
     },
@@ -235,20 +262,39 @@ pub enum Event {
         /// The command name, without the backslash, exactly as
         /// `psqlscanslash.l` reads it.
         name: String,
-        /// The whole command: the backslash, the name, and the arguments,
-        /// which reach the next line break because psql reads one line at a
-        /// time.
+        /// The whole command: the backslash, the name, the arguments that
+        /// psql reads for it, and a trailing `\\`.
         source: Range<usize>,
         /// The backslash and the name alone.
         command: Range<usize>,
         /// Where it sits in the forwarded text. psql forwards none of it, so
         /// the range is empty.
         output: usize,
+        /// Each argument that `psql_scan_slash_option` read, in order.
+        options: Vec<SlashOption>,
+    },
+    /// psql discarded the query text of an inactive `\if` branch
+    /// (`discard_query_text` in `command.c`). The oracle keeps that text in
+    /// [`Scan::sql`], so that the offsets of the other events stay valid;
+    /// `output` is the range of it that psql removes.
+    Discard {
+        /// The range of the forwarded text that psql removes.
+        output: Range<usize>,
     },
     /// The end of the document, with a complete query buffer.
     End { prompt: Prompt },
     /// The end of the document, with an incomplete query buffer.
     Incomplete { prompt: Prompt },
+}
+
+/// One argument of a backslash command, as `psql_scan_slash_option` read it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SlashOption {
+    /// The argument's extent in the document, quotes included.
+    pub source: Range<usize>,
+    /// The value psql read, or `None` when psql refused the argument (an
+    /// unterminated quote).
+    pub value: Option<String>,
 }
 
 /// What psql's lexer made of one document.
@@ -263,7 +309,8 @@ impl Scan {
     /// The text psql forwards to the server, for the whole document.
     ///
     /// A backslash command contributes nothing: psql sends the query buffer
-    /// and the command never reaches the server. Use [`Scan::events`] to see
+    /// and the command never reaches the server. The text of an inactive
+    /// `\if` branch is here; [`Event::Discard`] says where it is. Use [`Scan::events`] to see
     /// where the boundaries are.
     pub fn sql(&self) -> &str {
         &self.sql
@@ -303,6 +350,7 @@ impl Scan {
     }
 }
 
+#[cfg(feature = "scanner")]
 /// Scans `source` as psql would, with `variables` bound.
 ///
 /// `variables` is a list of `(name, value)` pairs. A name that is not in the
@@ -349,6 +397,7 @@ pub fn scan(source: &str, variables: &[(&str, &str)]) -> Scan {
     }
 }
 
+#[cfg(feature = "scanner")]
 /// Reads the C result. `source_len` bounds every source offset, so a bad
 /// offset stops the test rather than producing a silent mismatch.
 unsafe fn read_scan(raw: &RawScan, source_len: usize) -> Scan {
@@ -363,10 +412,24 @@ unsafe fn read_scan(raw: &RawScan, source_len: usize) -> Scan {
 
     let raw_events =
         unsafe { std::slice::from_raw_parts(raw.events as *const RawEvent, raw.nevents as usize) };
-    let events = raw_events
-        .iter()
-        .map(|event| read_event(event, source_len))
-        .collect();
+    let mut events: Vec<Event> = Vec::with_capacity(raw_events.len());
+    for raw in raw_events {
+        if raw.kind == 6 {
+            let option = read_option(raw, source_len);
+            // Interpolation and discard events of the arguments come
+            // between a command and its options.
+            match events
+                .iter_mut()
+                .rev()
+                .find(|event| matches!(event, Event::Backslash { .. }))
+            {
+                Some(Event::Backslash { options, .. }) => options.push(option),
+                _ => panic!("an option event follows its backslash command"),
+            }
+            continue;
+        }
+        events.push(read_event(raw, source_len));
+    }
 
     Scan {
         sql,
@@ -375,6 +438,26 @@ unsafe fn read_scan(raw: &RawScan, source_len: usize) -> Scan {
     }
 }
 
+#[cfg(feature = "scanner")]
+fn read_option(event: &RawEvent, source_len: usize) -> SlashOption {
+    let (start, end) = (event.source_start as usize, event.source_end as usize);
+    assert!(
+        start <= end && end <= source_len,
+        "the oracle reported the option range {start}..{end} \
+         outside a document of {source_len} bytes",
+    );
+    let value = (!event.text.is_null()).then(|| {
+        unsafe { CStr::from_ptr(event.text) }
+            .to_string_lossy()
+            .into_owned()
+    });
+    SlashOption {
+        source: start..end,
+        value,
+    }
+}
+
+#[cfg(feature = "scanner")]
 fn read_event(event: &RawEvent, source_len: usize) -> Event {
     let text = || {
         assert!(!event.text.is_null(), "this event kind carries text");
@@ -409,7 +492,7 @@ fn read_event(event: &RawEvent, source_len: usize) -> Event {
             output_end: (event.output_end >= 0).then_some(event.output_end as usize),
         },
         2 => Event::Terminator {
-            source: source(event.source_start, event.source_end),
+            source: (event.source_start >= 0).then(|| source(event.source_start, event.source_end)),
             output: (event.output_start as usize)..(event.output_end as usize),
         },
         3 => {
@@ -421,8 +504,12 @@ fn read_event(event: &RawEvent, source_len: usize) -> Event {
                 source: whole,
                 command,
                 output: event.output_start as usize,
+                options: Vec::new(),
             }
         }
+        7 => Event::Discard {
+            output: (event.output_start as usize)..(event.output_end as usize),
+        },
         4 => Event::End {
             prompt: Prompt::from_raw(event.detail),
         },
