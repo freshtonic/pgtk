@@ -176,8 +176,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FunctionBuiltinType {
         pub head: FunctionBuiltinTypeHead,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
     }
 }
 
@@ -227,8 +226,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FunctionGenericTypeTail {
         pub precision: Option<TypePrecision>,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
     }
 }
 
@@ -236,7 +234,29 @@ recursa::ast_node! {
     /// Identifier-spelled cast type or `qualified%TYPE` reference.
     #[derive(Debug)]
     pub struct FunctionIdentifierType {
-        pub name: FunctionTypeName,
+        pub first: crate::tokens::type_function_name,
+        pub rest: FunctionIdentifierTypeRest,
+    }
+}
+
+recursa::ast_node! {
+    /// What follows the first name of a [`FunctionIdentifierType`]. gram.y
+    /// `func_type: type_function_name attrs '%' TYPE_P` (REL_17_11 8489)
+    /// has `attrs`, which is one or more `'.' attr_name`, so `%TYPE` follows
+    /// only a dotted name: `f(a%TYPE)` is a syntax error (issue #51).
+    #[derive(Debug)]
+    pub enum FunctionIdentifierTypeRest {
+        Qualified(FunctionQualifiedType),
+        Plain(FunctionGenericTypeTail),
+    }
+}
+
+recursa::ast_node! {
+    /// The dotted parts after the first name, then `%TYPE` or the generic
+    /// type tail.
+    #[derive(Debug)]
+    pub struct FunctionQualifiedType {
+        pub parts: one_or_many!(FunctionTypeNamePart),
         pub suffix: FunctionIdentifierTypeSuffix,
     }
 }
@@ -253,8 +273,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(JSON, this)]
     pub struct FunctionJsonType {
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
     }
 }
 

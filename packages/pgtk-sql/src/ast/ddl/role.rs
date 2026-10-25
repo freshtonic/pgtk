@@ -127,8 +127,7 @@ recursa::ast_node! {
     pub struct DefArgNamedType {
         pub name: FunctionTypeName,
         pub parameters: Option<DefArgNamedParameters>,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
     }
 }
 

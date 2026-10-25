@@ -825,3 +825,49 @@ fn a_name_list_holds_plain_names() {
         "CREATE INDEX i ON t (a) WITH (a.b = 1)",
     ]);
 }
+
+/// gram.y `Typename` and `SimpleTypename` (issue #51).
+#[test]
+fn type_names_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `opt_array_bounds` or `ARRAY`, never both.
+            "DROP TYPE A[0] ARRAY",
+            "DROP DOMAIN INT[] ARRAY",
+            "DROP FUNCTION A(A A[0] ARRAY)",
+            "SELECT 1::int[] ARRAY[2]",
+            // `opt_type_modifiers` is `'(' expr_list ')'`, never empty.
+            "DROP TYPE A()[0]",
+            "DROP DOMAIN BIT()[]",
+            "CREATE DOMAIN city BIT()[]",
+            "SELECT 1::numeric()",
+            // `%TYPE` follows `type_function_name attrs`, a dotted name.
+            "DROP FUNCTION A(A A% TYPE)",
+            "DROP PROCEDURE A(A A% TYPE)",
+            "CREATE FUNCTION A(A A% TYPE) RETURNS int AS ''",
+            // `SeqOptElem: AS SimpleTypename` and `XMLSERIALIZE(... AS
+            // SimpleTypename)` take no array decoration.
+            "CREATE SEQUENCE score AS INTEGER[]",
+            "ALTER SEQUENCE amount AS UNKNOWN ARRAY",
+            "CREATE UNLOGGED SEQUENCE country AS JSON[]",
+            "CREATE TABLE t (a int GENERATED ALWAYS AS IDENTITY (AS int[]))",
+            "SELECT XMLSERIALIZE(CONTENT x AS text[])",
+            // `ConstInterval '(' Iconst ')' Sconst` takes no qualifier.
+            "SELECT INTERVAL(0) '' YEAR",
+            "CREATE POLICY currency ON item.uuid FOR ALL USING(INTERVAL(0) '' YEAR TO MONTH)",
+            "ALTER POLICY d ON end_date TO CURRENT_ROLE WITH CHECK(INTERVAL(0) '' DAY)",
+        ],
+        "the type name is not a gram.y Typename",
+    );
+    assert_accepts(&[
+        "DROP TYPE A[0][]",
+        "DROP TYPE A ARRAY[0]",
+        "DROP TYPE A(1)",
+        "CREATE FUNCTION A(A a.b% TYPE) RETURNS int AS ''",
+        "CREATE FUNCTION A(A a.b[]) RETURNS int AS ''",
+        "CREATE SEQUENCE score AS INTEGER",
+        "SELECT XMLSERIALIZE(CONTENT x AS varchar(3))",
+        "SELECT INTERVAL(0) ''",
+        "SELECT INTERVAL '' YEAR TO MONTH",
+    ]);
+}

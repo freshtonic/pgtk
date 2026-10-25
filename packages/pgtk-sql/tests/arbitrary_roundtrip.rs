@@ -112,7 +112,6 @@ enum FailureKind {
 use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
 // The issue of each group of known failures.
-const TYPES: u32 = 51;
 const EREPORTS: u32 = 55;
 const LISTS: u32 = 56;
 const CREATE_FORMS: u32 = 57;
@@ -160,9 +159,6 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
     known(Oracle, EREPORTS, r#""#, r#"aggregates cannot have output arguments|duplicate trigger events|unrecognized row security option|CREATE SCHEMA IF NOT EXISTS cannot include schema elements|STDIN/STDOUT not allowed with PROGRAM|UNENCRYPTED PASSWORD is no longer supported|ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|column number must be in range|MATCH PARTIAL not yet implemented|unrecognized partitioning strategy|WITH TIES cannot be specified|WHERE clause not allowed with COPY TO|invalid publication object list|column specification not allowed for schema|invalid schema name|improper use of|unrecognized JSON encoding|type modifier cannot have parameter name|WITH CHECK OPTION not supported on recursive views|a column list with|WHERE clause not allowed for schema|unrecognized JSON|multiple ORDER BY clauses not allowed|frame start cannot be|frame end cannot be"#, "a statement that a gram.y action rejects with ereport()"),
     known(Oracle, EREPORTS, r#"UESCAPE"#, r#"invalid Unicode escape"#, "an invalid UESCAPE character"),
-    known(Oracle, TYPES, r#"\] ARRAY"#, r#""(ARRAY|\[|\])""#, "a type name that mixes `[n]` bounds and `ARRAY`"),
-    known(Oracle, TYPES, r#"\w\(\)( ARRAY|\[)"#, r#""\)""#, "a type name with an empty type modifier list `()`"),
-    known(Oracle, TYPES, r#"(BIT|VARYING|CHAR|CHARACTER|VARCHAR|NCHAR|TEXT|BOOL|BOOLEAN|INT|INTEGER|SMALLINT|BIGINT|REAL|FLOAT|DEC|DECIMAL|NUMERIC|SERIAL|UNKNOWN|JSON|INTERVAL|TIME|TIMESTAMP|PRECISION)\(\)"#, r#""\)""#, "a type name with an empty type modifier list `()`"),
     known(Oracle, LISTS, r#"^DROP [A-Z ]+?( IF EXISTS)?( CASCADE| RESTRICT)?$"#, r#"end of input"#, "DROP with no object"),
     known(Oracle, LISTS, r#"TRANSFORM (IF EXISTS )?FOR "#, r#""(FROM|TO|,)""#, "a transform with more than one FROM SQL or TO SQL element"),
     known(Oracle, LISTS, r#"^ALTER (SERVER|FOREIGN DATA WRAPPER) \S+$"#, r#"end of input"#, "ALTER SERVER or ALTER FOREIGN DATA WRAPPER with no action"),
@@ -181,13 +177,10 @@ const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Oracle, CREATE_FORMS, r#"(MODULUS|REMAINDER) ?[^0-9 ]"#, r#""#, "a hash partition bound that is not an integer"),
     known(Oracle, CREATE_FORMS, r#"PARTITION OF"#, r#""(SERVER|ON|TABLESPACE|DEFAULT)"|end of input"#, "PARTITION OF with no partition bound, or with both a bound and DEFAULT"),
     known(Oracle, LISTS, r#"REFERENCING (FOR|EXECUTE|WHEN)"#, r#""(FOR|EXECUTE|WHEN)""#, "REFERENCING with no transition relation"),
-    known(Oracle, TYPES, r#"% TYPE"#, r#""%""#, "`name%TYPE` without a dotted column reference"),
-    known(Oracle, TYPES, r#"(SEQUENCE|IDENTITY|XMLSERIALIZE).*AS "#, r#""(\[|ARRAY)""#, "an array type where PostgreSQL wants `SimpleTypename`"),
     known(Oracle, CREATE_FORMS, r#"VIEW .*USING"#, r#""USING""#, "a view with an access method"),
     known(Oracle, CREATE_FORMS, r#"TABLE .*(USING \S+ PARTITION OF|PARTITION OF .* USING|OF )"#, r#""(PARTITION|USING|WITH|LIKE|OF)""#, "the clauses of CREATE TABLE in an order PostgreSQL rejects"),
     known(Oracle, CREATE_FORMS, r#"^CREATE STATISTICS IF NOT EXISTS( ON|\()"#, r#""(\(|ON)""#, "CREATE STATISTICS IF NOT EXISTS with no name"),
     known(Oracle, OTHER_FORMS, r#"^ALTER (INDEX|TABLE|FOREIGN TABLE) .* ALTER( COLUMN)? ?[-+]? ?\d"#, r#""(\(|\+|-|[A-Z]+)""#, "a signed column number, or an action that PostgreSQL rejects for a column number"),
-    known(Oracle, TYPES, r#"INTERVAL\(\d+\) '[^']*' (YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)"#, r#""(YEAR|MONTH|DAY|HOUR|MINUTE|SECOND)""#, "`INTERVAL(p) '...'` with interval fields"),
     known(Oracle, EXPRESSIONS, r#"WHERE CURRENT OF"#, r#""(OF|WHERE)""#, "`CURRENT OF` outside UPDATE and DELETE"),
     known(Oracle, CREATE_FORMS, r#"RECURSIVE VIEW [a-z_. ]+ AS"#, r#""AS""#, "a recursive view with no column list"),
     known(Oracle, CREATE_FORMS, r#"REFERENCES"#, r#""(ON|DELETE|UPDATE)""#, "repeated or misplaced referential actions"),
