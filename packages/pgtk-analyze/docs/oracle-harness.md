@@ -36,16 +36,32 @@ This is the pattern `pgtk-sql` uses for its own differential baseline.
 The corpus is the `vendor/postgres` submodule, pinned to the same
 PostgreSQL 17.9 commit `pgtk-sql` vendors, so both crates read the same bytes.
 The regression files are psql documents. Ninety-seven of them use
-meta-commands such as `\set`, `\d` and `\if` that neither `pgtk-sql` nor
-`pgtk-psql` model, so the strict document parser rejects those files whole. The
-harness therefore reads the statement byte ranges `pgtk-sql` froze when it
-captured its own baseline, copied to `baselines/postgresql-17.9-statements.json`,
-and treats every item that split marked as a non-statement as Skipped. The
-reader reads each file by its frozen Git blob ID from the object store of the
-submodule, which must hold the commit the ranges were frozen from.
+meta-commands such as `\set`, `\d` and `\if`. The harness reads the statement
+byte ranges `pgtk-sql` froze when it captured its own baseline, copied to
+`baselines/postgresql-17.9-statements.json`, and treats every item that split
+marked as a non-statement as Skipped. The reader reads each file by its frozen
+Git blob ID from the object store of the submodule, which must hold the commit
+the ranges were frozen from.
 The design session chose the document parser as the primary splitter with the
-frozen ranges as a cross-check; that is reversed until the meta-command gap in
-`pgtk-psql` closes.
+frozen ranges as a cross-check. That is still reversed. `pgtk-psql` now parses
+the meta-commands of every file of the corpus (freshtonic/pgtk#42), and its
+oracle agrees with psql on 288 of the 327 documents at `pg17`. These steps are
+left before the document parser can split the corpus:
+
+- **COPY data.** psql reads the data lines after `COPY ... FROM STDIN` and
+  `\copy ... from stdin` itself. `pgtk-psql` reads them as psql text, so 22
+  files hold data rows that would become statement text. The splitter must
+  skip from such a statement to the `\.` line.
+- **Statement boundaries.** psql does not end a statement at a `;` inside
+  parentheses or inside a `BEGIN ... END` body of `CREATE FUNCTION`.
+  `pgtk-psql` renders one text for the whole document and leaves that split to
+  `pgtk-sql`, so the splitter must use `pgtk-sql`'s statement split of the
+  rendered text, and map each statement back with the source map.
+- **Unknown commands.** psql drops the rest of the line after a command it
+  does not know. `pgtk-psql` keeps the name only. The corpus has such lines
+  in `psql.sql` and `strings.sql`.
+- **A new baseline.** The per-file counts must be pinned again from a full run
+  against the server, and the frozen ranges kept as the cross-check.
 
 Each item is rendered through `pgtk-psql` before anything else, which strips
 psql's own terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) the

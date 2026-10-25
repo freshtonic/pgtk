@@ -29,7 +29,7 @@ If reindeer reports a missing fixup, write `third-party/rust/fixups/<crate>/fixu
 Each crate in `packages/` needs a hand-written `BUCK` file with a `rust_library` and a `rust_test`.
 Keep its deps the same as the `[dependencies]` in its `Cargo.toml`. The Cargo-only crates
 (`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
-`pgtk-catalog-xtask`) have no `BUCK` file. See the ADR.
+`pgtk-catalog-xtask`, `pgtk-skills`) have no `BUCK` file. See the ADR.
 
 If the crate has a build script that uses recursa-codegen, run it with
 `first_party_build_script` from `tools/rust/build_script.bzl`. `packages/pgtk-sql/BUCK` is the
@@ -38,15 +38,35 @@ model.
 ### Tests
 
 `cargo test --workspace` runs every test. `pgtk-test-features` turns on the features that gate
-tests. If you gate a new test behind a feature, add that feature to
+tests.
+
+The README of each crate is its crate documentation (`#![doc = include_str!("../README.md")]`), and
+its Rust examples are doctests. Keep them compiling. If an example needs a feature or a version,
+gate the `include_str!` for doctests (see `packages/pgtk-sql/src/lib.rs`). Do not put hidden `# `
+lines in a README, because GitHub and crates.io show them. If you gate a new test behind a feature, add that feature to
 `packages/pgtk-test-features/Cargo.toml`. A test that needs a PostgreSQL server uses
 `pgtk-test-server`, never a server that the developer must supply.
+
+### Agent skills for users
+
+`skills/` holds the agent skills for the users of the published crates (see `skills/README.md`).
+`packages/pgtk-skills` compiles and runs their Rust code blocks as doctests. When you change an
+API that a skill uses, update the skill in the same change.
 
 ### Formatting and lints
 
 Every package must pass `cargo fmt --all --check`,
 `cargo clippy --workspace --all-targets -- -D warnings` and
 `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps`. CI runs all three.
+
+Each commit subject is a [Conventional Commit](https://www.conventionalcommits.org/en/v1.0.0/),
+for example `fix(pgtk-sql): reject a second WITH in CREATE DATABASE`. CI runs
+`scripts/check-conventional-commits` on each pull request, and release-plz makes the changelogs
+from the subjects.
+
+CI also checks the published crates with Rust 1.88, their `rust-version`, and the licences of
+their dependencies against `deny.toml`. A new dependency of a published crate must have a licence
+that `deny.toml` permits.
 
 ## Agent skills
 

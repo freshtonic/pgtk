@@ -664,6 +664,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "pgtk-skills"
+version = "0.1.0"
+dependencies = [
+ "pgtk-analyze",
+ "pgtk-catalog",
+ "pgtk-sql",
+ "postgres",
+ "recursa",
+ "serde_json",
+]
+
+[[package]]
 name = "pgtk-sql"
 version = "0.1.0"
 dependencies = [

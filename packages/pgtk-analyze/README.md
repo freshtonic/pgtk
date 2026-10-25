@@ -117,6 +117,23 @@ To make the build of `pgtk-sql` faster, you can set the build-override profile
 in your workspace (see "Build time" in the
 [`pgtk-sql` README](https://crates.io/crates/pgtk-sql)).
 
+## Examples
+
+The `examples/` folder has programs that you can copy and change. They use the built-in
+PostgreSQL 17 catalog, or a catalog file that the `snapshot` example of `pgtk-catalog` saved
+from your database (`--catalog catalog.json`).
+
+| Example | What it does |
+|---|---|
+| `describe` | Prints the name, type and source column of each result column of a query, and the type of each parameter, like `\gdesc` in psql, with no server. |
+| `check_queries` | A CI check. It analyses each statement of a set of `.sql` files, and prints each error as PostgreSQL prints it, with the SQLSTATE, the message and a caret under the location. It fails when a query fails. |
+| `target_version` | Analyses the same queries for each PostgreSQL version from 14 to the version of the build, and shows the queries that only a newer server accepts. |
+
+```sh
+cargo run -p pgtk-analyze --example describe -- "SELECT relname FROM pg_class WHERE oid = \$1"
+cargo run -p pgtk-analyze --example check_queries -- --catalog catalog.json queries/*.sql
+```
+
 ## The Oracle harness
 
 `tests/oracle.rs` replays the vendored regression corpus against live

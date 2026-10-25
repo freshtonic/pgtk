@@ -34,7 +34,8 @@ _Avoid_: Warning, error (a load error is fatal; a Diagnostic is not)
 
 **Fixture**:
 A serialized Catalog saved to a file so that a Catalog can be reconstructed
-with no server. The crate ships one Fixture of a stock PostgreSQL 17 database.
+with no server. The crate ships one Fixture of a stock database for each supported
+version, from PostgreSQL 14 to 18, and 19 beta with the `pg19-beta` feature.
 _Avoid_: Snapshot file, dump
 
 **Catalog Builder**:

@@ -1,45 +1,34 @@
-//! The psql client grammar: what `psqlscan.l` recognises, and nothing else.
+#![doc = include_str!("../README.md")]
 //!
-//! psql is a client program, not a dialect. It scans its input, substitutes
-//! variable interpolations textually, and sends the resulting string to the
-//! server; PostgreSQL's `gram.y` therefore contains no psql construct at
-//! all. That is why this is a separate crate from `pgtk-sql` rather than an
-//! extension of it: admitting `:'name'` into an expression grammar puts a
-//! client rewrite where the server grammar has a type cast or a SQL/JSON
-//! key/value separator, and no lookahead settles the difference.
-//!
-//! The pipeline is three steps, in this order:
-//!
-//! ```no_run
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut variables = pgtk_psql::Variables::new();
-//! variables.set("x", "42");
-//!
-//! // 1. Parse the psql document.  2. Substitute and render server SQL.
-//! let rendered = pgtk_psql::render("SELECT int :'x';", &variables)?;
-//! assert_eq!(rendered.sql(), "SELECT int '42';");
-//!
-//! // 3. Only now parse the result as PostgreSQL SQL.
-//! let document = rendered.parse_sql().map_err(|error| error.to_string())?;
-//! assert_eq!(document.statements().len(), 1);
-//! # Ok(()) }
-//! ```
+//! # Source map
 //!
 //! Rendering keeps a [`SourceMap`] so a diagnostic over the rendered SQL can
 //! still name a byte of the user's psql source. Without it, substitution
 //! would destroy the tie between a diagnostic and the text the user wrote,
 //! which is the whole point of pgtk-sql's occurrence model.
 //!
+//! # Meta-commands
+//!
+//! `psqlscan.l` returns `LEXRES_BACKSLASH` at a backslash and hands off to
+//! `psqlscanslash.l`, which reads the command name and the arguments. Each
+//! meta-command is one token here, with the argument region that psql reads
+//! for that command ([`ast`] gives the rules). [`MetaCommand::command`] and
+//! [`Command`] divide the token into the name, the arguments and a trailing
+//! `\\`.
+//!
+//! [`render`] applies `\set`, `\unset` and the `\if` blocks, because they
+//! change what psql sends. Every other command keeps its arguments as text
+//! and renders as nothing
+//! (`packages/pgtk-sql/docs/adr/0013-keep-most-meta-command-arguments-as-text.md`).
+//! A name that is not a command of the target version is
+//! [`MetaCommand::Unknown`], and it stays in the rendered text, so that the
+//! server SQL shows the error.
+//!
 //! # What this crate does not model
 //!
-//! psql meta-commands (`\set`, `\d`, `\if`, `\copy`, ...) are out of scope
-//! and tracked as freshtonic/pg-sql#11, #12 and #13. `psqlscan.l` does not
-//! scan them either — it returns `LEXRES_BACKSLASH` and hands off to
-//! `psqlscanslash.l` — so a backslash command that is not one of the send
-//! commands stays inside an ordinary [`SqlText`] run and is rendered
-//! verbatim. A document using one therefore renders to SQL the server
-//! cannot parse, which is a diagnosable condition rather than a silent
-//! rewrite.
+//! pgtk-psql runs no command: no included file, no shell command, no
+//! backquoted argument and no connection. It does not read the data lines
+//! after `COPY ... FROM STDIN`, which psql reads itself.
 //!
 //! psql tolerates end of input inside any open string, quoted identifier,
 //! dollar-quoted body or comment (`psqlscan.l:983`'s single `<<EOF>>` rule).
@@ -63,10 +52,17 @@ recursa::grammar! {
 }
 
 pub mod ast;
+pub mod conditional;
+pub mod meta;
 pub mod substitution;
 pub mod tokens;
 
-pub use ast::{Interpolation, PsqlDocument, PsqlItem, SendCommand, SqlAtom, SqlText, Terminator};
+pub use ast::{
+    Interpolation, MetaCommand, PsqlDocument, PsqlItem, ResetCommand, SendCommand, SqlAtom,
+    SqlText, Terminator,
+};
+pub use conditional::{ConditionalBlock, ConditionalError, ConditionalErrorKind};
+pub use meta::{Argument, ArgumentKind, Command};
 // Added in 18: docs/research/psql-14-19-syntax-changes.md, class (A) item A1.
 #[cfg(feature = "since-pg18")]
 pub use ast::DiscardCommand;
@@ -101,7 +97,11 @@ impl fmt::Display for PsqlError {
 
 impl std::error::Error for PsqlError {}
 
-/// Parses `source` as psql, substitutes `variables`, and renders server SQL.
+/// Parses `source` as psql, runs its `\set`, `\unset` and `\if` commands,
+/// substitutes the variables, and renders server SQL.
+///
+/// `variables` are the variables at the start of the script, as `psql -v`
+/// gives them. Only the text of the active `\if` branches is rendered.
 ///
 /// This is the whole pipeline up to the SQL parse; call
 /// [`Rendered::parse_sql`] for the last step.
@@ -112,9 +112,10 @@ pub fn render(source: &str, variables: &Variables) -> Result<Rendered, PsqlError
 
 /// Parses one complete psql source document.
 ///
-/// The result is the item sequence `psqlscan.l` produces: runs of SQL text,
-/// variable interpolations, and the terminators that submit a query buffer.
-/// Nothing is substituted — use [`render`] for that.
+/// The result is the item sequence that `psqlscan.l` and `psqlscanslash.l`
+/// produce: runs of SQL text, variable interpolations, the terminators that
+/// end a query buffer, and the meta-commands. Nothing is substituted and no
+/// command is applied — use [`render`] for that.
 pub fn parse(source: &str) -> Result<PsqlDocument<'_>, PsqlError> {
     let lexed = lex(source);
     let lexical = lexed.errors().map(|error| error.span()).collect::<Vec<_>>();

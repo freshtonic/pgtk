@@ -93,6 +93,25 @@ pub trait AsyncExecutor {
 /// # Errors
 ///
 /// The errors are the errors of [`load`].
+///
+/// # Example
+///
+/// With the `tokio-postgres` feature, a `tokio_postgres::Client` is an
+/// [`AsyncExecutor`]:
+///
+/// ```no_run
+/// # #[cfg(feature = "tokio-postgres")]
+/// # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// let url = "postgres://postgres@localhost/postgres";
+/// let (mut client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls).await?;
+/// // The connection does the I/O. Run it on a task of its own.
+/// tokio::spawn(connection);
+///
+/// let loaded = pgtk_catalog::load_async(&mut client).await?;
+/// println!("PostgreSQL {}", loaded.catalog.metadata().server_version);
+/// # Ok(())
+/// # }
+/// ```
 #[cfg(feature = "async")]
 pub async fn load_async<E: AsyncExecutor + Send>(executor: &mut E) -> Result<Loaded, LoadError> {
     let bootstrap = executor

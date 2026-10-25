@@ -28,10 +28,12 @@ clobber each other.
 - Cargo gets crates from crates.io. There is no source replacement at the root.
 - The BUCK file of each first-party crate is written by hand.
 - **Cargo-only crate**: a crate with no BUCK file. The Cargo-only crates are `pgtk-oracle`,
-  `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features` and `pgtk-catalog-xtask`. The
+  `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`, `pgtk-catalog-xtask` and
+  `pgtk-skills`. The
   oracles and `pgtk-test-server` use a PostgreSQL build from a cache outside the repository, so
   Buck cannot build them hermetically. `pgtk-test-features` only turns on features in a Cargo
-  workspace build. `pgtk-catalog-xtask` is a maintenance tool.
+  workspace build. `pgtk-catalog-xtask` is a maintenance tool. `pgtk-skills` only holds the
+  doctests of the agent skills in `skills/`.
 - Buck builds one feature set for each crate: the default features. `pgtk-sql` also has `spans`,
   because `pgtk-psql` and `pgtk-analyze` need it. The other Target Versions and the oracle
   features are Cargo-only.

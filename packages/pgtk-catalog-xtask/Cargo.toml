@@ -10,3 +10,7 @@ pgtk-catalog = { path = "../pgtk-catalog", features = ["serde", "postgres"] }
 postgres.workspace = true
 serde_json.workspace = true
 zstd.workspace = true
+
+[features]
+# Load a PostgreSQL 19 server, to write its fixture.
+pg19-beta = ["pgtk-catalog/pg19-beta"]

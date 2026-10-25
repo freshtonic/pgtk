@@ -1,7 +1,11 @@
-//! PostgreSQL parse analysis over `pgtk-sql` statements and a `pgtk-catalog` Catalog.
+// The README examples need a grammar of PostgreSQL 17 or later, so other builds do not run them
+// as doctests. The rendered documentation always includes the README.
+#![cfg_attr(any(not(doctest), feature = "since-pg17"), doc = include_str!("../README.md"))]
 //!
-//! See `CONTEXT.md` for the language of this crate and `docs/adr/` for the
-//! decisions behind it. The entry point is [`Analyzer`].
+//! # Where to start
+//!
+//! The entry point is [`Analyzer`]. See `CONTEXT.md` for the language of this crate and
+//! `docs/adr/` for the decisions behind it.
 
 #![allow(clippy::too_many_arguments)]
 
