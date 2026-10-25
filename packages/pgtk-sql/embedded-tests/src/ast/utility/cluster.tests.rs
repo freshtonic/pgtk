@@ -8,10 +8,11 @@ mod tests {
     #[test]
     fn cluster_bare_is_modelled() {
         let stmt = parse_stmt::<ClusterStmt>("CLUSTER");
-        let stmt = stmt.ast();
-        assert!(stmt.options.is_none());
-        assert!(!stmt.verbose);
-        assert!(stmt.target.is_none());
+        let ClusterStmt::Plain(plain) = stmt.ast() else {
+            panic!("bare CLUSTER has no option list");
+        };
+        assert!(!plain.verbose);
+        assert!(plain.target.is_none());
         reparse_stable::<ClusterStmt>("CLUSTER");
     }
 
@@ -30,8 +31,10 @@ mod tests {
     #[test]
     fn cluster_verbose_roundtrips() {
         let stmt = parse_stmt::<ClusterStmt>("CLUSTER VERBOSE clstr_2");
-        let stmt = stmt.ast();
-        assert!(stmt.verbose);
+        let ClusterStmt::Plain(plain) = stmt.ast() else {
+            panic!("CLUSTER VERBOSE has no option list");
+        };
+        assert!(plain.verbose);
         reparse_stable::<ClusterStmt>("CLUSTER VERBOSE clstr_2");
     }
 
@@ -40,8 +43,10 @@ mod tests {
     #[test]
     fn cluster_options_roundtrips() {
         let stmt = parse_stmt::<ClusterStmt>("CLUSTER (VERBOSE) clstr_2 USING clstr_2_pkey");
-        let stmt = stmt.ast();
-        assert!(stmt.options.is_some());
+        let ClusterStmt::Options(options) = stmt.ast() else {
+            panic!("expected the option-list form");
+        };
+        assert!(options.target.is_some());
         reparse_stable::<ClusterStmt>("CLUSTER (VERBOSE) clstr_2 USING clstr_2_pkey");
     }
 
@@ -57,9 +62,10 @@ mod tests {
     #[test]
     fn cluster_options_without_a_table_roundtrips() {
         let stmt = parse_stmt::<ClusterStmt>("CLUSTER (VERBOSE)");
-        let stmt = stmt.ast();
-        assert!(stmt.options.is_some());
-        assert!(stmt.target.is_none());
+        let ClusterStmt::Options(options) = stmt.ast() else {
+            panic!("expected the option-list form");
+        };
+        assert!(options.target.is_none());
         reparse_stable::<ClusterStmt>("CLUSTER (VERBOSE)");
     }
 

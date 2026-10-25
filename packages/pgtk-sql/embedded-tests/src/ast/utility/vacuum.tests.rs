@@ -10,7 +10,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = VacuumStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.options.is_some());
+        assert!(stmt.options().is_some());
         assert!(input.is_eof());
     }
 
@@ -38,11 +38,11 @@ mod tests {
     fn vacuum_bare_is_modelled() {
         let stmt = parse_stmt::<VacuumStmt>("VACUUM");
         let stmt = stmt.ast();
-        assert!(!stmt.full);
-        assert!(!stmt.freeze);
-        assert!(!stmt.verbose);
-        assert!(!stmt.analyze);
-        assert!(stmt.options.is_none());
+        assert!(!stmt.full());
+        assert!(!stmt.freeze());
+        assert!(!stmt.verbose());
+        assert!(!stmt.analyze());
+        assert!(stmt.options().is_none());
         assert!(stmt.relations.is_none());
         reparse_stable::<VacuumStmt>("VACUUM");
     }
@@ -51,7 +51,7 @@ mod tests {
     fn vacuum_full_legacy_roundtrips() {
         let stmt = parse_stmt::<VacuumStmt>("VACUUM FULL vactst");
         let stmt = stmt.ast();
-        assert!(stmt.full);
+        assert!(stmt.full());
         reparse_stable::<VacuumStmt>("VACUUM FULL vactst");
     }
 
@@ -59,7 +59,7 @@ mod tests {
     fn vacuum_full_analyze_roundtrips() {
         let stmt = parse_stmt::<VacuumStmt>("VACUUM ANALYZE vacparted");
         let stmt = stmt.ast();
-        assert!(stmt.analyze);
+        assert!(stmt.analyze());
         reparse_stable::<VacuumStmt>("VACUUM ANALYZE vacparted");
     }
 
@@ -93,7 +93,7 @@ mod tests {
     fn vacuum_options_with_target_roundtrips() {
         let stmt = parse_stmt::<VacuumStmt>("VACUUM (FULL, FREEZE) vactst");
         let stmt = stmt.ast();
-        assert!(stmt.options.is_some());
+        assert!(stmt.options().is_some());
         assert!(stmt.relations.is_some());
         reparse_stable::<VacuumStmt>("VACUUM (FULL, FREEZE) vactst");
     }

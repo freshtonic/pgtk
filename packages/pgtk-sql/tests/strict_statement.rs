@@ -1204,3 +1204,130 @@ fn create_statements_keep_the_forms_of_gram_y() {
         "CREATE USER u WITH LOGIN SUPERUSER",
     ]);
 }
+
+/// ALTER and utility statement forms that gram.y does not have (issue #58).
+#[test]
+fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `IF EXISTS` only where gram.y has it.
+            "ALTER STATISTICS IF EXISTS s OWNER TO r",
+            "ALTER STATISTICS IF EXISTS s RENAME TO t",
+            "ALTER STATISTICS IF EXISTS s SET SCHEMA t",
+            "ALTER INDEX IF EXISTS i ATTACH PARTITION j",
+            "ALTER INDEX IF EXISTS i DEPENDS ON EXTENSION e",
+            "ALTER MATERIALIZED VIEW IF EXISTS m DEPENDS ON EXTENSION e",
+            // `DEPENDS ON EXTENSION` is no `alter_table_cmd`.
+            "ALTER TABLE t DEPENDS ON EXTENSION e",
+            "ALTER FOREIGN TABLE t NO DEPENDS ON EXTENSION e",
+            // `RENAME` and `SET SCHEMA` are alone after the name.
+            "ALTER MATERIALIZED VIEW m OWNER TO r, SET SCHEMA s",
+            "ALTER MATERIALIZED VIEW m SET TABLESPACE s, RENAME TO n",
+            // EXPLAIN takes only CREATE TABLE AS.
+            "EXPLAIN CREATE TABLE t OF typ",
+            "EXPLAIN CREATE TABLE t (a int)",
+            "EXPLAIN CREATE TABLE t ()",
+            // SECURITY LABEL has no such object kind.
+            "SECURITY LABEL ON RULE r ON t IS 'x'",
+            "SECURITY LABEL ON TRIGGER tr ON t IS 'x'",
+            "SECURITY LABEL ON POLICY p ON t IS 'x'",
+            "SECURITY LABEL ON CONSTRAINT c ON t IS 'x'",
+            "SECURITY LABEL ON OPERATOR + (int, int) IS 'x'",
+            // `defacl_privilege_target` has no `PROCEDURES`.
+            "ALTER DEFAULT PRIVILEGES GRANT ALL ON PROCEDURES TO r",
+            // The option list and the old option keywords do not mix.
+            "VACUUM (VERBOSE) FULL",
+            "VACUUM (VERBOSE) ANALYZE t",
+            "ANALYZE VERBOSE (SKIP_LOCKED) t",
+            "CLUSTER (VERBOSE) VERBOSE t",
+            "CLUSTER (VERBOSE) i ON t",
+            // `DEFAULT VALUES` takes no column list and no `OVERRIDING`.
+            "INSERT INTO t (a) DEFAULT VALUES",
+            "INSERT INTO t OVERRIDING SYSTEM VALUE DEFAULT VALUES",
+            // `TABLES IN SCHEMA` takes no column list.
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s (a)",
+            "ALTER PUBLICATION p ADD TABLES IN SCHEMA s (a)",
+            // A column number has no sign, and takes only SET STATISTICS.
+            "ALTER INDEX i ALTER 1 SET (fillfactor = 70)",
+            "ALTER TABLE t ALTER - 1 SET STATISTICS 1",
+            "ALTER TABLE t ALTER 1 DROP NOT NULL",
+            "ALTER FOREIGN TABLE t ALTER 1 OPTIONS (ADD a 'b')",
+            // `OIDS` is no COPY option.
+            "COPY t TO STDOUT OIDS",
+            "COPY t FROM STDIN WITH OIDS FREEZE",
+            // `ON CONFLICT` with an empty target, or `WHERE` with no target.
+            "INSERT INTO t DEFAULT VALUES ON CONFLICT () DO NOTHING",
+            "INSERT INTO t VALUES (1) ON CONFLICT WHERE a > 1 DO NOTHING",
+            "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c WHERE a > 1 DO NOTHING",
+        ],
+        "gram.y has no such ALTER or utility form",
+    );
+    assert_accepts(&[
+        "ALTER STATISTICS IF EXISTS s SET STATISTICS 100",
+        "ALTER STATISTICS s OWNER TO r",
+        "ALTER INDEX i ATTACH PARTITION j",
+        "ALTER INDEX IF EXISTS i RENAME TO j",
+        "ALTER INDEX IF EXISTS i SET TABLESPACE s",
+        "ALTER INDEX i DEPENDS ON EXTENSION e",
+        "ALTER MATERIALIZED VIEW m NO DEPENDS ON EXTENSION e",
+        "ALTER MATERIALIZED VIEW IF EXISTS m RENAME COLUMN a TO b",
+        "ALTER MATERIALIZED VIEW m OWNER TO r, SET TABLESPACE s",
+        "ALTER MATERIALIZED VIEW m SET SCHEMA s",
+        "ALTER TABLE IF EXISTS t RENAME TO u",
+        "EXPLAIN CREATE TABLE t AS SELECT 1",
+        "EXPLAIN CREATE TABLE t (a) AS SELECT 1",
+        "SECURITY LABEL ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR p ON FUNCTION f(int) IS 'x'",
+        "ALTER DEFAULT PRIVILEGES GRANT ALL ON ROUTINES TO r",
+        "VACUUM FULL FREEZE VERBOSE ANALYZE t",
+        "VACUUM (VERBOSE, ANALYZE) t (a)",
+        "ANALYZE VERBOSE t",
+        "ANALYZE (SKIP_LOCKED) t",
+        "CLUSTER VERBOSE i ON t",
+        "CLUSTER (VERBOSE) t USING i",
+        "INSERT INTO t DEFAULT VALUES",
+        "INSERT INTO t (a) OVERRIDING USER VALUE VALUES (1)",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s",
+        "ALTER INDEX i ALTER 1 SET STATISTICS 100",
+        "ALTER INDEX i ALTER a SET (fillfactor = 70)",
+        "ALTER TABLE t ALTER a DROP NOT NULL",
+        "COPY t TO STDOUT CSV HEADER",
+        "INSERT INTO t VALUES (1) ON CONFLICT (a) WHERE a > 1 DO NOTHING",
+        "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
+        "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c DO NOTHING",
+    ]);
+}
+
+/// `ALTER TYPE ... SET (...)` takes gram.y `operator_def_list`, whose value is
+/// optional only from 17 (REL_17_11 gram.y 10252; issue #58).
+#[test]
+fn alter_type_set_takes_an_operator_def_list() {
+    assert_accepts(&["ALTER TYPE t SET (send = none, receive = r)"]);
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&["ALTER TYPE t SET (send)"]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &["ALTER TYPE t SET (send)", "ALTER TYPE t SET (a = 1, b)"],
+        "an operator_def_elem has a value before 17",
+    );
+}
+
+/// A JSON_TABLE `EXISTS` column takes only a path and an `ON ERROR`
+/// behavior (REL_17_11 gram.y 14228-14246).
+#[cfg(feature = "since-pg17")]
+#[test]
+fn a_json_table_exists_column_has_no_wrapper_or_format() {
+    assert_rejects(
+        &[
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS WITH WRAPPER))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS FORMAT JSON))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS KEEP QUOTES))",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS NULL ON EMPTY))",
+        ],
+        "an EXISTS column has no wrapper, format, quotes or ON EMPTY",
+    );
+    assert_accepts(&[
+        "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int EXISTS PATH '$.a' FALSE ON ERROR))",
+        "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a jsonb FORMAT JSON PATH '$.a' WITH WRAPPER KEEP QUOTES NULL ON EMPTY))",
+    ]);
+}

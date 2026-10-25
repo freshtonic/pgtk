@@ -25,7 +25,7 @@ use crate::ast::shared::names::{NameList, QualifiedName, RoleList, RoleSpec};
 //
 // ALTER DEFAULT PRIVILEGES embeds a privilege-only GRANT/REVOKE (no role
 // membership form). The target is one of TABLES/SEQUENCES/FUNCTIONS/
-// PROCEDURES/ROUTINES/SCHEMAS/TYPES (Postgres' `defacl_privilege_target`)
+// ROUTINES/SCHEMAS/TYPES (Postgres' `defacl_privilege_target`)
 // and there are no `objects` — only the object-kind keyword.
 
 recursa::ast_node! {
@@ -801,8 +801,10 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// `defacl_privilege_target` — the object-kind keyword inside ADP. Postgres
-    /// only allows one of TABLES / SEQUENCES / FUNCTIONS / PROCEDURES / ROUTINES
-    /// / SCHEMAS / TYPES.
+    /// only allows one of TABLES / SEQUENCES / FUNCTIONS / ROUTINES / SCHEMAS /
+    /// TYPES, and from 18 LARGE OBJECTS. gram.y has no `PROCEDURES` arm
+    /// (REL_17_11 gram.y 8075-8082; REL_14_24 gram.y `defacl_privilege_target`),
+    /// so `PROCEDURES` has no variant (issue #58).
     #[derive(Debug)]
     pub enum DefAclTarget {
         #[tok(TABLES)]
@@ -811,8 +813,6 @@ recursa::ast_node! {
         Sequences,
         #[tok(FUNCTIONS)]
         Functions,
-        #[tok(PROCEDURES)]
-        Procedures,
         #[tok(ROUTINES)]
         Routines,
         #[tok(SCHEMAS)]

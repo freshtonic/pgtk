@@ -1,7 +1,7 @@
 //! TYPE  DDL statements (CREATE/ALTER/DROP).
 #![allow(unused_imports)]
 
-use crate::ast::ddl::publication::SetDefinitionClause;
+use crate::ast::ddl::operator::AlterOperatorSetOptions;
 use crate::ast::ddl::role::DefList;
 use crate::ast::shared::expr::*;
 use crate::ast::shared::flags::*;
@@ -318,7 +318,11 @@ recursa::ast_node! {
         Rename(RenameTo),
         Owner(OwnerTo),
         SetSchema(SetSchemaClause),
-        SetDef(SetDefinitionClause),
+        /// gram.y `AlterTypeStmt: ALTER TYPE_P any_name SET '('
+        /// operator_def_list ')'` (REL_17_11 gram.y 10274): the list of
+        /// `ALTER OPERATOR ... SET`, whose value is optional only from 17
+        /// (issue #58).
+        SetDef(AlterOperatorSetOptions),
         AddValue(AlterTypeAddValue),
         Cmds(AlterTypeCmdList),
     }
@@ -387,7 +391,11 @@ recursa::ast_node! {
         Rename(RenameTo),
         Owner(OwnerTo),
         SetSchema(SetSchemaClause),
-        SetDef(SetDefinitionClause),
+        /// gram.y `AlterTypeStmt: ALTER TYPE_P any_name SET '('
+        /// operator_def_list ')'` (REL_17_11 gram.y 10274): the list of
+        /// `ALTER OPERATOR ... SET`, whose value is optional only from 17
+        /// (issue #58).
+        SetDef(AlterOperatorSetOptions),
         AddValue(AlterTypeAddValue),
     }
 }
