@@ -55,13 +55,11 @@ recursa::ast_node! {
     pub struct CreateExtensionStmt {
         pub if_not_exists: Option<crate::ast::shared::flags::IfNotExists>,
         pub name: crate::tokens::ColId,
-        // `this_each` states the element-wise attachment this site already
-        // lowers to: the lead-in wraps every option, so `WITH a WITH b` is
-        // accepted where gram.y `CreateExtensionStmt: CREATE EXTENSION name
-        // opt_with create_extension_opt_list` (REL_17_11 gram.y 5111) reads
-        // `WITH` once. RCA3152 asks only that the reading be explicit; the
-        // container repair is #59 section B, which is open.
-        #[tok(optional(WITH), this_each)]
+        /// gram.y `CreateExtensionStmt: CREATE EXTENSION name opt_with
+        /// create_extension_opt_list` (REL_17_11 gram.y 5111): one optional
+        /// `WITH` before the whole list (issue #24).
+        #[presence(WITH)]
+        pub with: bool,
         pub options: zero_or_many!(ExtensionOption),
     }
 }
