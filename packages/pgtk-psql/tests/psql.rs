@@ -11,7 +11,7 @@
 //! "psql interpolation is rejected" became "psql interpolation is rendered,
 //! and then pgtk-sql accepts the result".
 
-use pgtk_psql::{Origin, PsqlItem, Variables};
+use pgtk_psql::{MetaCommand, Origin, PsqlItem, Variables};
 
 fn variables(pairs: &[(&str, &str)]) -> Variables {
     pairs.iter().copied().collect()
@@ -491,34 +491,47 @@ fn an_escaped_colon_is_not_an_interpolation() {
 }
 
 #[test]
-fn an_unmodelled_meta_command_stays_text() {
-    // `\set` and its kin belong to psqlscanslash.l and to pgtk-sql#11, #12,
-    // #13. They are forwarded verbatim rather than silently dropped, so the
-    // SQL parse fails and the gap is visible.
-    for source in [r"\set foo 1", r"\d users", r"\timing on"] {
-        assert_eq!(
-            render_unbound(source),
-            source,
-            "{source:?} renders unchanged"
+fn a_meta_command_is_not_sent_to_the_server() {
+    // psql runs a meta-command itself, so neither the command nor its
+    // arguments reach the server.
+    for source in [
+        r"\set foo 1",
+        r"\d users",
+        r"\timing on",
+        r"\pset null '(null)'",
+    ] {
+        assert_eq!(render_unbound(source), "", "{source:?} renders as nothing");
+    }
+    let rendered = pgtk_psql::render("\\d users\nSELECT 1;", &Variables::new()).unwrap();
+    assert_eq!(rendered.sql(), "\nSELECT 1;");
+    assert_eq!(rendered.parse_sql().unwrap().statements().len(), 1);
+}
+
+#[test]
+fn an_unknown_command_stays_text() {
+    // psql reports an unknown command as an error. pgtk-psql keeps the name
+    // as `MetaCommand::Unknown` and renders it as it stands, so the SQL parse
+    // fails and the error is visible.
+    for source in [r"\nosuch", r"\", r"\."] {
+        assert_eq!(render_unbound(source), source, "{source:?}");
+        let document = pgtk_psql::parse(source).unwrap();
+        assert!(
+            matches!(
+                document.items.as_slice(),
+                [PsqlItem::Command(MetaCommand::Unknown(_))]
+            ),
+            "{source:?} is one unknown command",
         );
     }
-    let rendered = pgtk_psql::render(r"\set foo 1", &Variables::new()).unwrap();
-    assert!(rendered.parse_sql().is_err());
 }
 
 #[test]
 fn a_send_command_name_is_read_whole() {
     // psqlscanslash.l reads a whole command name before looking it up, so
-    // `\gsetfoo` is not `\gset` followed by `foo`, and `\getenv` is not
-    // `\g` followed by `etenv`. The catch-all meta-command token matches
-    // the longer name and wins on length, so neither becomes a statement
-    // boundary; both are forwarded verbatim.
-    for source in [
-        r"SELECT 1 \gsetfoo",
-        r"SELECT 1 \gexecx",
-        r"\getenv abs_srcdir",
-        r"\gdescribe",
-    ] {
+    // `\gsetfoo` is not `\gset` followed by `foo`. The catch-all
+    // meta-command token matches the longer name and wins on length, so
+    // none of these becomes a statement boundary; each is forwarded verbatim.
+    for source in [r"SELECT 1 \gsetfoo", r"SELECT 1 \gexecx", r"\gdescribe"] {
         assert_eq!(
             render_unbound(source),
             source,
@@ -543,8 +556,10 @@ fn a_send_command_name_is_read_whole() {
 #[cfg(feature = "since-pg17")]
 #[test]
 fn a_vertical_tab_ends_a_send_command_name() {
+    // The vertical tab is space before the arguments, so it is part of the
+    // command.
     let rendered = pgtk_psql::render("SELECT 1 \\g\u{b}", &Variables::new()).unwrap();
-    assert_eq!(rendered.sql(), "SELECT 1 ;\u{b}");
+    assert_eq!(rendered.sql(), "SELECT 1 ;");
 }
 
 // Before 17, a vertical tab is not `space` in psqlscanslash.l, so `\g<VT>` is
@@ -647,16 +662,18 @@ fn a_discarded_buffer_drops_its_interpolations() {
     // An interpolation inside a discarded buffer is never sent, so it is
     // neither substituted nor reported as unbound.
     let bindings = variables(&[("x", "42")]);
-    let source = r"SELECT :x, :y \startpipeline SELECT :x;";
+    // The rest of the line holds arguments of the command, as psql reads
+    // them, so the next statement starts on the next line.
+    let source = "SELECT :x, :y \\startpipeline\nSELECT :x;";
     let rendered = pgtk_psql::render(source, &bindings).unwrap();
-    assert_eq!(rendered.sql(), " SELECT 42;");
+    assert_eq!(rendered.sql(), "\nSELECT 42;");
     assert!(rendered.unbound().is_empty());
     // The map still carries the surviving text back to the source.
     let select = source.rfind("SELECT").unwrap();
     assert_eq!(rendered.map().origin(1), Origin::Verbatim(select));
     // After a send command, the buffer starts again.
-    let rendered = pgtk_psql::render(r"SELECT :y \g SELECT 2 \flush", &bindings).unwrap();
-    assert_eq!(rendered.sql(), "SELECT :y ; ");
+    let rendered = pgtk_psql::render("SELECT :y \\g\nSELECT 2 \\flush", &bindings).unwrap();
+    assert_eq!(rendered.sql(), "SELECT :y ;\n");
     assert_eq!(rendered.unbound().len(), 1);
 }
 
@@ -678,7 +695,7 @@ fn an_18_command_name_is_read_whole() {
 }
 
 // Before 18 the nine commands do not exist: psql 17 reports each one as an
-// invalid command, and pgtk-psql forwards each one verbatim as an unmodelled
+// invalid command, and pgtk-psql forwards each one verbatim as an unknown
 // meta-command (docs/research/psql-14-19-syntax-changes.md, class (A) item
 // A1).
 #[cfg(not(feature = "since-pg18"))]
@@ -1004,10 +1021,44 @@ fn every_regression_script_is_a_psql_document() {
             .unwrap_or_else(|error| panic!("{name} must parse as a psql document: {error}"));
 
         // With nothing bound the only rewrites allowed are client syntax
-        // the server never sees -- a send command or `\;` -- and `:{?name}`,
-        // the one interpolation psql answers rather than passes through
-        // (psqlscan.l:1568-1591, `FALSE` when unset). A `:name`, `:'name'`
-        // or `:"name"` must survive untouched.
+        // the server never sees -- a meta-command, a send command or `\;`
+        // -- the text of an inactive `\if` branch, a buffer that `\r` clears,
+        // `:{?name}`, the one
+        // interpolation psql answers rather than passes through
+        // (psqlscan.l:1568-1591, `FALSE` when unset), and an interpolation
+        // of a variable that the script sets itself with `\set`. Any other
+        // `:name`, `:'name'` or `:"name"` must survive untouched.
+        let document = pgtk_psql::parse(&source).unwrap();
+        let branch_ends = document
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                PsqlItem::Command(command) if command.is_conditional() => {
+                    let text = command.text();
+                    Some(text.as_ptr() as usize - source.as_ptr() as usize + text.len())
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        // `\r` removes the query buffer that it ends.
+        let reset_ends = document
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                PsqlItem::Terminator(pgtk_psql::Terminator::Reset(reset)) => {
+                    let text = reset.text();
+                    Some(text.as_ptr() as usize - source.as_ptr() as usize + text.len())
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let assigned = |text: &str| {
+            let name = text.trim_start_matches(':').trim_matches(['\'', '"']);
+            document.items.iter().any(|item| {
+                matches!(item, PsqlItem::Command(command @ MetaCommand::Set(_))
+                    if command.command().arguments().first().map(|argument| argument.text()) == Some(name))
+            })
+        };
         for (_, origin) in rendered.map().regions() {
             let text = &source[origin.clone()];
             // Before 15, psql also removes each `--` comment (class (A) item
@@ -1015,6 +1066,9 @@ fn every_regression_script_is_a_psql_document() {
             assert!(
                 text.starts_with('\\')
                     || text.starts_with(":{?")
+                    || branch_ends.contains(&origin.start)
+                    || reset_ends.contains(&origin.end)
+                    || (text.starts_with(':') && assigned(text))
                     || (!cfg!(feature = "since-pg15") && text.starts_with("--")),
                 "{name}: rewrote {text:?} at {origin:?} with nothing bound",
             );
