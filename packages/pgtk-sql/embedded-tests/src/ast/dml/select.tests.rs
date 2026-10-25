@@ -1374,10 +1374,11 @@ mod tests {
             let tree = format!("{:?}", parsed.ast());
             let mut found = Vec::new();
             for (needle, name) in [
-                ("Unbounded(Preceding", "unbounded preceding"),
-                ("Unbounded(Following", "unbounded following"),
+                ("UnboundedPreceding", "unbounded preceding"),
+                ("UnboundedFollowing", "unbounded following"),
                 ("CurrentRow", "current row"),
-                ("Offset(", "offset"),
+                ("WindowFramePreceding {", "offset"),
+                ("WindowFrameFollowing {", "offset"),
             ] {
                 found.extend(std::iter::repeat_n(name, tree.matches(needle).count()));
             }
@@ -1400,7 +1401,7 @@ mod tests {
         // A quoted name, or the word inside an expression, is a column.
         assert_eq!(bounds("ROWS \"unbounded\" PRECEDING"), ["offset"]);
         assert_eq!(bounds("ROWS unbounded + 1 PRECEDING"), ["offset"]);
-        assert_eq!(bounds("ROWS (unbounded) FOLLOWING"), ["offset"]);
+        assert_eq!(bounds("ROWS (unbounded) PRECEDING"), ["offset"]);
     }
 
     /// gram.y:13451 `table_ref: relation_expr opt_alias_clause

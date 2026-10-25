@@ -1481,3 +1481,37 @@ fn the_path_of_json_table_is_a_string_constant() {
         "SELECT * FROM JSON_TABLE(j, (('$')) AS p COLUMNS (a int))",
     ]);
 }
+
+/// gram.y `frame_extent` refuses some combinations of frame bounds in its
+/// actions (REL_17_11 gram.y 16327-16383; issue #55). The grammar admits only
+/// the combinations that the actions keep, except a start of `UNBOUNDED
+/// FOLLOWING` and an end of `UNBOUNDED PRECEDING`, which stay so that the
+/// keyword shifts.
+#[test]
+fn a_window_frame_keeps_the_bounds_that_gram_y_keeps() {
+    assert_rejects(
+        &[
+            "SELECT count(*) OVER (ROWS 1 FOLLOWING) FROM t",
+            "SELECT count(*) OVER (ROWS UNBOUNDED FOLLOWING) FROM t",
+            "SELECT count(*) OVER (ROWS BETWEEN CURRENT ROW AND 1 PRECEDING) FROM t",
+            "SELECT count(*) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) FROM t",
+            "SELECT count(*) OVER (ROWS BETWEEN 1 FOLLOWING AND CURRENT ROW) FROM t",
+            "SELECT count(*) OVER (ROWS BETWEEN 1 FOLLOWING AND 1 PRECEDING) FROM t",
+            "SELECT count(*) OVER (ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED PRECEDING) FROM t",
+        ],
+        "gram.y refuses this frame",
+    );
+    assert_accepts(&[
+        "SELECT count(*) OVER (ROWS UNBOUNDED PRECEDING) FROM t",
+        "SELECT count(*) OVER (ROWS 1 PRECEDING) FROM t",
+        "SELECT count(*) OVER (ROWS CURRENT ROW) FROM t",
+        "SELECT count(*) OVER (ROWS unbounded PRECEDING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN 1 PRECEDING AND UNBOUNDED FOLLOWING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN CURRENT ROW AND CURRENT ROW EXCLUDE TIES) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN 1 FOLLOWING AND 2 FOLLOWING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED FOLLOWING) FROM t",
+        "SELECT count(*) OVER (ROWS BETWEEN 1 PRECEDING AND \"unbounded\" FOLLOWING) FROM t",
+    ]);
+}

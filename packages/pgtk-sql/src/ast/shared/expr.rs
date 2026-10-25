@@ -715,15 +715,121 @@ recursa::ast_node! {
     }
 }
 
+// The frame extent. gram.y `frame_extent` (REL_17_11 gram.y 16327-16383)
+// takes `frame_bound` or `BETWEEN frame_bound AND frame_bound`, and its
+// actions refuse five combinations with ereport (issue #55):
+//
+// - "frame start cannot be UNBOUNDED FOLLOWING" (16335, 16359);
+// - "frame starting from following row cannot end with current row", for a
+//   single `offset FOLLOWING` (16340);
+// - "frame end cannot be UNBOUNDED PRECEDING" (16364);
+// - "frame starting from current row cannot have preceding rows" (16370);
+// - "frame starting from following row cannot have preceding rows", for an
+//   end of `offset PRECEDING` or `CURRENT ROW` after `offset FOLLOWING`
+//   (16377).
+//
+// Each start bound is complete before `AND`, so the shapes below admit only
+// the combinations that the actions keep, the end bound of each start with its
+// own type, except two. A start of `UNBOUNDED FOLLOWING` and an end of
+// `UNBOUNDED PRECEDING` stay, because the keyword must shift there as in
+// gram.y (`%nonassoc UNBOUNDED`): without the arm, `unbounded` reduces as a
+// column name and the bound reads as an offset. Their checks need a declared
+// rejection of one variant, which recursa does not have.
+
 recursa::ast_node! {
     /// `unit BETWEEN start AND end [EXCLUDE ...]`
     #[derive(Debug)]
     pub struct WindowFrameBetween {
         #[tok(BETWEEN, this)]
-        pub start: WindowFrameBound,
-        #[tok(AND, this)]
-        pub end: WindowFrameBound,
+        pub extent: WindowFrameBetweenExtent,
         pub exclude: Option<WindowFrameExclude>,
+    }
+}
+
+recursa::ast_node! {
+    /// `start AND end` of a `BETWEEN` frame, one variant for each kind of
+    /// start bound. `UNBOUNDED FOLLOWING` is no start bound.
+    #[derive(Debug)]
+    pub enum WindowFrameBetweenExtent {
+        /// `UNBOUNDED FOLLOWING AND end`, which the gram.y action refuses:
+        /// "frame start cannot be UNBOUNDED FOLLOWING". The arm stays so that
+        /// the keyword shifts (see the note above).
+        FromUnboundedFollowing(#[tok(UNBOUNDED, FOLLOWING, AND, this)] WindowFrameEnd),
+        /// `UNBOUNDED PRECEDING AND end`.
+        FromUnboundedPreceding(#[tok(UNBOUNDED, PRECEDING, AND, this)] WindowFrameEnd),
+        /// `offset PRECEDING AND end`.
+        FromPreceding(WindowFrameFromPreceding),
+        /// `CURRENT ROW AND end`, where the end is no `offset PRECEDING`.
+        FromCurrentRow(#[tok(CURRENT, ROW, AND, this)] WindowFrameEndAfterCurrentRow),
+        /// `offset FOLLOWING AND end`, where the end follows too.
+        FromFollowing(WindowFrameFromFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// `offset PRECEDING AND end`.
+    #[derive(Debug)]
+    pub struct WindowFrameFromPreceding {
+        pub start: WindowFramePreceding,
+        #[tok(AND, this)]
+        pub end: WindowFrameEnd,
+    }
+}
+
+recursa::ast_node! {
+    /// `offset FOLLOWING AND end`.
+    #[derive(Debug)]
+    pub struct WindowFrameFromFollowing {
+        pub start: WindowFrameFollowing,
+        #[tok(AND, this)]
+        pub end: WindowFrameEndAfterFollowing,
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after an `UNBOUNDED PRECEDING` or an `offset PRECEDING`
+    /// start: each bound. The gram.y action refuses `UNBOUNDED PRECEDING`
+    /// ("frame end cannot be UNBOUNDED PRECEDING"); the arm stays so that the
+    /// keyword shifts (see the note above `WindowFrameBetween`).
+    ///
+    /// `UNBOUNDED` is an unreserved keyword, so `unbounded PRECEDING` is also
+    /// the spelling of an offset with a column named `unbounded`. gram.y
+    /// settles it with `%nonassoc UNBOUNDED` one level under `PRECEDING` and
+    /// `FOLLOWING` (gram.y:861-868, 886), which `crate::tokens` declares the
+    /// same way: the keyword shifts. A quoted `"unbounded" PRECEDING` is an
+    /// offset.
+    #[derive(Debug)]
+    pub enum WindowFrameEnd {
+        #[tok(CURRENT, ROW)]
+        CurrentRow,
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Preceding(WindowFramePreceding),
+        Following(WindowFrameFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after a `CURRENT ROW` start: no `offset PRECEDING`.
+    #[derive(Debug)]
+    pub enum WindowFrameEndAfterCurrentRow {
+        #[tok(CURRENT, ROW)]
+        CurrentRow,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Following(WindowFrameFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after an `offset FOLLOWING` start: a bound that follows.
+    #[derive(Debug)]
+    pub enum WindowFrameEndAfterFollowing {
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Following(WindowFrameFollowing),
     }
 }
 
@@ -731,46 +837,39 @@ recursa::ast_node! {
     /// `unit start [EXCLUDE ...]`
     #[derive(Debug)]
     pub struct WindowFrameSingle {
-        pub bound: WindowFrameBound,
+        pub bound: WindowFrameSingleBound,
         pub exclude: Option<WindowFrameExclude>,
     }
 }
 
 recursa::ast_node! {
-    /// A single frame bound: gram.y `frame_bound` (gram.y:16391-16427),
-    /// `UNBOUNDED PRECEDING | UNBOUNDED FOLLOWING | CURRENT ROW | a_expr
-    /// PRECEDING | a_expr FOLLOWING`.
-    ///
-    /// `UNBOUNDED` is an unreserved keyword, so `unbounded PRECEDING` is also
-    /// the spelling of `a_expr PRECEDING` with a column named `unbounded`.
-    /// gram.y settles it with `%nonassoc UNBOUNDED` one level under
-    /// `PRECEDING` and `FOLLOWING` (gram.y:861-868, 886), which `crate::tokens`
-    /// declares the same way: the keyword shifts, and the bound is always
-    /// `Unbounded`. A quoted `"unbounded" PRECEDING` is an `Offset`.
+    /// The bound of a frame without `BETWEEN`, which also ends the frame at
+    /// the current row: no bound that follows.
     #[derive(Debug)]
-    pub enum WindowFrameBound {
+    pub enum WindowFrameSingleBound {
         #[tok(CURRENT, ROW)]
         CurrentRow,
-        Unbounded(#[tok(UNBOUNDED, this)] WindowFrameDirection),
-        Offset(WindowFrameOffset),
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
+        Preceding(WindowFramePreceding),
     }
 }
 
 recursa::ast_node! {
+    /// gram.y `frame_bound: a_expr PRECEDING`.
     #[derive(Debug)]
-    pub struct WindowFrameOffset {
-        pub expr: boxed!(Expr),
-        pub direction: WindowFrameDirection,
+    pub struct WindowFramePreceding {
+        #[tok(this, PRECEDING)]
+        pub offset: boxed!(Expr),
     }
 }
 
 recursa::ast_node! {
+    /// gram.y `frame_bound: a_expr FOLLOWING`.
     #[derive(Debug)]
-    pub enum WindowFrameDirection {
-        #[tok(PRECEDING)]
-        Preceding,
-        #[tok(FOLLOWING)]
-        Following,
+    pub struct WindowFrameFollowing {
+        #[tok(this, FOLLOWING)]
+        pub offset: boxed!(Expr),
     }
 }
 
