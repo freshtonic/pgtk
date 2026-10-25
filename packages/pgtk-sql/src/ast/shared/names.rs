@@ -41,7 +41,74 @@ recursa::ast_node! {
         CurrentUser,
         #[tok(SESSION_USER)]
         SessionUser,
-        Name(crate::tokens::NonReservedWord),
+        Name(RoleName),
+    }
+}
+
+recursa::ast_node! {
+    /// The `NonReservedWord` arm of gram.y `RoleSpec`. Its action rejects the
+    /// name `none` (REL_17_11 gram.y 17361; REL_14_24 gram.y 15303), which it
+    /// compares as a string, so a quoted `"none"` is rejected too.
+    #[classify(name, fold = crate::ident::fold_role_name)]
+    #[reject(
+        one_of(name, "none"),
+        code = "42939",
+        message = "role name \"none\" is reserved",
+        cite = "REL_17_11 gram.y 17361, RoleSpec",
+    )]
+    #[derive(Debug, PartialEq, Eq, Hash, derive_more :: Deref)]
+    pub struct RoleName {
+        #[deref]
+        pub name: crate::tokens::NonReservedWord,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `RoleId: RoleSpec` (REL_17_11 gram.y 17305-17344): a role name
+    /// that a statement creates or renames. `CREATE ROLE`, `CREATE USER`,
+    /// `CREATE GROUP` and the `RENAME TO` forms of `ALTER ROLE`, `ALTER
+    /// USER` and `ALTER GROUP` take it.
+    ///
+    /// The action rejects every `RoleSpec` that is no plain name: `public`
+    /// and the three pseudo-roles, each with its own message, and `RoleSpec`
+    /// itself rejects `none` (issue #53). The word is a `RoleSpec` word, so
+    /// the pseudo-role keywords reach the action and get its message.
+    /// PostgreSQL 14 has the same checks (REL_14_24 gram.y 15249-15328).
+    #[classify(name, fold = crate::ident::fold_role_name)]
+    #[reject(
+        one_of(name, "none"),
+        code = "42939",
+        message = "role name \"none\" is reserved",
+        cite = "REL_17_11 gram.y 17361, RoleSpec",
+    )]
+    #[reject(
+        one_of(name, "public"),
+        code = "42939",
+        message = "role name \"public\" is reserved",
+        cite = "REL_17_11 gram.y 17315, RoleId",
+    )]
+    #[reject(
+        one_of(name, "SESSION_USER"),
+        code = "42939",
+        message = "SESSION_USER cannot be used as a role name here",
+        cite = "REL_17_11 gram.y 17322, RoleId",
+    )]
+    #[reject(
+        one_of(name, "CURRENT_USER"),
+        code = "42939",
+        message = "CURRENT_USER cannot be used as a role name here",
+        cite = "REL_17_11 gram.y 17329, RoleId",
+    )]
+    #[reject(
+        one_of(name, "CURRENT_ROLE"),
+        code = "42939",
+        message = "CURRENT_ROLE cannot be used as a role name here",
+        cite = "REL_17_11 gram.y 17336, RoleId",
+    )]
+    #[derive(Debug, PartialEq, Eq, Hash, derive_more :: Deref)]
+    pub struct RoleId {
+        #[deref]
+        pub name: crate::tokens::RoleSpecWord,
     }
 }
 

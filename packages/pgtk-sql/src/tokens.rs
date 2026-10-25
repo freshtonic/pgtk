@@ -1098,6 +1098,11 @@ recursa::tokens! {
         // `literal::UtilityOptionName` names that merged kind in its own
         // variant, as gram.y names it in `utility_option_name` itself.
         UtilityOptionName = NonReservedWord + { ANALYZE },
+        // gram.y `RoleSpec: NonReservedWord | CURRENT_ROLE | CURRENT_USER |
+        // SESSION_USER` (REL_17_11 gram.y 17346), as one word. `RoleId`
+        // reads it, because its action rejects the three keywords with their
+        // own message (`crate::ast::shared::names::RoleId`).
+        RoleSpecWord = NonReservedWord + { CURRENT_ROLE, CURRENT_USER, SESSION_USER },
         // gram.y `IDENT`: an identifier that is no keyword at all, the name
         // of an old-style `CREATE AGGREGATE (name = value)` option
         // (`old_aggr_elem: IDENT '=' def_arg`). Admitting `ColId` there put
@@ -1507,6 +1512,29 @@ impl NonReservedWord<'_> {
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
         crate::ident::fold_identifier(self.text())
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `RoleSpec` as one word: a `NonReservedWord`, or one of the
+    /// reserved keywords `CURRENT_ROLE`, `CURRENT_USER` and `SESSION_USER`.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    pub enum RoleSpecWord {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                admits(RoleSpecWord)
+            )]
+            RoleSpecWordText,
+        ),
+    }
+}
+
+impl RoleSpecWord<'_> {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
     }
 }
 

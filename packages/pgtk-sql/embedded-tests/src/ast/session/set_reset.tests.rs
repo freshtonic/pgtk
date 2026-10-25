@@ -236,13 +236,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_set_role_default() {
+    fn set_role_default_needs_to_or_equals() {
+        // gram.y `set_rest_more: ROLE NonReservedWord_or_Sconst` takes no
+        // `DEFAULT`; `generic_set` takes it after `TO` or `=` (issue #53).
+        for source in ["SET ROLE TO DEFAULT", "SET ROLE = DEFAULT"] {
+            let lexed = crate::lex(source);
+            assert_eq!(lexed.errors().count(), 0, "lex errors in input");
+            let mut input = lexed.input();
+            let _stmt_parsed = VariableSetStmt::parse(&mut input).unwrap();
+            assert!(input.is_eof());
+        }
         let lexed = crate::lex("SET ROLE DEFAULT");
-        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
-        let _stmt_parsed = VariableSetStmt::parse(&mut input).unwrap();
-        let _stmt = _stmt_parsed.ast();
-        assert!(input.is_eof());
+        assert!(
+            VariableSetStmt::parse(&mut input).is_err(),
+            "SET ROLE DEFAULT must be rejected"
+        );
     }
 
     #[test]

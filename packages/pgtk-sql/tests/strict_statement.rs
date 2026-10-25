@@ -70,7 +70,7 @@ fn variable_set_stmt_keeps_scope_prefixes_and_special_rests() {
         "SET SESSION SESSION AUTHORIZATION DEFAULT",
         "SET LOCAL TIME ZONE 'UTC'",
         "SET XML OPTION DOCUMENT",
-        "SET ROLE DEFAULT",
+        "SET ROLE TO DEFAULT",
     ] {
         let lexed = lex(source);
         assert!(
@@ -633,6 +633,56 @@ fn the_language_of_a_transform_is_a_name() {
     assert_accepts(&[
         "DROP TRANSFORM FOR A LANGUAGE plpgsql",
         "CREATE TRANSFORM FOR A LANGUAGE plpgsql (TO SQL WITH FUNCTION A)",
+    ]);
+}
+
+/// The role statements that gram.y rejects as a syntax error (issue #53).
+#[test]
+fn role_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `ALTER ROLE ALL` takes only SET or RESET.
+            "ALTER ROLE ALL WITH",
+            "ALTER USER ALL WITH",
+            "ALTER ROLE ALL RENAME TO r",
+            "ALTER GROUP ALL ADD USER r",
+            // A role grant names a `privilege_list`, never `ALL`.
+            "GRANT ALL TO A",
+            "REVOKE ALL FROM A",
+            "GRANT ALL(users) TO A",
+            "GRANT ALL PRIVILEGES TO A",
+            "REVOKE ADMIN OPTION FOR ALL FROM A",
+            // `SET ROLE` takes no `DEFAULT` without `TO` or `=`.
+            "SET ROLE DEFAULT",
+            "SET LOCAL ROLE DEFAULT",
+            "SET SESSION ROLE DEFAULT",
+            // Only a plain `PASSWORD` takes `NULL`.
+            "ALTER ROLE A ENCRYPTED PASSWORD NULL",
+            "CREATE ROLE A ENCRYPTED PASSWORD NULL",
+            "CREATE USER A ENCRYPTED PASSWORD NULL",
+            // A role grant is no CREATE SCHEMA element.
+            "CREATE SCHEMA AUTHORIZATION A GRANT r TO A",
+        ],
+        "gram.y has no such role statement",
+    );
+    assert_accepts(&[
+        "ALTER ROLE ALL SET work_mem = '1MB'",
+        "ALTER USER ALL IN DATABASE d RESET ALL",
+        "ALTER ROLE r WITH LOGIN",
+        "ALTER ROLE CURRENT_USER SET work_mem = '1MB'",
+        "ALTER GROUP CURRENT_ROLE ADD USER r",
+        "ALTER ROLE r RENAME TO s",
+        "ALTER GROUP g RENAME TO h",
+        "GRANT r TO A",
+        "GRANT ALL ON t TO A",
+        "REVOKE r FROM A",
+        "REVOKE ALL ON t FROM A",
+        "SET ROLE TO DEFAULT",
+        "SET ROLE = DEFAULT",
+        "SET ROLE NONE",
+        "ALTER ROLE A PASSWORD NULL",
+        "ALTER ROLE A ENCRYPTED PASSWORD 'x'",
+        "CREATE SCHEMA AUTHORIZATION A GRANT SELECT ON t TO A",
     ]);
 }
 
