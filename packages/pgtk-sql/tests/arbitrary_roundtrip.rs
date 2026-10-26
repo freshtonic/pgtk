@@ -113,8 +113,7 @@ use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
 // The issue of each group of known failures.
 const EREPORTS: u32 = 55;
-const ROUND_TRIP: u32 = 60;
-const LAYOUT: u32 = 61;
+const DECORATED_CLOSE: u32 = 89;
 
 /// One known failure. It matches a failure of its kind when `sql` matches
 /// the rendering (with each run of whitespace made one space) and `detail`
@@ -148,9 +147,7 @@ const fn known(
 /// failure counts it.
 #[rustfmt::skip]
 const KNOWN_FAILURES: &[KnownFailure] = &[
-    known(Parse, ROUND_TRIP, r#""#, r#""#, "a value at a restricted expression site (b_expr, c_expr, func_expr_windowless) that the renderer writes without the parentheses that the site needs"),
-    known(Fixpoint, ROUND_TRIP, r#""#, r#"^parentheses only"#, "an operand without the parentheses that its operator needs"),
-    known(Layout, LAYOUT, r#""#, r#""#, "a line break or a space that the second rendering puts in another place"),
+    known(Parse, DECORATED_CLOSE, r#"OPERATOR\([^()]*\) (E|U&|B|X)?'"#, r#"^unexpected "\)" after "#, "an OPERATOR(op) before a string literal, whose close is the merged kind RPAREN_TYPED_LA"),
     known(Oracle, EREPORTS, r#""#, r#"ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|WITH TIES cannot be specified|type modifier cannot have parameter name|multiple (ORDER BY|OFFSET|LIMIT|WITH) clauses not allowed|frame start cannot be|frame end cannot be|wrong number of parameters on (left|right) side of OVERLAPS"#, "a statement that a gram.y action rejects with ereport()"),
 ];
 
