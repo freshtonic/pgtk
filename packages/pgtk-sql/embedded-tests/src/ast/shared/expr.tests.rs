@@ -4148,7 +4148,7 @@ mod tests {
         };
         assert!(matches!(&**one, Expr::IntegerLit(_)));
         assert!(matches!(&**two, Expr::IntegerLit(_)));
-        assert!(matches!(operator.name, QualifiedOperatorName::Qualified(_)));
+        assert!(matches!(operator.name(), QualifiedOperatorName::Qualified(_)));
 
         // `a OPERATOR(pg_catalog.+) (b * c)`: a decorated `+` is below `*`.
         let parsed = parse_expr_classified("a OPERATOR(pg_catalog.+) b * c");
@@ -4165,7 +4165,7 @@ mod tests {
         };
         assert!(matches!(&**left, Expr::DecoratedInfix(..)));
         assert!(matches!(&**right, Expr::ColumnRef(_)));
-        assert!(matches!(operator.name, QualifiedOperatorName::Plain(_)));
+        assert!(matches!(operator.name(), QualifiedOperatorName::Plain(_)));
     }
 
     /// `any_operator` is `all_Op` behind any number of `ColId '.'` parts

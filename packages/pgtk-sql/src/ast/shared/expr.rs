@@ -1767,10 +1767,40 @@ recursa::ast_node! {
     /// gram.y:16494 `OPERATOR '(' any_operator ')'`, the explicit spelling
     /// that `qual_Op`, `qual_all_Op` and `subquery_Op` share. It names any
     /// operator, a `MathOp` included, with an optional schema path.
+    ///
+    /// A string literal can follow the `)`, because `qual_Op a_expr` and
+    /// `a_expr qual_Op a_expr` take each `a_expr` (REL_17_11 gram.y 14844,
+    /// 14846): `SELECT 1 OPERATOR(+) '2'` (issue #89). Before a string
+    /// literal, the token feed gives the `)` as pgtk-sql's own merged kind
+    /// `RPAREN_TYPED_LA` (`crate::tokens`). `RPAREN` is the last token of the
+    /// rule, so lookahead substitution, which reads `FIRST` of the rest of the
+    /// rule only, cannot reach the position. Thus the rule names the merged
+    /// kind in the `MergedTyped` arm, the way gram.y writes `any_with: WITH |
+    /// WITH_LA` by hand (REL_17_11 gram.y 11691-11692).
+    ///
+    /// Each arm keeps the full `OPERATOR ( ... )` attachment, so the two arms
+    /// render the same text: a merged kind is the same record read
+    /// differently, and keeps the spelling and the span of the source token.
+    /// A close as a separate Node would render `OPERATOR( = )` as
+    /// `OPERATOR( =)`.
     #[derive(Debug)]
-    pub struct DecoratedOperator {
-        #[tok(OPERATOR, LPAREN, this, RPAREN)]
-        pub name: crate::ast::shared::names::QualifiedOperatorName,
+    pub enum DecoratedOperator {
+        Value(
+            #[tok(OPERATOR, LPAREN, this, RPAREN)] crate::ast::shared::names::QualifiedOperatorName,
+        ),
+        MergedTyped(
+            #[tok(OPERATOR, LPAREN, this, RPAREN_TYPED_LA)]
+            crate::ast::shared::names::QualifiedOperatorName,
+        ),
+    }
+}
+
+impl<'input> DecoratedOperator<'input> {
+    /// The operator name between the parentheses, in each arm.
+    pub fn name(&self) -> &crate::ast::shared::names::QualifiedOperatorName<'input> {
+        match self {
+            Self::Value(name) | Self::MergedTyped(name) => name,
+        }
     }
 }
 

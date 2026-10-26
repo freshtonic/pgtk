@@ -26,6 +26,7 @@ mod collate;
 use crate::analysis::{CollContext, Strength};
 use collate::SublinkInfo;
 use pgtk_catalog::Collation;
+use pgtk_sql::ast::shared::expr::FlatDecoratedOperator;
 use pgtk_sql::ast::shared::expr::FlatIsNormalizedTail;
 use pgtk_sql::ast::shared::expr::{
     FlatArrayElements, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
@@ -14625,13 +14626,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         self.operator_text(from, self.source.len()).1
     }
 
-    fn decorated_operator(
-        &self,
-        op: Handle<pgtk_sql::ast::shared::expr::FlatDecoratedOperator>,
-    ) -> Result<(ObjectName, usize)> {
+    fn decorated_operator(&self, op: Handle<FlatDecoratedOperator>) -> Result<(ObjectName, usize)> {
         let location = self.span(op).start;
-        let d = self.get(op);
-        let name = match self.get(d.name) {
+        // The two arms differ only in the token kind of the `)`.
+        let (FlatDecoratedOperator::Value(name) | FlatDecoratedOperator::MergedTyped(name)) =
+            self.get(op);
+        let name = match self.get(*name) {
             FlatQualifiedOperatorName::Plain(n) => {
                 let span = self.span(*n);
                 ObjectName {
