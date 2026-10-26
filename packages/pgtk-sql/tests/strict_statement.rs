@@ -1043,3 +1043,81 @@ fn a_close_before_a_set_operator_parses() {
         "SELECT 1 GROUP BY () ORDER BY 1",
     ]);
 }
+
+/// Statements that a `gram.y` action always rejects with `ereport`, which
+/// pgtk-sql rejects as a grammar shape (issue #55). The declared rejections
+/// are in `tests/declared_rejections.rs`.
+#[test]
+fn statements_that_a_gram_y_action_rejects() {
+    assert_rejects(
+        &[
+            // `aggr_arg` refuses the output modes.
+            "CREATE AGGREGATE a(INOUT int) (SFUNC = f, STYPE = int)",
+            "CREATE AGGREGATE a(x OUT int) (SFUNC = f, STYPE = int)",
+            "ALTER AGGREGATE a(OUT int) RENAME TO b",
+            "DROP AGGREGATE a(int ORDER BY OUT int)",
+            // `CREATE SCHEMA IF NOT EXISTS` takes no schema element.
+            "CREATE SCHEMA IF NOT EXISTS s CREATE SEQUENCE q",
+            "CREATE SCHEMA IF NOT EXISTS AUTHORIZATION r CREATE TABLE t (a int)",
+            // `PROGRAM` takes a string, not a standard stream.
+            "COPY t TO PROGRAM STDIN",
+            "COPY t FROM PROGRAM STDOUT",
+            "COPY (SELECT 1) TO PROGRAM STDOUT",
+            // `WHERE` only with `COPY FROM`.
+            "COPY t TO STDOUT WHERE a > 1",
+            "COPY t TO 'f' WITH WHERE true",
+            // The legacy forms that the actions refuse.
+            "CREATE ROLE r UNENCRYPTED PASSWORD 'x'",
+            "ALTER ROLE r UNENCRYPTED PASSWORD 'x'",
+            "CREATE TABLE t (a int REFERENCES p MATCH PARTIAL)",
+            // A column list on `ON UPDATE SET NULL / SET DEFAULT`.
+            "CREATE TABLE t (a int REFERENCES p ON UPDATE SET NULL (a))",
+            "CREATE TABLE t (a int, FOREIGN KEY (a) REFERENCES p ON UPDATE SET DEFAULT (a))",
+            // `WITH CHECK OPTION` on a recursive view.
+            "CREATE RECURSIVE VIEW v (a) AS SELECT 1 WITH CHECK OPTION",
+            "CREATE OR REPLACE RECURSIVE VIEW v (a) AS SELECT 1 WITH LOCAL CHECK OPTION",
+            // A hash partition bound with no modulus or remainder, or a repeat.
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 0)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, MODULUS 2)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0, REMAINDER 1)",
+            // `preprocess_pubobj_list`: the first object names its kind, and a
+            // schema continuation is a plain name.
+            "CREATE PUBLICATION p FOR t",
+            "ALTER PUBLICATION p ADD t",
+            "ALTER PUBLICATION p DROP t*",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t (a)",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t WHERE (a > 1)",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, t*",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, ONLY t",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, a.b",
+        ],
+        "a gram.y action rejects the statement",
+    );
+    assert_accepts(&[
+        "CREATE AGGREGATE a(IN int) (SFUNC = f, STYPE = int)",
+        "CREATE AGGREGATE a(VARIADIC x int ORDER BY VARIADIC int) (SFUNC = f, STYPE = int)",
+        "CREATE SCHEMA IF NOT EXISTS s",
+        "CREATE SCHEMA IF NOT EXISTS AUTHORIZATION r",
+        "CREATE SCHEMA s CREATE SEQUENCE q",
+        "COPY t TO PROGRAM 'cat'",
+        "COPY t FROM STDIN WHERE a > 1",
+        "COPY (SELECT 1) TO STDOUT",
+        "CREATE ROLE r ENCRYPTED PASSWORD 'x'",
+        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+        "CREATE TABLE t (a int REFERENCES p ON UPDATE NO ACTION ON DELETE SET DEFAULT)",
+        "CREATE RECURSIVE VIEW v (a) AS SELECT 1",
+        "CREATE VIEW v AS SELECT 1 WITH CASCADED CHECK OPTION",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 1, MODULUS 2)",
+        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+        "CREATE TRIGGER t AFTER INSERT OR UPDATE OF a OR DELETE OR TRUNCATE ON x EXECUTE FUNCTION f()",
+        "CREATE POLICY p ON t AS PERMISSIVE",
+        "CREATE POLICY p ON t AS \"restrictive\"",
+        "ALTER INDEX i ALTER 1 SET STATISTICS 100",
+        "ALTER INDEX i ALTER 32767 SET STATISTICS 100",
+        "SELECT U&'d!0061t' UESCAPE '!'",
+    ]);
+}

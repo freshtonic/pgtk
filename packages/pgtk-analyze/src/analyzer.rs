@@ -10071,7 +10071,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let encoding = match encoding {
             None => None,
             Some(e) => {
-                let (name, _) = self.alias_name(self.get(e).name)?;
+                let (name, _) = self.col_id(self.get(e).name)?;
                 if !matches!(name.as_str(), "utf8" | "utf16" | "utf32") {
                     return Err(Diagnostic::new(
                         "22023",

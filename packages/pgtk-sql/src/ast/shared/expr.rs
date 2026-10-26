@@ -2988,6 +2988,18 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
+    ///
+    /// `base_yylex` (`parser.c`) rejects an escape that is not one character,
+    /// or that `check_uescapechar` refuses: a hex digit, `+`, `'`, `"` or
+    /// white space (REL_17_11 parser.c 277-280; issue #55). The error is at
+    /// the escape string.
+    #[classify(escape_char, fold = crate::ident::uescape_class)]
+    #[reject(
+        one_of(escape_char, "invalid"),
+        code = "42601",
+        message = "invalid Unicode escape character",
+        cite = "REL_17_11 parser.c 278, base_yylex",
+    )]
     #[derive(Debug)]
     pub struct UescapeSuffix {
         #[tok(UESCAPE, this)]
@@ -3025,11 +3037,23 @@ recursa::ast_node! {
 // `JSON_OBJECT`/`JSON_ARRAY` constructors; REL_15_19 gram.y has no SQL/JSON).
 #[cfg(feature = "since-pg16")]
 recursa::ast_node! {
-    /// `ENCODING ‹name›` suffix of a `FORMAT JSON` clause (e.g. `ENCODING UTF8`).
+    /// `ENCODING ‹name›` suffix of a `FORMAT JSON` clause (e.g. `ENCODING UTF8`):
+    /// gram.y `json_format_clause: FORMAT_LA JSON ENCODING name`. The action
+    /// compares the name with `utf8`, `utf16` and `utf32` and ignores case
+    /// (`pg_strcasecmp`); it rejects each other name (REL_16_15 gram.y 16388
+    /// and makefuncs.c 926, `makeJsonEncoding`; REL_17_11 gram.y 16926;
+    /// issue #55).
+    #[classify(name, fold = crate::ident::fold_name_caseless)]
+    #[reject(
+        not_in(name, "utf8", "utf16", "utf32"),
+        code = "22023",
+        message = "unrecognized JSON encoding",
+        cite = "REL_17_11 gram.y 16926, json_format_clause",
+    )]
     #[derive(Debug)]
     pub struct JsonEncoding {
         #[tok(ENCODING, this)]
-        pub name: literal::AliasName,
+        pub name: crate::tokens::ColId,
     }
 }
 
