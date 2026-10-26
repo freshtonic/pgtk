@@ -607,9 +607,10 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// gram.y `columnref: ColId | ColId indirection` for an unqualified name:
-    /// the subscripts (and the field selectors after each) belong to the
-    /// column reference. Subscripts are not a postfix operator of every
+    /// gram.y `columnref: ColId | ColId indirection` for an unqualified name
+    /// whose indirection starts with a subscript: `a`, `a[1]`, `a[1].b`,
+    /// `a[1].*`. An indirection that starts with `.` makes a
+    /// [`QualifiedRef`]. Subscripts are not a postfix operator of every
     /// expression: gram.y attaches `indirection` only to `columnref`,
     /// `PARAM`, `'(' a_expr ')'` and `select_with_parens`, so `x::int[1]` is a
     /// cast to an array type and `f(x)[1]` is rejected, as PostgreSQL has it.
@@ -617,17 +618,23 @@ recursa::ast_node! {
     #[flat(pool)]
     pub struct ColumnRef {
         pub name: crate::tokens::ColId,
-        pub subscripts: zero_or_many!(SubscriptIndirection),
+        /// The subscript and the elements after it. A `.*` is the last
+        /// element only (`check_indirection`, REL_17_11 gram.y 18779; issue
+        /// #87).
+        pub indirection: Option<SubscriptedIndirection>,
     }
 }
 
 recursa::ast_node! {
-    /// gram.y `PARAM opt_indirection`.
+    /// gram.y `c_expr: PARAM opt_indirection` (REL_17_11 gram.y 15357):
+    /// `$1`, `$1[1]`, `$1.a`, `$1.*`.
     #[derive(Debug)]
     pub struct PositionalParam {
         #[lex(matcher)]
         pub param: literal::DollarNum,
-        pub subscripts: zero_or_many!(SubscriptIndirection),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 15368; issue #87).
+        pub indirection: Option<Indirection>,
     }
 }
 
@@ -1443,21 +1450,6 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A subscript followed by the field selectors that continue PostgreSQL's
-    /// `opt_indirection` chain: `arr[i]`, `arr[i].field`, `arr[i].f.g`.
-    ///
-    /// Further subscripts are not repeated here — the owning atom keeps a list
-    /// of these, so `a[1].b[2]` is a subscript carrying `.b` followed by a
-    /// second subscript. Keeping brackets out of this tail leaves the two forms
-    /// with disjoint continuations.
-    #[derive(Debug)]
-    pub struct SubscriptIndirection {
-        pub subscript: BracketSubscript,
-        pub fields: zero_or_many!(IndirectionField),
-    }
-}
-
-recursa::ast_node! {
     /// `.field` accessor in an indirection chain.
     #[derive(Debug)]
     pub struct IndirectionField {
@@ -1467,11 +1459,8 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One element of an indirection chain on an `INSERT` / `UPDATE` column
-    /// target: `[idx]`, `[low:high]`, or `.field` (Postgres `opt_indirection`).
-    ///
-    /// Variant ordering: `Slice` before `Index` — both open with `[`, the
-    /// colon-containing slice form is tried first.
+    /// One element of an [`Indirection`] other than its last `.*`: `[idx]`,
+    /// `[low:high]`, or `.field` (gram.y `indirection_el`).
     #[derive(Debug)]
     pub enum IndirectionEl {
         Subscript(BracketSubscript),
@@ -5117,6 +5106,40 @@ recursa::ast_node! {
         Null,
         PositionalParam,
         ColumnRef,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `AexprConst` (REL_17_11 gram.y 17198-17290) as a restricted
+    /// expression: a constant, a typed literal or `TRUE`, `FALSE` or `NULL`,
+    /// with no sign, operator or parentheses. Like [`CExpr`], it is not an
+    /// AST type: a field typed `AexprConst` holds an [`Expr`]. The values of
+    /// a `CYCLE ... SET col TO value DEFAULT value` clause take it (issue
+    /// #87).
+    ///
+    /// Two forms of `AexprConst` are not here, because the variant of
+    /// [`Expr`] that holds each one holds other expressions too: `func_name
+    /// Sconst` with a dotted name (`pg_catalog.int4 '1'`, in `QualRef`) and
+    /// `func_name '(' func_arg_list ')' Sconst` (`t(3) 'x'`, in `Func`).
+    /// [`CycleMarkValue`](crate::ast::shared::with_clause::CycleMarkValue)
+    /// has its own nodes for them.
+    #[restricts(Expr)]
+    pub enum AexprConst {
+        UnicodeStringLit,
+        EscapeStringLit,
+        TimestampLit,
+        TimeLit,
+        IntervalLit,
+        CastFunc,
+        NumericLit,
+        IntegerLit,
+        DollarStringLit,
+        BitStringLit,
+        HexStringLit,
+        StringLit,
+        BoolTrue,
+        BoolFalse,
+        Null,
     }
 }
 

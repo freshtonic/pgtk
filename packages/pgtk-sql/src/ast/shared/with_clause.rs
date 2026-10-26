@@ -86,13 +86,66 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// TO value DEFAULT value
+    /// `TO value DEFAULT value`. gram.y `opt_cycle_clause` takes an
+    /// `AexprConst` for each value, in each target version (REL_14_24 to
+    /// REL_19_STABLE; REL_17_11 gram.y 12944), so `TO 1 + 1` and `TO f(x)`
+    /// are syntax errors (issue #87).
     #[derive(Debug)]
     pub struct CycleToDefault {
         #[tok(TO, this)]
-        pub to_value: Expr,
+        pub to_value: CycleMarkValue,
         #[tok(DEFAULT, this)]
-        pub default_value: Expr,
+        pub default_value: CycleMarkValue,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `AexprConst` as the value of a `CYCLE` mark (issue #87).
+    #[derive(Debug)]
+    pub enum CycleMarkValue {
+        /// A constant, a typed literal with a type name, `TRUE`, `FALSE` or
+        /// `NULL`: `'Y'`, `1`, `int4 '1'`, `numeric(10, 2) '1'`.
+        Const(crate::ast::shared::expr::AexprConst),
+        /// `func_name Sconst` and `func_name '(' func_arg_list ')' Sconst`
+        /// with a dotted name: `pg_catalog.int4 '1'`, `s.t(3) 'x'`.
+        Qualified(boxed!(QualifiedTypedLiteral)),
+        /// `func_name '(' func_arg_list ')' Sconst` with a plain name:
+        /// `t(3) 'x'`.
+        Call(boxed!(CallTypedLiteral)),
+    }
+}
+
+recursa::ast_node! {
+    /// A typed literal whose `func_name` is `ColId indirection` (REL_17_11
+    /// gram.y 17223-17262). `check_func_name` refuses a `.*` and a subscript
+    /// in the name, so the name is dotted attribute names only.
+    #[derive(Debug)]
+    pub struct QualifiedTypedLiteral {
+        pub table: crate::tokens::ColId,
+        pub attrs: one_or_many!(crate::ast::shared::expr::IndirectionField),
+        pub value: QualifiedTypedLiteralValue,
+    }
+}
+
+recursa::ast_node! {
+    /// What follows the dotted name of a [`QualifiedTypedLiteral`].
+    #[derive(Debug)]
+    pub enum QualifiedTypedLiteralValue {
+        /// `func_name Sconst`.
+        String(literal::StringLit),
+        /// `func_name '(' func_arg_list ')' Sconst`.
+        Call(crate::ast::shared::expr::FunctionTypedLiteralTail),
+    }
+}
+
+recursa::ast_node! {
+    /// `func_name '(' func_arg_list ')' Sconst` with a plain name (REL_17_11
+    /// gram.y 17236). The form without arguments is a `CastFunc` in
+    /// [`CycleMarkValue::Const`].
+    #[derive(Debug)]
+    pub struct CallTypedLiteral {
+        pub name: crate::tokens::type_function_name,
+        pub tail: crate::ast::shared::expr::FunctionTypedLiteralTail,
     }
 }
 
