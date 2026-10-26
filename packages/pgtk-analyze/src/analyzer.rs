@@ -196,6 +196,24 @@ macro_rules! subquery_alias {
 pub type Statement<'input> = FlatAst<'input, FlatStatement>;
 
 /// What a caller builds once and asks to analyse Statements.
+///
+/// An Analyzer holds a Catalog and the [`Settings`]. Make it once, then give
+/// it each Statement with [`Analyzer::analyze_sql`] (text) or
+/// [`Analyzer::analyze`] (a Statement that `pgtk-sql` parsed).
+///
+/// ```
+/// use pgtk_analyze::{Analyzer, GRAMMAR_VERSION, Session, Settings};
+///
+/// let catalog = pgtk_catalog::fixture::pg17();
+/// let settings = Settings::new(&catalog, GRAMMAR_VERSION, ["public"])?;
+/// let analyzer = Analyzer::new(&catalog, settings);
+///
+/// let analysis = analyzer
+///     .analyze_sql("SELECT 1 AS one", &[], &Session::new())
+///     .expect("PostgreSQL accepts it");
+/// assert_eq!(analysis.result.columns[0].name, "one");
+/// # Ok::<(), pgtk_analyze::TargetVersionError>(())
+/// ```
 pub struct Analyzer<'c> {
     catalog: &'c Catalog,
     settings: Settings,
@@ -224,6 +242,29 @@ impl<'c> Analyzer<'c> {
     /// `None` entry is inferred. `session` is the Session snapshot that
     /// EXECUTE, FETCH and SHOW of a placeholder read; use
     /// [`Session::new`] when there is none.
+    ///
+    /// ```
+    /// use pgtk_analyze::{Analyzer, GRAMMAR_VERSION, Session, Settings};
+    /// use pgtk_catalog::Builtin;
+    ///
+    /// let catalog = pgtk_catalog::fixture::pg17();
+    /// let settings = Settings::new(&catalog, GRAMMAR_VERSION, ["public"]).unwrap();
+    /// let analyzer = Analyzer::new(&catalog, settings);
+    ///
+    /// // Analysis reads the Flat AST of pgtk-sql.
+    /// let sql = "SELECT $1 + 1";
+    /// let lexed = pgtk_sql::lex(sql);
+    /// let mut input = lexed.input();
+    /// let statement = pgtk_sql::ast::Statement::parse_flat(&mut input).expect("a statement");
+    ///
+    /// // Declare `$1` as int8. The result of `int8 + int4` is int8.
+    /// let int8 = catalog.builtin(Builtin::Int8);
+    /// let analysis = analyzer
+    ///     .analyze(sql, &statement, &[Some(int8)], &Session::new())
+    ///     .expect("PostgreSQL accepts it");
+    /// assert_eq!(analysis.result.params, [int8]);
+    /// assert_eq!(analysis.result.columns[0].ty, int8);
+    /// ```
     pub fn analyze(
         &self,
         source: &str,
@@ -330,6 +371,36 @@ impl<'c> Analyzer<'c> {
     /// rejects is Unsupported here, because this crate does not reproduce
     /// PostgreSQL's syntax errors. A construct newer than the Target Version
     /// is the Diagnostic that version's parser gives.
+    ///
+    /// ```
+    /// use pgtk_analyze::{AnalyzeError, Analyzer, GRAMMAR_VERSION, Session, Settings};
+    ///
+    /// let catalog = pgtk_catalog::fixture::pg17();
+    /// let settings = Settings::new(&catalog, GRAMMAR_VERSION, ["public"]).unwrap();
+    /// let analyzer = Analyzer::new(&catalog, settings);
+    /// let session = Session::new();
+    ///
+    /// // The Result Descriptor: the name, type and source column of each
+    /// // result column, and the type of each parameter.
+    /// let analysis = analyzer
+    ///     .analyze_sql("SELECT relname FROM pg_class WHERE oid = $1", &[], &session)
+    ///     .expect("PostgreSQL accepts it");
+    /// let column = &analysis.result.columns[0];
+    /// assert_eq!(column.name, "relname");
+    /// assert_eq!(catalog[column.ty].name.as_str(), "name");
+    /// assert!(column.origin.is_some());
+    /// assert_eq!(catalog[analysis.result.params[0]].name.as_str(), "oid");
+    ///
+    /// // The error that PostgreSQL gives, with its SQLSTATE and position.
+    /// let Err(AnalyzeError::Diagnostic(error)) =
+    ///     analyzer.analyze_sql("SELECT relnmae FROM pg_class", &[], &session)
+    /// else {
+    ///     panic!("PostgreSQL rejects it");
+    /// };
+    /// assert_eq!(error.sqlstate, "42703");
+    /// assert_eq!(error.message, r#"column "relnmae" does not exist"#);
+    /// assert_eq!(error.position, Some(8));
+    /// ```
     pub fn analyze_sql(
         &self,
         sql: &str,
@@ -4377,7 +4448,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 {
                     apply_default = true;
                 }
-                if column.generated && !apply_default {
+                if column.is_generated() && !apply_default {
                     return Err(Diagnostic::new(
                         "428C9",
                         format!("cannot insert a non-DEFAULT value into column \"{name}\""),
@@ -4396,7 +4467,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     ))
                     .into());
                 }
-                if column.generated {
+                if column.is_generated() {
                     return Err(Diagnostic::new(
                         "428C9",
                         format!("column \"{name}\" can only be updated to DEFAULT"),
@@ -7407,15 +7478,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         target_exprs: &mut Vec<Option<Handle<FlatExpr>>>,
         grouping: &mut Grouping,
     ) -> Result<Vec<usize>> {
-        let elements = match self.get(expr) {
-            FlatExpr::Parenthesized(p)
-                if self.list(self.get(*p).indirection).is_empty()
-                    && let FlatParenContent::Exprs(list) = self.get(self.get(*p).content)
-                    && self.list1(*list).len() > 1 =>
-            {
-                self.list1(*list).to_vec()
-            }
-            _ => vec![expr],
+        // An `if let` chain, not an `if let` guard: the guards need a Rust newer than the
+        // rust-version of the crate.
+        let elements = if let FlatExpr::Parenthesized(p) = self.get(expr)
+            && self.list(self.get(*p).indirection).is_empty()
+            && let FlatParenContent::Exprs(list) = self.get(self.get(*p).content)
+            && self.list1(*list).len() > 1
+        {
+            self.list1(*list).to_vec()
+        } else {
+            vec![expr]
         };
         let mut refs = Vec::new();
         for e in elements {
@@ -14359,23 +14431,25 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Typed> {
         let node = self.get(handle);
         let operands = fixed_operands(node);
+        // An `if let` chain, not an `if let` guard on the match below: the guards need a Rust
+        // newer than the rust-version of the crate.
+        if let Some((Some(l), r)) = operands
+            && self.row_elements(l).is_some()
+            && let FlatExpr::SubSelect(q) = self.get(r)
+        {
+            // transformAExprOp: "row op subselect" is a ROWCOMPARE sublink.
+            let sub = self.get(*q).inner;
+            let (name, op_location) = self.operator_text(self.span(l).end, self.span(r).start);
+            return self.sublink_comparison(
+                scope,
+                handle,
+                l,
+                ObjectName { schema: None, name },
+                op_location,
+                sub,
+            );
+        }
         match operands {
-            Some((Some(l), r))
-                if self.row_elements(l).is_some()
-                    && let FlatExpr::SubSelect(q) = self.get(r) =>
-            {
-                // transformAExprOp: "row op subselect" is a ROWCOMPARE sublink.
-                let sub = self.get(*q).inner;
-                let (name, op_location) = self.operator_text(self.span(l).end, self.span(r).start);
-                self.sublink_comparison(
-                    scope,
-                    handle,
-                    l,
-                    ObjectName { schema: None, name },
-                    op_location,
-                    sub,
-                )
-            }
             Some((Some(l), r)) => {
                 let lt = self.expr(scope, l)?;
                 let rt = self.expr(scope, r)?;

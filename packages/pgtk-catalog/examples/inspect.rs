@@ -172,6 +172,7 @@ fn kind_of(catalog: &Catalog, handle: Handle<Type>) -> String {
             };
             format!("pseudo-type {pseudo:?}{polymorphic}")
         }
+        _ => "another kind".to_owned(),
     }
 }
 
@@ -264,12 +265,13 @@ fn print_relation(catalog: &Catalog, handle: Handle<Relation>) {
         if column.has_default {
             notes.push("default");
         }
-        if column.generated {
+        if column.is_generated() {
             notes.push("generated");
         }
         match column.identity {
             Some(Identity::Always) => notes.push("identity always"),
             Some(Identity::ByDefault) => notes.push("identity by default"),
+            Some(_) => notes.push("identity"),
             None => {}
         }
         let line = format!(
@@ -291,6 +293,7 @@ fn argument(catalog: &Catalog, argument: &Argument) -> String {
         pgtk_catalog::ArgMode::InOut => "INOUT ",
         pgtk_catalog::ArgMode::Variadic => "VARIADIC ",
         pgtk_catalog::ArgMode::Table => "TABLE ",
+        _ => "",
     };
     let name = match &argument.name {
         Some(name) => format!("{name} "),

@@ -1,23 +1,31 @@
 /*-------------------------------------------------------------------------
  *
  * psql_oracle.c
- *	  An oracle for psql's own client-side SQL lexer.
+ *	  An oracle for psql's own client-side lexers.
  *
  * This shim drives `src/fe_utils/psqlscan.l` and `src/bin/psql/psqlscanslash.l`
  * of the pinned PostgreSQL release, and reports the facts that pgtk-psql
  * models: the text psql forwards to the server, where each variable
- * interpolation is, where a query buffer is submitted, and where a backslash
- * command begins and ends.
+ * interpolation is, where a query buffer is submitted, and where each
+ * backslash command and each of its arguments begins and ends.
+ *
+ * The shim reads the arguments of each command as `HandleSlashCmds` and
+ * `exec_command` in `src/bin/psql/command.c` read them: with the same
+ * `psql_scan_slash_option` calls and the same option types.  It runs no
+ * command.  It applies only `\set`, `\unset`, `\if`, `\elif`, `\else` and
+ * `\endif`, because those change what psql sends.  It never runs a
+ * backquoted shell command: the lexer's passthrough is a conditional stack
+ * whose only entry is inactive, so psqlscanslash.l does not evaluate one.
  *
  * Two adaptations of psql's own main loop are deliberate, and both follow
  * pgtk-psql's document model (ADR 0007):
  *
- * 1. The whole document is scanned as one input string, not one line at a
- *	  time.  The flex rules of psqlscan.l do not read line boundaries, so the
- *	  lexing is the same.  psql's line-at-a-time reading does bound how far a
- *	  backslash command's arguments can run, so this file resumes SQL lexing
- *	  at the next line break after a command name, which is where psql's own
- *	  input buffer would have ended.
+ * 1. The SQL text of the document is scanned as one input string, not one
+ *	  line at a time.  The flex rules of psqlscan.l do not read line
+ *	  boundaries, so the lexing is the same.  The arguments of a backslash
+ *	  command are read from the rest of its line only, which is where psql's
+ *	  own input buffer ends; SQL lexing then continues where the command
+ *	  ends.
  *
  * 2. The query buffer is never reset.  psql resets it after every
  *	  submission, and the `{whitespace}` rule of psqlscan.l does not echo
@@ -33,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "fe_utils/conditional.h"
 #include "fe_utils/psqlscan.h"
 #include "fe_utils/psqlscan_int.h"
 #include "psqlscanslash.h"
@@ -43,17 +52,17 @@
  * Accessors that flex generates for psqlscan.l (`%option prefix="psql_yy"`).
  * `yytext` points into `state->scanbuf`, which psqlscan_prepare_buffer hands
  * straight to `yy_scan_buffer`, so the difference of the two pointers is a
- * byte offset into the input of the current psql_scan_setup.
+ * byte offset into the input of the current psql_scan_setup.  psqlscanslash.l
+ * runs on the same scanner object, so the same accessors also give its
+ * position.
  */
 extern char *psql_yyget_text(yyscan_t yyscanner);
 extern size_t psql_yyget_leng(yyscan_t yyscanner);
 
 /*
  * psqlscanslash.l calls this after it has evaluated a backquoted argument.
- * Only psql_scan_slash_option reaches a backquote, and this oracle reads no
- * arguments — it calls psql_scan_slash_command alone — so no shell command is
- * ever run.  The definition only satisfies the linker; psql's own is in
- * src/bin/psql/common.c.
+ * This oracle never evaluates one (see the file header), so the definition
+ * only satisfies the linker; psql's own is in src/bin/psql/common.c.
  */
 void		SetShellResultVariables(int exit_code);
 
@@ -63,12 +72,14 @@ SetShellResultVariables(int exit_code)
 	(void) exit_code;
 }
 
-/* Event kinds; kept in step with the Rust `EventKind`. */
+/* Event kinds; kept in step with the Rust `read_event`. */
 #define PGPSO_INTERPOLATION 1
 #define PGPSO_SEMICOLON 2
 #define PGPSO_BACKSLASH 3
 #define PGPSO_EOL 4
 #define PGPSO_INCOMPLETE 5
+#define PGPSO_OPTION 6
+#define PGPSO_DISCARD 7
 
 typedef struct PgpsoEvent
 {
@@ -80,11 +91,13 @@ typedef struct PgpsoEvent
 	 * the substituted value, which only a `:name` substitution does. */
 	int			output_start;
 	int			output_end;
-	/* PsqlScanQuoteType for an interpolation, promptStatus_t for a stop. */
+	/* PsqlScanQuoteType for an interpolation, promptStatus_t for a stop,
+	 * the name length for a backslash command, and 1 for an option whose
+	 * value psql could not read (an unterminated quote). */
 	int			detail;
 	/* 1 when the variable was bound, 0 when it was not. */
 	int			bound;
-	/* Variable name, or backslash command name; malloc'd, or NULL. */
+	/* Variable name, command name or option value; malloc'd, or NULL. */
 	char	   *text;
 } PgpsoEvent;
 
@@ -102,9 +115,11 @@ typedef struct PgpsoResult
 
 typedef struct PgpsoContext
 {
-	const char *const *names;
-	const char *const *values;
+	/* The psql variables: the bindings of the caller, then \set and \unset. */
+	char	  **names;
+	char	  **values;
 	int			nvars;
+	int			capacity;
 	PsqlScanState state;
 	PQExpBuffer output;
 	PgpsoResult *result;
@@ -112,7 +127,24 @@ typedef struct PgpsoContext
 	int			base;
 	/* Bytes of seed at the start of `output`. */
 	int			seed;
+	/* The \if stack of the script, as MainLoop keeps it. */
+	ConditionalStack cstack;
 } PgpsoContext;
+
+/*
+ * The context of the scan in progress.  psql's lexer keeps its state in
+ * file-scope tables, so the Rust side serialises every call, and one context
+ * at a time is enough.  The passthrough pointer of the lexer is the inactive
+ * conditional stack (see the file header), so the callback reads this.
+ */
+static PgpsoContext *current_context;
+
+/* `space` of psqlscanslash.l, which holds the vertical tab from 17. */
+#if PG_VERSION_NUM >= 170000
+#define SLASH_SPACE " \t\n\r\f\v"
+#else
+#define SLASH_SPACE " \t\n\r\f"
+#endif
 
 static PgpsoEvent *
 push_event(PgpsoResult *result, int kind)
@@ -152,6 +184,85 @@ current_token(PgpsoContext *context, int *start, int *end)
 	*start = context->base + (int) (text - context->state->scanbuf);
 	*end = *start + (int) psql_yyget_leng(context->state->scanner);
 	return 1;
+}
+
+/*
+ * The document offset where the lexer stands after a psqlscanslash.l call.
+ *
+ * Every rule of psqlscanslash.l that returns either ends its match there or
+ * gives the stop character back with yyless(0), so the end of the last match
+ * is the position.  At end of input flex leaves yytext at the end of the
+ * buffer, so the result is limited to `limit`, the end of the current input.
+ */
+static int
+slash_position(PgpsoContext *context, int limit)
+{
+	const char *text = psql_yyget_text(context->state->scanner);
+	int			at = context->base + (int) (text - context->state->scanbuf) +
+		(int) psql_yyget_leng(context->state->scanner);
+
+	return at < limit ? at : limit;
+}
+
+static int
+find_variable(PgpsoContext *context, const char *name)
+{
+	int			i;
+
+	for (i = 0; i < context->nvars; i++)
+		if (strcmp(context->names[i], name) == 0)
+			return i;
+	return -1;
+}
+
+/*
+ * SetVariable without the hooks of psql's special variables: `value` NULL
+ * unsets.  A name that valid_variable_name refuses changes nothing.
+ */
+static void
+set_variable(PgpsoContext *context, const char *name, const char *value)
+{
+	int			i;
+	const unsigned char *ptr = (const unsigned char *) name;
+
+	if (*ptr == '\0')
+		return;
+	for (; *ptr; ptr++)
+		if (!IS_HIGHBIT_SET(*ptr) &&
+			strchr("ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"
+				   "_0123456789", *ptr) == NULL)
+			return;
+
+	i = find_variable(context, name);
+	if (value == NULL)
+	{
+		if (i >= 0)
+		{
+			free(context->names[i]);
+			free(context->values[i]);
+			context->names[i] = context->names[context->nvars - 1];
+			context->values[i] = context->values[context->nvars - 1];
+			context->nvars--;
+		}
+		return;
+	}
+	if (i >= 0)
+	{
+		free(context->values[i]);
+		context->values[i] = strdup(value);
+		return;
+	}
+	if (context->nvars == context->capacity)
+	{
+		context->capacity = context->capacity ? context->capacity * 2 : 16;
+		context->names = realloc(context->names,
+								 (size_t) context->capacity * sizeof(char *));
+		context->values = realloc(context->values,
+								  (size_t) context->capacity * sizeof(char *));
+	}
+	context->names[context->nvars] = strdup(name);
+	context->values[context->nvars] = strdup(value);
+	context->nvars++;
 }
 
 /*
@@ -233,16 +344,19 @@ escape_identifier(const char *value)
 	return out;
 }
 
+
 /*
- * The lexer's `get_variable` callback.  It is the one place psqlscan.l tells
- * a client that it has recognised an interpolation, so every interpolation
- * event is recorded here rather than inferred from the text.
+ * The lexer's `get_variable` callback.  It is the one place psqlscan.l and
+ * psqlscanslash.l tell a client that they have recognised an interpolation,
+ * so every interpolation event is recorded here rather than inferred from
+ * the text.  As psql_get_variable in src/bin/psql/common.c does, it
+ * substitutes nothing in an inactive \if branch.
  */
 static char *
 pgpso_get_variable(const char *varname, PsqlScanQuoteType quote,
 				   void *passthrough)
 {
-	PgpsoContext *context = (PgpsoContext *) passthrough;
+	PgpsoContext *context = current_context;
 	PgpsoEvent *event;
 	const char *value = NULL;
 	char	   *result = NULL;
@@ -250,12 +364,10 @@ pgpso_get_variable(const char *varname, PsqlScanQuoteType quote,
 	int			end;
 	int			i;
 
-	for (i = 0; i < context->nvars; i++)
-		if (strcmp(context->names[i], varname) == 0)
-		{
-			value = context->values[i];
-			break;
-		}
+	(void) passthrough;
+	i = find_variable(context, varname);
+	if (i >= 0 && conditional_active(context->cstack))
+		value = context->values[i];
 
 	event = push_event(context->result, PGPSO_INTERPOLATION);
 	event->detail = (int) quote;
@@ -283,8 +395,8 @@ pgpso_get_variable(const char *varname, PsqlScanQuoteType quote,
 			result = escape_identifier(value);
 			break;
 		case PQUOTE_SHELL_ARG:
-			/* Only backslash-command arguments ask for this, and this oracle
-			 * never reads them. */
+			/* Only a backquoted argument asks for this, and this oracle
+			 * never runs one. */
 			result = strdup(value);
 			break;
 	}
@@ -292,11 +404,378 @@ pgpso_get_variable(const char *varname, PsqlScanQuoteType quote,
 	/*
 	 * A quoted form is emitted in place, so its extent in the forwarded text
 	 * is known now.  A `:name` value is pushed back into the lexer and
-	 * rescanned, so its extent is not.
+	 * rescanned, so its extent is not.  An argument value goes to the
+	 * option buffer, not to the forwarded text.
 	 */
 	if (quote != PQUOTE_PLAIN)
 		event->output_end = event->output_start + (int) strlen(result);
 	return result;
+}
+
+/* How exec_command reads the arguments of a command. */
+typedef enum OptionShape
+{
+	SHAPE_NORMAL,				/* OT_NORMAL options */
+	SHAPE_WHOLE_LINE,			/* one OT_WHOLE_LINE option */
+	SHAPE_FILEPIPE,				/* one OT_FILEPIPE option */
+	SHAPE_G,					/* \g and \gx: (options), then OT_FILEPIPE */
+	SHAPE_UNKNOWN				/* not a command: psql discards the line */
+} OptionShape;
+
+static int
+is_one_of(const char *name, const char *const *names)
+{
+	for (; *names; names++)
+		if (strcmp(name, *names) == 0)
+			return 1;
+	return 0;
+}
+
+/*
+ * The shape of `name`, from exec_command in src/bin/psql/command.c of the
+ * pinned release.  Every name that starts with `d` goes to exec_command_d
+ * and every name that starts with `lo_` to exec_command_lo, so both are
+ * read as OT_NORMAL here.
+ */
+static OptionShape
+shape_of(const char *name)
+{
+	static const char *const whole_line[] = {
+		"ef", "ev", "h", "help", "sf", "sf+", "sv", "sv+", "unrestrict", "!", NULL
+	};
+	static const char *const filepipe[] = {"o", "out", "w", "write", NULL};
+	static const char *const normal[] = {
+		"a", "C", "c", "connect", "cd", "conninfo", "copyright", "crosstabview",
+		"e", "edit", "echo", "qecho", "warn", "elif", "else", "endif", "encoding",
+		"errverbose", "f", "gdesc", "gexec", "gset", "H", "html", "i", "include",
+		"ir", "include_relative", "if", "l", "list", "l+", "list+", "p", "print",
+		"password", "prompt", "pset", "q", "quit", "r", "reset", "restrict", "s",
+		"set", "setenv", "t", "T", "timing", "unset", "watch", "x", "z", "?",
+#if PG_VERSION_NUM >= 150000
+		"getenv",
+#endif
+#if PG_VERSION_NUM >= 160000
+		"bind", "zS",
+#endif
+#if PG_VERSION_NUM >= 180000
+		"bind_named", "close_prepared", "endpipeline", "flush", "flushrequest",
+		"getresults", "lx", "listx", "lx+", "listx+", "l+x", "list+x", "parse",
+		"sendpipeline", "startpipeline", "syncpipeline", "zx", "zSx", "zxS",
+#endif
+		NULL
+	};
+
+	if (pg_strcasecmp(name, "copy") == 0 || is_one_of(name, whole_line))
+		return SHAPE_WHOLE_LINE;
+	if (is_one_of(name, filepipe))
+		return SHAPE_FILEPIPE;
+	if (strcmp(name, "g") == 0 || strcmp(name, "gx") == 0)
+		return SHAPE_G;
+	if (name[0] == 'd' || strncmp(name, "lo_", 3) == 0 || is_one_of(name, normal))
+		return SHAPE_NORMAL;
+	return SHAPE_UNKNOWN;
+}
+
+/*
+ * One psql_scan_slash_option call, recorded as an option event.  Returns the
+ * value, which the caller frees, or NULL when there is no more option.
+ * `limit` is the end of the line.
+ */
+static char *
+read_option(PgpsoContext *context, enum slash_option_type type, int limit)
+{
+	const char *source = context->state->scanline;
+	int			before = slash_position(context, limit);
+	int			start;
+	int			end;
+	char		quote = 0;
+	char	   *value;
+	PgpsoEvent *event;
+
+	value = psql_scan_slash_option(context->state, type, &quote, false);
+	end = slash_position(context, limit);
+	/* xslashargstart eats the space before the option. */
+	start = before;
+	while (start < end &&
+		   strchr(SLASH_SPACE, source[start - context->base]) != NULL &&
+		   source[start - context->base] != '\0')
+		start++;
+	if (value == NULL && start >= end)
+		return NULL;
+
+	event = push_event(context->result, PGPSO_OPTION);
+	event->source_start = start;
+	event->source_end = end;
+	event->detail = value == NULL;
+	event->text = value ? strdup(value) : NULL;
+	return value;
+}
+
+/* Reads options of `type` until there are no more. */
+static void
+read_all_options(PgpsoContext *context, enum slash_option_type type, int limit)
+{
+	char	   *value;
+
+	while ((value = read_option(context, type, limit)) != NULL)
+		free(value);
+}
+
+/* ParseVariableBool of src/bin/psql/variables.c, without the message. */
+static int
+parse_bool(const char *value, int *result)
+{
+	size_t		len = strlen(value);
+
+	if (len > 0 && pg_strncasecmp(value, "true", len) == 0)
+		*result = 1;
+	else if (len > 0 && pg_strncasecmp(value, "false", len) == 0)
+		*result = 0;
+	else if (len > 0 && pg_strncasecmp(value, "yes", len) == 0)
+		*result = 1;
+	else if (len > 0 && pg_strncasecmp(value, "no", len) == 0)
+		*result = 0;
+	else if (pg_strncasecmp(value, "on", (len > 2 ? len : 2)) == 0)
+		*result = 1;
+	else if (pg_strncasecmp(value, "off", (len > 2 ? len : 2)) == 0)
+		*result = 0;
+	else if (pg_strcasecmp(value, "1") == 0)
+		*result = 1;
+	else if (pg_strcasecmp(value, "0") == 0)
+		*result = 0;
+	else
+		return 0;
+	return 1;
+}
+
+/* is_true_boolean_expression and gather_boolean_expression of command.c. */
+static int
+read_expression(PgpsoContext *context, int limit)
+{
+	PQExpBufferData expression;
+	char	   *value;
+	int			count = 0;
+	int			result = 0;
+	int			valid;
+
+	initPQExpBuffer(&expression);
+	while ((value = read_option(context, OT_NORMAL, limit)) != NULL)
+	{
+		if (count++ > 0)
+			appendPQExpBufferChar(&expression, ' ');
+		appendPQExpBufferStr(&expression, value);
+		free(value);
+	}
+	valid = parse_bool(expression.data, &result);
+	termPQExpBuffer(&expression);
+	return valid && result;
+}
+
+/*
+ * discard_query_text of command.c: psql takes the query text of the branch
+ * that ends out of the buffer.  This shim keeps the text, so that the
+ * offsets of earlier events stay valid, and reports the range that psql
+ * removes; the Rust side removes it.  The buffer is never empty (adaptation
+ * 2), so the lexer does not see a difference.
+ */
+static void
+discard_query_text(PgpsoContext *context)
+{
+	int			length = conditional_stack_get_query_len(context->cstack);
+	PgpsoEvent *event;
+
+	event = push_event(context->result, PGPSO_DISCARD);
+	event->output_start = (length >= context->seed ? length : context->seed) - context->seed;
+	event->output_end = (int) context->output->len - context->seed;
+	/* The lexer state, such as the parenthesis depth, goes back too. */
+	psql_scan_set_lex_state(context->state,
+							conditional_stack_get_lex_state(context->cstack));
+}
+
+static void
+save_query_text_state(PgpsoContext *context)
+{
+	conditional_stack_set_query_len(context->cstack, (int) context->output->len);
+	conditional_stack_set_lex_state(context->cstack,
+									psql_scan_get_lex_state(context->state));
+}
+
+/*
+ * exec_command_if, _elif, _else and _endif of command.c.  Returns 0 when psql
+ * refuses the command, which then discards the rest of the line.
+ */
+static int
+run_conditional(PgpsoContext *context, const char *name, int limit)
+{
+	ConditionalStack cstack = context->cstack;
+
+	if (strcmp(name, "if") == 0)
+	{
+		if (conditional_active(cstack))
+		{
+			conditional_stack_push(cstack, IFSTATE_TRUE);
+			save_query_text_state(context);
+			if (!read_expression(context, limit))
+				conditional_stack_poke(cstack, IFSTATE_FALSE);
+		}
+		else
+		{
+			conditional_stack_push(cstack, IFSTATE_IGNORED);
+			save_query_text_state(context);
+			read_expression(context, limit);
+		}
+		return 1;
+	}
+	if (strcmp(name, "elif") == 0)
+	{
+		switch (conditional_stack_peek(cstack))
+		{
+			case IFSTATE_TRUE:
+				save_query_text_state(context);
+				conditional_stack_poke(cstack, IFSTATE_IGNORED);
+				read_expression(context, limit);
+				return 1;
+			case IFSTATE_FALSE:
+				discard_query_text(context);
+				conditional_stack_poke(cstack, IFSTATE_TRUE);
+				if (!read_expression(context, limit))
+					conditional_stack_poke(cstack, IFSTATE_FALSE);
+				return 1;
+			case IFSTATE_IGNORED:
+				discard_query_text(context);
+				read_expression(context, limit);
+				return 1;
+			default:
+				return 0;
+		}
+	}
+	if (strcmp(name, "else") == 0)
+	{
+		switch (conditional_stack_peek(cstack))
+		{
+			case IFSTATE_TRUE:
+				save_query_text_state(context);
+				conditional_stack_poke(cstack, IFSTATE_ELSE_FALSE);
+				return 1;
+			case IFSTATE_FALSE:
+				discard_query_text(context);
+				conditional_stack_poke(cstack, IFSTATE_ELSE_TRUE);
+				return 1;
+			case IFSTATE_IGNORED:
+				discard_query_text(context);
+				conditional_stack_poke(cstack, IFSTATE_ELSE_FALSE);
+				return 1;
+			default:
+				return 0;
+		}
+	}
+	/* endif */
+	switch (conditional_stack_peek(cstack))
+	{
+		case IFSTATE_TRUE:
+		case IFSTATE_ELSE_TRUE:
+			conditional_stack_pop(cstack);
+			return 1;
+		case IFSTATE_FALSE:
+		case IFSTATE_IGNORED:
+		case IFSTATE_ELSE_FALSE:
+			discard_query_text(context);
+			conditional_stack_pop(cstack);
+			return 1;
+		default:
+			return 0;
+	}
+}
+
+/*
+ * Reads the arguments of the command `name` as HandleSlashCmds and
+ * exec_command read them, and applies \set, \unset and the conditional
+ * commands.  `limit` is the end of the line.
+ */
+static void
+read_command(PgpsoContext *context, const char *name, int limit)
+{
+	int			success = 1;
+	char	   *value;
+
+	if (strcmp(name, "if") == 0 || strcmp(name, "elif") == 0 ||
+		strcmp(name, "else") == 0 || strcmp(name, "endif") == 0)
+		success = run_conditional(context, name, limit);
+	else if (strcmp(name, "set") == 0 && conditional_active(context->cstack))
+	{
+		char	   *variable = read_option(context, OT_NORMAL, limit);
+
+		if (variable != NULL)
+		{
+			PQExpBufferData assigned;
+
+			initPQExpBuffer(&assigned);
+			while ((value = read_option(context, OT_NORMAL, limit)) != NULL)
+			{
+				appendPQExpBufferStr(&assigned, value);
+				free(value);
+			}
+			set_variable(context, variable, assigned.data);
+			termPQExpBuffer(&assigned);
+			free(variable);
+		}
+	}
+	else if (strcmp(name, "unset") == 0 && conditional_active(context->cstack))
+	{
+		value = read_option(context, OT_NORMAL, limit);
+		if (value != NULL)
+		{
+			set_variable(context, value, NULL);
+			free(value);
+		}
+		else
+			success = 0;
+	}
+	else
+	{
+		switch (shape_of(name))
+		{
+			case SHAPE_WHOLE_LINE:
+				value = read_option(context, OT_WHOLE_LINE, limit);
+				free(value);
+				break;
+			case SHAPE_FILEPIPE:
+				value = read_option(context, OT_FILEPIPE, limit);
+				free(value);
+				break;
+			case SHAPE_G:
+				value = read_option(context, OT_FILEPIPE, limit);
+				if (value != NULL && value[0] == '(')
+				{
+					/* process_command_g_options: through the trailing ')' */
+					size_t		length = strlen(value);
+
+					while (!(length > 0 && value[length - 1] == ')'))
+					{
+						free(value);
+						value = read_option(context, OT_NORMAL, limit);
+						if (value == NULL)
+							break;
+						length = strlen(value);
+					}
+					free(value);
+					value = read_option(context, OT_FILEPIPE, limit);
+				}
+				free(value);
+				break;
+			case SHAPE_NORMAL:
+				break;
+			case SHAPE_UNKNOWN:
+				success = 0;
+				break;
+		}
+	}
+
+	if (success)
+		read_all_options(context, OT_NORMAL, limit);
+	else
+		read_all_options(context, OT_WHOLE_LINE, limit);
+	psql_scan_slash_command_end(context->state);
 }
 
 /*
@@ -318,8 +797,10 @@ pgpso_scan(const char *source, int source_len,
 	PgpsoContext context;
 	PgpsoResult *result = calloc(1, sizeof(PgpsoResult));
 	PsqlScanState state;
+	ConditionalStack lexer_stack;
 	int			base = 0;
 	int			finished = 0;
+	int			i;
 
 	callbacks.get_variable = pgpso_get_variable;
 	state = psql_scan_create(&callbacks);
@@ -328,15 +809,25 @@ pgpso_scan(const char *source, int source_len,
 	/* See the file header, adaptation 2. */
 	appendPQExpBufferChar(&output, ' ');
 
-	context.names = names;
-	context.values = values;
-	context.nvars = nvars;
+	memset(&context, 0, sizeof(context));
+	for (i = 0; i < nvars; i++)
+		set_variable(&context, names[i], values[i]);
 	context.state = state;
 	context.output = &output;
 	context.result = result;
 	context.base = 0;
 	context.seed = 1;
-	psql_scan_set_passthrough(state, &context);
+	context.cstack = conditional_stack_create();
+	current_context = &context;
+
+	/*
+	 * psqlscanslash.l evaluates a backquoted argument only when its
+	 * passthrough is NULL or an active conditional stack.  This one is never
+	 * active, so no shell command runs.
+	 */
+	lexer_stack = conditional_stack_create();
+	conditional_stack_push(lexer_stack, IFSTATE_IGNORED);
+	psql_scan_set_passthrough(state, lexer_stack);
 
 	while (!finished)
 	{
@@ -369,8 +860,10 @@ pgpso_scan(const char *source, int source_len,
 			{
 				char	   *name;
 				int			at = -1;
-				int			after;
 				int			line_end;
+				int			command_end;
+				int			name_end;
+				int			event_index;
 
 				if (current_token(&context, &start, &end))
 					at = start;
@@ -383,38 +876,43 @@ pgpso_scan(const char *source, int source_len,
 					 */
 					at = base;
 				}
-				name = psql_scan_slash_command(state);
-
-				/*
-				 * The command is the backslash plus the name psqlscanslash.l
-				 * read.  The encoding is UTF-8, so psqlscan_prepare_buffer
-				 * copies the input unchanged and the name has its source
-				 * length.
-				 */
-				after = at + 1 + (int) strlen(name);
-				line_end = after;
+				line_end = at + 1;
 				while (line_end < source_len && source[line_end] != '\n')
 					line_end++;
 
 				/*
-				 * The extent is the whole command: the backslash, the name
-				 * psqlscanslash.l read, and the arguments, which reach the
-				 * line break because psql's own input buffer would have
-				 * ended there.  `text` is the name, so the caller can split
-				 * the two.  psql forwards none of it to the server, so both
-				 * output offsets are the current end of the forwarded text.
+				 * psql's input buffer ends at the line break (adaptation 1),
+				 * so the command and its arguments are read from the rest
+				 * of the line only.
 				 */
+				psql_scan_finish(state);
+				psql_scan_setup(state, source + at + 1, line_end - at - 1,
+								PG_UTF8, true);
+				context.base = at + 1;
+
+				event_index = result->nevents;
 				event = push_event(result, PGPSO_BACKSLASH);
 				event->source_start = at;
-				event->source_end = line_end;
-				event->detail = 1 + (int) strlen(name);
 				event->output_start = (int) output.len - context.seed;
 				event->output_end = event->output_start;
+
+				name = psql_scan_slash_command(state);
+				name_end = at + 1 + (int) strlen(name);
+				/* The name stops before the space or the backslash. */
+				read_command(&context, name, line_end);
+				command_end = slash_position(&context, line_end);
+				if (command_end < name_end)
+					command_end = name_end;
+
+				/* push_event may have moved the array. */
+				event = &result->events[event_index];
+				event->source_end = command_end;
+				event->detail = 1 + (int) strlen(name);
 				event->text = name;
 
-				/* Resume SQL lexing at the line break (adaptation 1). */
+				/* Resume SQL lexing where the command ends (adaptation 1). */
 				psql_scan_finish(state);
-				base = line_end;
+				base = command_end;
 				break;
 			}
 
@@ -439,6 +937,16 @@ pgpso_scan(const char *source, int source_len,
 
 	termPQExpBuffer(&output);
 	psql_scan_destroy(state);
+	conditional_stack_destroy(context.cstack);
+	conditional_stack_destroy(lexer_stack);
+	for (i = 0; i < context.nvars; i++)
+	{
+		free(context.names[i]);
+		free(context.values[i]);
+	}
+	free(context.names);
+	free(context.values);
+	current_context = NULL;
 	return result;
 }
 

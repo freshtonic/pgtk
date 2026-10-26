@@ -1,0 +1,43 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "pgtk",
+  "description": "Rust crates for PostgreSQL SQL: pgtk-sql parses SQL as the PostgreSQL raw parser does (versions 14 to 19 beta), pgtk-catalog models the system catalog, pgtk-analyze does parse analysis (types, result columns, errors) with no server, and pgtk-psql reads psql scripts.",
+  "folders": [
+    "docs",
+    "packages"
+  ],
+  "excludeFolders": [
+    "./vendor",
+    "./third-party",
+    "./tools",
+    "./toolchains",
+    "./platforms",
+    "./scripts",
+    "target",
+    "buck-out",
+    "baselines",
+    "fixtures",
+    "embedded-tests",
+    "docs/agents",
+    "packages/pgtk-sql/src/generated",
+    "packages/pgtk-sql/docs/metrics"
+  ],
+  "excludeFiles": [
+    "HANDOFF-table-driven.md",
+    "handoff-2026-08-31.md",
+    "handoff-2026-09-01.md"
+  ],
+  "rules": [
+    "pgtk-sql, pgtk-psql and pgtk-analyze each need exactly one PostgreSQL version feature: pg14, pg15, pg16, pg17, pg18 or pg19-beta. The default is pg17. The build stops with zero or with two or more.",
+    "To select a version other than pg17, set default-features = false and one version feature, for example: pgtk-sql = { version = \"0.1\", default-features = false, features = [\"pg16\"] }.",
+    "A crate between your crate and pgtk-sql must use default-features = false on pgtk-sql and forward the version features. If not, Cargo feature unification can turn on two versions.",
+    "pgtk_sql::document::parse_sql parses a document of many statements. It needs the spans feature of pgtk-sql.",
+    "To parse one statement, use: let lexed = pgtk_sql::lex(sql); let mut input = lexed.input(); then pgtk_sql::ast::Statement::parse(&mut input).",
+    "pgtk_catalog::fixture::pg17() gives a built-in PostgreSQL 17 catalog with no server. It needs the fixture feature of pgtk-catalog.",
+    "In pgtk-analyze, the Grammar Version is the Cargo feature and the Target Version is a run-time value in Settings. The Target Version must not be newer than the Grammar Version.",
+    "Analysis never changes the Session. Apply analysis.session_effect to the Session yourself before you analyse the next statement.",
+    "AnalyzeError::Unsupported means that pgtk-analyze cannot analyse the statement yet. It is not a PostgreSQL error. AnalyzeError::Diagnostic is the error that PostgreSQL gives.",
+    "The build script of pgtk-sql generates the parser and is slow at opt-level 0. Set opt-level = 3 in [profile.dev.build-override] and [profile.release.build-override] of your workspace root.",
+    "pgtk-oracle, pgtk-psql-oracle, pgtk-test-server, pgtk-test-features and pgtk-catalog-xtask are for development and tests of pgtk. Do not add them as dependencies of your crate."
+  ]
+}

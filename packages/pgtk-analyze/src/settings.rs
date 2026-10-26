@@ -39,6 +39,21 @@ impl Settings {
     /// construct the Target Version cannot parse, and
     /// [`Analyzer::analyze`](crate::Analyzer::analyze) does not check yet
     /// (`NOTES.md`).
+    ///
+    /// ```
+    /// use pgtk_analyze::{GRAMMAR_VERSION, Settings, TargetVersion};
+    ///
+    /// let catalog = pgtk_catalog::fixture::pg17();
+    ///
+    /// // Analyse for the server that runs the SQL. Here, PostgreSQL 14.
+    /// let settings = Settings::new(&catalog, TargetVersion::Pg14, ["public"]).unwrap();
+    /// assert_eq!(settings.target_version(), TargetVersion::Pg14);
+    ///
+    /// // A Target Version newer than the grammar of this build is an error.
+    /// if GRAMMAR_VERSION < TargetVersion::Pg19Beta {
+    ///     assert!(Settings::new(&catalog, TargetVersion::Pg19Beta, ["public"]).is_err());
+    /// }
+    /// ```
     pub fn new<'a>(
         catalog: &Catalog,
         target_version: TargetVersion,

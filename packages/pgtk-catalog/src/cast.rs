@@ -31,6 +31,7 @@ pub struct Cast {
 /// The strength of a cast, from `castcontext`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum CastContext {
     /// The server applies the cast without a request. The letter is `i`.
     Implicit,
@@ -44,6 +45,7 @@ pub enum CastContext {
 /// How the server performs a cast, from `castmethod`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum CastMethod {
     /// The server calls this function. The letter is `f`.
     Function(Handle<Function>),
