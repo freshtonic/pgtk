@@ -946,3 +946,78 @@ fn lists_and_clauses_keep_the_cardinality_of_gram_y() {
         "ALTER FOREIGN DATA WRAPPER w NO VALIDATOR",
     ]);
 }
+
+/// The places where gram.y wants a narrower form than an expression (issue
+/// #59).
+#[test]
+fn narrow_places_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `CURRENT OF` is only in `where_or_current_clause`.
+            "SELECT WHERE CURRENT OF rating",
+            "SELECT ALL WHERE CURRENT OF product",
+            "CREATE INDEX ON t (a) WHERE CURRENT OF c",
+            "SELECT count(*) FILTER (WHERE CURRENT OF c) FROM t",
+            // `UESCAPE` follows only a Unicode identifier.
+            "SELECT 1 AS product UESCAPE ''",
+            "DELETE FROM t RETURNING X'' AS description UESCAPE ''",
+            // A `def_arg` type takes `opt_type_modifiers`, an `expr_list`.
+            "CREATE OPERATOR ~<=~ (country = A(BIT(.0)))",
+            "CREATE OPERATOR <@ (tag = A(BIT ARRAY) ARRAY)",
+            "ALTER TYPE email SET (order_date = A(JSON ARRAY[0]))",
+            "CREATE AGGREGATE a(int) (SFUNC = f(bit(1)), STYPE = int)",
+            // An operator class parameter is a `def_arg`.
+            "CREATE INDEX ON t (a ops (x = ARRAY[]))",
+            "CREATE INDEX ON t (a ops (x = U&'' | 1))",
+            // `XMLATTRIBUTES` is only the first argument of `XMLELEMENT`.
+            "SELECT XMLATTRIBUTES(1 AS a)",
+            "CALL p(XMLATTRIBUTES(X'' AS enabled))",
+            "SELECT XMLELEMENT(NAME a, 'c', XMLATTRIBUTES(1 AS b))",
+            // `XMLEXISTS` and `XMLTABLE` take `c_expr`.
+            "SELECT XMLEXISTS('a' || 'b' PASSING x)",
+            "SELECT XMLEXISTS('a' PASSING x IS NOT NULL)",
+            "SELECT * FROM XMLTABLE('a' || 'b' PASSING x COLUMNS a int) t",
+            // The legacy form of `JSON_OBJECT` takes no clauses, and the
+            // `VALUE` form takes a `c_expr` key.
+            "SELECT JSON_OBJECT(a RETURNING text)",
+            "SELECT JSON_OBJECT(a NULL ON NULL)",
+            "SELECT JSON_OBJECT(DEFAULT VALUE 1)",
+            "SELECT JSON_OBJECTAGG(DEFAULT VALUE 1)",
+            // An array constructor holds elements or sub-arrays, not both.
+            "SELECT ARRAY[1, [2]]",
+            "SELECT ARRAY[[1], 2]",
+            "SELECT ARRAY[[$0, []]]",
+            // `json_behavior_clause_opt` is ON EMPTY, then ON ERROR.
+            "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON EMPTY)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR NULL ON EMPTY)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR NULL ON ERROR)",
+            // `JSON_EXISTS` and `JSON_TABLE` take only ON ERROR.
+            "SELECT JSON_EXISTS(a, '$' TRUE ON EMPTY)",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (a int) NULL ON EMPTY) AS t",
+        ],
+        "gram.y wants a narrower form",
+    );
+    assert_accepts(&[
+        "UPDATE t SET a = 1 WHERE CURRENT OF c",
+        "DELETE FROM t WHERE CURRENT OF c",
+        "SELECT 1 AS U&\"a\" UESCAPE '!'",
+        "CREATE AGGREGATE a(int) (SFUNC = balkifnull(int8, int4), STYPE = int8)",
+        "CREATE AGGREGATE a(int) (SFUNC = f(a.b, 1), STYPE = int8)",
+        "CREATE INDEX ON t (a ops (x = 1))",
+        "CREATE INDEX ON t (a ops (x = 'y'))",
+        "SELECT XMLELEMENT(NAME a, XMLATTRIBUTES(1 AS b), 'c')",
+        "SELECT XMLEXISTS(('a' || 'b') PASSING x)",
+        "SELECT JSON_OBJECT(a, b)",
+        "SELECT JSON_OBJECT(a => 1)",
+        "SELECT JSON_OBJECT(a : b RETURNING text)",
+        "SELECT JSON_OBJECT(DEFAULT : 1)",
+        "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
+        "SELECT JSON_OBJECTAGG(a VALUE 1)",
+        "SELECT ARRAY[[1], [2]]",
+        "SELECT ARRAY[[], []]",
+        "SELECT ARRAY[]",
+        "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
+        "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
+        "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
+    ]);
+}

@@ -38,12 +38,14 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A single opclass option: `name = value`.
+    /// A single opclass option: `name = value`, gram.y `reloption_elem:
+    /// ColLabel '=' def_arg` (REL_17_11 3041). The value is a `def_arg`, not
+    /// an expression, so `(siglen = ARRAY[])` is a syntax error (issue #59).
     #[derive(Debug)]
     pub struct OpclassOption {
         pub name: literal::AliasName,
         #[tok(EQ, this)]
-        pub value: Expr,
+        pub value: crate::ast::ddl::role::DefArg,
     }
 }
 

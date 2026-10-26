@@ -7,7 +7,7 @@ use crate::ast::shared::expr::{
 // The SQL/JSON query clauses exist from 17, as `JSON_TABLE` does.
 #[cfg(feature = "since-pg17")]
 use crate::ast::shared::expr::{
-    JsonBehaviorClause, JsonEncoding, JsonOnBehavior, JsonPassing, JsonQuotes, JsonWrapper,
+    JsonBehaviorClause, JsonEncoding, JsonOnError, JsonPassing, JsonQuotes, JsonWrapper,
 };
 use crate::ast::shared::names::QualifiedName;
 use crate::tokens::literal;
@@ -50,13 +50,50 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// Alias with explicit AS keyword: `AS name [UESCAPE 'c']`.
     /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
-    /// The optional UESCAPE suffix applies when the alias is a unicode-quoted
-    /// identifier (`U&"..."`).
     #[derive(Debug)]
     pub struct AsAlias {
         #[tok(AS, this)]
+        pub name: AsAliasName,
+    }
+}
+
+impl<'input> AsAlias<'input> {
+    /// The alias name as written, without a `UESCAPE` clause.
+    pub fn text(&self) -> &str {
+        match &self.name {
+            AsAliasName::Plain(name) => name.text(),
+            AsAliasName::Uescaped(name) => name.name.text(),
+        }
+    }
+}
+
+recursa::ast_node! {
+    /// The name of an [`AsAlias`]: a name, or a Unicode identifier with a
+    /// `UESCAPE` clause.
+    #[derive(Debug)]
+    pub enum AsAliasName {
+        Uescaped(UescapedAliasName),
+        Plain(literal::AliasName),
+    }
+}
+
+recursa::ast_node! {
+    /// `U&"..." UESCAPE 'c'`. `parser.c` (`base_yylex`) reads `UESCAPE`
+    /// as an escape clause only after a Unicode identifier (`UIDENT`) or a
+    /// Unicode string, so after any other name `UESCAPE` is a syntax error
+    /// (issue #59). pgtk-sql lexes each identifier spelling as one token, so
+    /// the rule refuses the name by its text.
+    #[classify(name, fold = crate::ident::unicode_identifier_class)]
+    #[reject(
+        one_of(name, "plain"),
+        code = "42601",
+        message = "syntax error at or near \"UESCAPE\"",
+        cite = "REL_17_11 parser.c base_yylex, UIDENT UESCAPE",
+    )]
+    #[derive(Debug)]
+    pub struct UescapedAliasName {
         pub name: literal::AliasName,
-        pub uescape: Option<crate::ast::shared::expr::UescapeSuffix>,
+        pub uescape: crate::ast::shared::expr::UescapeSuffix,
     }
 }
 
@@ -76,7 +113,7 @@ impl<'input> Alias<'input> {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
-            Alias::WithAs(a) => a.name.text(),
+            Alias::WithAs(a) => a.text(),
             Alias::Bare(ident) => ident.text(),
         }
     }
@@ -694,7 +731,7 @@ recursa::ast_node! {
         pub path_name: Option<JsonTablePathName>,
         pub passing: Option<JsonPassing>,
         pub column_list: JsonTableColumnList,
-        pub on_error: Option<JsonOnBehavior>,
+        pub on_error: Option<JsonOnError>,
     }
 }
 
@@ -929,10 +966,14 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// Inner contents of `XMLTABLE ( [XMLNAMESPACES(...),] ‹row_xpath›
     /// PASSING [BY {REF|VALUE}] ‹doc› [BY {REF|VALUE}] COLUMNS ‹col› [, ...] )`.
+    ///
+    /// gram.y `xmltable: XMLTABLE '(' c_expr xmlexists_argument COLUMNS ...`
+    /// (REL_17_11 13971-13993): the row expression and the document are each a
+    /// `c_expr`, so an operator expression needs parentheses (issue #59).
     #[derive(Debug)]
     pub struct XmlTableInner {
         pub namespaces: Option<XmlTableNamespaces>,
-        pub row_expr: boxed!(Expr),
+        pub row_expr: boxed!(crate::ast::shared::expr::CExpr),
         pub passing: XmlTablePassing,
         pub by_after: Option<XmlPassingBy>,
         pub column_list: XmlTableColumnList,
@@ -945,7 +986,7 @@ recursa::ast_node! {
     #[tok(PASSING, this)]
     pub struct XmlTablePassing {
         pub by: Option<XmlPassingBy>,
-        pub doc: boxed!(Expr),
+        pub doc: boxed!(crate::ast::shared::expr::CExpr),
     }
 }
 
@@ -1579,11 +1620,23 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// WHERE clause: `WHERE expr` or `WHERE CURRENT OF cursor`.
+    /// gram.y `where_or_current_clause` (REL_17_11 13915-13928): `WHERE
+    /// expr` or `WHERE CURRENT OF cursor`. Only UPDATE and DELETE take it.
+    #[derive(Debug)]
+    pub struct WhereOrCurrentClause {
+        #[tok(WHERE, this)]
+        pub condition: WhereCondition,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `where_clause: WHERE a_expr` (REL_17_11 13909). `CURRENT OF`
+    /// is only in [`WhereOrCurrentClause`], so `SELECT WHERE CURRENT OF c`
+    /// is a syntax error (issue #59).
     #[derive(Debug)]
     pub struct WhereClause {
         #[tok(WHERE, this)]
-        pub condition: WhereCondition,
+        pub condition: Expr,
     }
 }
 

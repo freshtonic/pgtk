@@ -498,13 +498,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 order.push(self.get(*item).expr);
             }
         }
-        let filter = suffix.filter.and_then(|f| {
-            let clause = self.get(self.get(f).body);
-            match self.get(clause.condition) {
-                FlatWhereCondition::Expr(x) => Some(*x),
-                _ => None,
-            }
-        });
+        let filter = suffix.filter.map(|f| self.get(self.get(f).body).condition);
         Some(AggregateParts {
             kind: detail.kind,
             args,
