@@ -31,6 +31,8 @@
 //! at each send or discard command. [`Rendered::boundaries`] gives these
 //! places, and [`Rendered::is_complete`] tells whether the document ends with
 //! a complete buffer.
+//! [`Rendered::submissions`] gives the text that psql sends to the server for
+//! each buffer.
 //!
 //! # COPY data
 //!
@@ -83,7 +85,9 @@ pub use meta::{Argument, ArgumentKind, Command};
 // Added in 18: docs/research/psql-14-19-syntax-changes.md, class (A) item A1.
 #[cfg(feature = "since-pg18")]
 pub use ast::DiscardCommand;
-pub use substitution::{Boundary, BoundaryKind, Origin, Rendered, SourceMap, Unbound, Variables};
+pub use substitution::{
+    Boundary, BoundaryKind, Origin, Rendered, SourceMap, Submission, Unbound, Variables,
+};
 
 use std::fmt;
 

@@ -24,8 +24,9 @@ pgtk-psql is part of [pgtk](https://github.com/freshtonic/pgtk), the PostgreSQL 
   `\!`, and up to `\\` when SQL follows on the same line.
 - **Query buffers as psql ends them.** A `;` inside parentheses or inside the `BEGIN ... END`
   body of a `CREATE FUNCTION` does not end the buffer, as in psql. `Rendered::boundaries` gives
-  each place where psql sends the buffer, and `Rendered::is_complete` tells whether the script
-  ends with an open buffer.
+  each place where psql sends the buffer, `Rendered::submissions` gives each query string that
+  psql sends to the server, and `Rendered::is_complete` tells whether the script ends with an
+  open buffer.
 - **COPY data as psql reads it.** The data lines after `COPY ... FROM STDIN` or
   `\copy ... from stdin`, up to `\.`, are one `PsqlItem::CopyData` item. They are never read as
   SQL or as psql text, and they are not part of the rendered SQL.

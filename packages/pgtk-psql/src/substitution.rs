@@ -168,6 +168,32 @@ pub enum BoundaryKind {
     Discard,
 }
 
+/// One query string that psql sends to the server: the text of one query
+/// buffer.
+///
+/// psql ends a buffer at each [`Boundary`] and, when it reads a file, at
+/// the end of the input. It sends the buffer at a `;` and at a send
+/// command, and sends nothing at a discard command or in an inactive `\if`
+/// branch. While the buffer is empty, psql does not put whitespace or a
+/// `--` comment into it (psqlscan.l's `{whitespace}` rule), so a submission
+/// starts at its first other byte.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Submission {
+    /// The extent in the rendered SQL: from the first byte that psql keeps
+    /// to the `;` that ends the buffer, or the `;` that a send command
+    /// renders as, or the end of the input.
+    pub rendered: Range<usize>,
+    /// The extent in the psql source, from the source of the first rendered
+    /// byte to the end of the source of the last one. When the buffer ends
+    /// at a send command, the extent includes the command and its
+    /// arguments.
+    pub source: Range<usize>,
+    /// The kind of the boundary that ends the buffer: [`BoundaryKind::Semicolon`]
+    /// or [`BoundaryKind::Send`], or `None` for the text that remains at the
+    /// end of the input.
+    pub end: Option<BoundaryKind>,
+}
+
 /// Server SQL rendered from a psql document, with the map back to its source.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rendered {
@@ -235,12 +261,90 @@ impl Rendered {
         self.complete
     }
 
+    /// Each query string that psql sends to the server, in source order.
+    ///
+    /// The text between two [`boundaries`](Self::boundaries) is one
+    /// submission, when psql sends it. psql sends nothing at a discard
+    /// command or in an inactive `\if` branch. At the end of the input psql
+    /// sends the text that remains, also when the buffer is not complete
+    /// ([`is_complete`](Self::is_complete)). A `;` with an empty buffer is a
+    /// submission of its own, `;`, as psql sends it.
+    pub fn submissions(&self) -> Vec<Submission> {
+        let mut submissions = Vec::new();
+        let mut start = 0;
+        for boundary in &self.boundaries {
+            // A boundary of an inactive branch sends nothing, and the buffer
+            // goes on.
+            let Some(place) = &boundary.rendered else {
+                continue;
+            };
+            if boundary.kind != BoundaryKind::Discard
+                && let Some(submission) = self.submission(start..place.end, Some(boundary.kind))
+            {
+                submissions.push(submission);
+            }
+            start = place.end;
+        }
+        if let Some(submission) = self.submission(start..self.sql.len(), None) {
+            submissions.push(submission);
+        }
+        submissions
+    }
+
+    /// The submission of the rendered text `extent`, or `None` when psql
+    /// keeps none of it.
+    fn submission(&self, extent: Range<usize>, end: Option<BoundaryKind>) -> Option<Submission> {
+        let start = extent.start + buffer_skip(&self.sql[extent.clone()]);
+        if start >= extent.end {
+            return None;
+        }
+        let first = match self.map.origin(start) {
+            Origin::Verbatim(offset) => offset,
+            Origin::Substituted { start, .. } => start,
+        };
+        let last = match self.map.origin(extent.end - 1) {
+            Origin::Verbatim(offset) => offset + 1,
+            Origin::Substituted { end, .. } => end,
+        };
+        Some(Submission {
+            rendered: start..extent.end,
+            source: first..last,
+            end,
+        })
+    }
+
     /// Parses the rendered SQL as a strict PostgreSQL document.
     ///
     /// This is the last step of the pipeline, and the only place pgtk-sql is
     /// asked to read anything: the SQL grammar never sees psql syntax.
     pub fn parse_sql(&self) -> Result<pgtk_sql::SqlDocument<'_>, pgtk_sql::SqlParseError<'_>> {
         pgtk_sql::document::parse_sql(&self.sql)
+    }
+}
+
+/// The length of the text that psql keeps out of an empty query buffer at
+/// the start of `text`: whitespace and `--` comments (psqlscan.l's
+/// `{whitespace}` rule, which ECHOes only when the buffer holds text).
+fn buffer_skip(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let mut offset = 0;
+    loop {
+        while offset < bytes.len()
+            && matches!(
+                bytes[offset],
+                b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' | b'\x0b'
+            )
+        {
+            offset += 1;
+        }
+        if bytes[offset..].starts_with(b"--") {
+            // psqlscan.l's `{comment}`: `--` and every byte to the line end.
+            while offset < bytes.len() && !matches!(bytes[offset], b'\n' | b'\r') {
+                offset += 1;
+            }
+        } else {
+            return offset;
+        }
     }
 }
 

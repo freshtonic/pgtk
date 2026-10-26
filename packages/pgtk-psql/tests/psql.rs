@@ -1261,6 +1261,88 @@ fn the_buffer_is_incomplete_at_end_of_input_inside_an_open_region() {
     }
 }
 
+/// The text, the source text and the end of each submission of `source`.
+fn submissions<'s>(
+    source: &'s str,
+    bound: &[(&str, &str)],
+) -> Vec<(String, &'s str, Option<BoundaryKind>)> {
+    let rendered = pgtk_psql::render(source, &variables(bound))
+        .unwrap_or_else(|error| panic!("{source:?} must parse as psql: {error}"));
+    rendered
+        .submissions()
+        .into_iter()
+        .map(|submission| {
+            (
+                rendered.sql()[submission.rendered].to_owned(),
+                &source[submission.source],
+                submission.end,
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn each_query_buffer_is_one_submission() {
+    // psql keeps no whitespace and no `--` comment out of an empty buffer,
+    // and keeps a block comment.
+    assert_eq!(
+        submissions("  -- a\nSELECT 1;\n/* b */ SELECT 2;\nSELECT 3", &[]),
+        [
+            (
+                "SELECT 1;".to_owned(),
+                "SELECT 1;",
+                Some(BoundaryKind::Semicolon)
+            ),
+            (
+                "/* b */ SELECT 2;".to_owned(),
+                "/* b */ SELECT 2;",
+                Some(BoundaryKind::Semicolon)
+            ),
+            ("SELECT 3".to_owned(), "SELECT 3", None),
+        ],
+    );
+    // A `BEGIN ATOMIC` body and `\;` stay in their buffer.
+    let source = "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; SELECT 2; END;\n\
+                  SELECT 1 \\; SELECT 2;";
+    let found = submissions(source, &[]);
+    assert_eq!(found.len(), 2);
+    assert_eq!(found[0].1, &source[..source.find('\n').unwrap()]);
+    assert_eq!(found[1].0, "SELECT 1 ; SELECT 2;");
+    assert_eq!(found[1].1, "SELECT 1 \\; SELECT 2;");
+    // An open buffer at the end of the input is a submission all the same.
+    assert_eq!(
+        submissions("SELECT 1;\nSELECT 'a;", &[]),
+        [
+            (
+                "SELECT 1;".to_owned(),
+                "SELECT 1;",
+                Some(BoundaryKind::Semicolon)
+            ),
+            ("SELECT 'a;".to_owned(), "SELECT 'a;", None),
+        ],
+    );
+    // Trailing whitespace and line comments send nothing.
+    assert_eq!(submissions("SELECT 1;\n-- the end\n", &[]).len(), 1);
+}
+
+#[test]
+fn a_send_command_ends_its_submission_and_a_discard_sends_nothing() {
+    let source = "SELECT :v \\gset p_\nSELECT 2 \\r\n\\if false\nSELECT 3;\n\\endif\n;";
+    assert_eq!(
+        submissions(source, &[("v", "100")]),
+        [
+            // The source extent holds the command and its arguments.
+            (
+                "SELECT 100 ;".to_owned(),
+                "SELECT :v \\gset p_",
+                Some(BoundaryKind::Send)
+            ),
+            // An empty buffer: psql sends `;`.
+            (";".to_owned(), ";", Some(BoundaryKind::Semicolon)),
+        ],
+    );
+}
+
 // --- COPY data ----------------------------------------------------------------
 
 /// Each block of COPY data of `source`: the rows and the `\.` line.

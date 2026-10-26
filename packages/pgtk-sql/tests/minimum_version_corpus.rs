@@ -2,8 +2,10 @@
 //!
 //! ADR 0010 asks that, for each statement of the frozen corpus, the reported
 //! minimum version equal the oldest target version whose oracle accepts it.
-//! The six version baselines already record that oracle outcome for every
-//! statement of every version (`baselines/target-versions/*.json`), and the
+//! The statements are the server submissions that psql sends for the corpus
+//! (`baselines/postgresql-17.9-submissions.json`, issue #10). The six version
+//! baselines already record that oracle outcome for every such submission of
+//! every version (`baselines/target-versions/*.json`), and the
 //! differential gate keeps each one true of its oracle. So one build checks
 //! its own reports against all six oracles, and `scripts/release-gate` runs
 //! the check once for each version. The check itself needs no PostgreSQL
@@ -173,7 +175,7 @@ const VERSIONS: [TargetVersion; 6] = [
 
 #[test]
 fn the_reported_minimum_is_the_oldest_version_whose_oracle_accepts_the_statement() {
-    let frozen = baseline::FrozenStatements::pinned();
+    let frozen = baseline::FrozenSubmissions::pinned();
     let oracles =
         VERSIONS.map(|version| (version, baseline::VersionBaseline::of(version.feature())));
     let build = pgtk_sql::TARGET_VERSION;
@@ -186,21 +188,26 @@ fn the_reported_minimum_is_the_oldest_version_whose_oracle_accepts_the_statement
     for name in frozen.file_names() {
         let file = frozen.file(name);
         let source = file.source();
-        let statements = file
-            .statements(&source)
+        let submissions = file
+            .submissions(&source)
             .unwrap_or_else(|error| panic!("{name}: {error}"));
         let accepts = oracles
             .each_ref()
             .map(|(version, baseline)| (*version, baseline.oracle_accepts(name)));
 
-        for (index, statement) in statements.iter().enumerate() {
+        for (index, submission) in submissions.iter().enumerate() {
+            // Only server SQL has oracle outcomes.
+            if submission.kind != baseline::SubmissionKind::Server {
+                continue;
+            }
+            let statement = &*submission.text;
             let Some(reported) = reported_minimum(statement) else {
                 continue;
             };
             let build_accepts = accepts
                 .iter()
                 .find(|(version, _)| *version == build)
-                .is_some_and(|(_, outcomes)| outcomes[index]);
+                .is_some_and(|(_, outcomes)| outcomes[index] == Some(true));
             if !build_accepts {
                 // pgtk-sql parses what its own oracle rejects: a frozen
                 // over-acceptance gap (`tests/accepted_legacy_gaps.rs`), not a
@@ -218,7 +225,7 @@ fn the_reported_minimum_is_the_oldest_version_whose_oracle_accepts_the_statement
             // would let a consumer send the statement to a server that
             // refuses it, which is the dangerous direction.
             let rejected_above = accepts.iter().any(|(version, outcomes)| {
-                *version >= reported.version && *version <= build && !outcomes[index]
+                *version >= reported.version && *version <= build && outcomes[index] == Some(false)
             });
             if rejected_above {
                 assert!(
@@ -234,9 +241,9 @@ fn the_reported_minimum_is_the_oldest_version_whose_oracle_accepts_the_statement
             // No unexplained over-report: every version below the reported
             // minimum must reject the statement, unless the construct is one
             // that an older grammar reads as something else.
-            let accepted_below = accepts
-                .iter()
-                .any(|(version, outcomes)| *version < reported.version && outcomes[index]);
+            let accepted_below = accepts.iter().any(|(version, outcomes)| {
+                *version < reported.version && outcomes[index] == Some(true)
+            });
             if accepted_below {
                 assert!(
                     REINTERPRETED_BY_AN_OLDER_GRAMMAR.contains(&reported.construct),
@@ -273,7 +280,7 @@ fn the_reported_minimum_is_the_oldest_version_whose_oracle_accepts_the_statement
             oracles
                 .iter()
                 .find(|(version, _)| *version == build)
-                .is_some_and(|(_, baseline)| baseline.oracle_accepts(name)[*index])
+                .is_some_and(|(_, baseline)| baseline.oracle_accepts(name)[*index] == Some(true))
         })
         .count();
     assert_eq!(

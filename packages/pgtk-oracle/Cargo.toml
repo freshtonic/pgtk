@@ -28,5 +28,14 @@ since-pg19 = []
 name = "soft_errors"
 required-features = ["parser"]
 
+# Records the oracle outcomes of a version baseline of pgtk-sql (issue #10).
+# It mounts pgtk-sql's tests/support/submissions.rs.
+[[test]]
+name = "corpus_outcomes"
+required-features = ["parser"]
+
+[dev-dependencies]
+serde_json.workspace = true
+
 [build-dependencies]
 cc.workspace = true
