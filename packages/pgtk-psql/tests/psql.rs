@@ -11,7 +11,7 @@
 //! "psql interpolation is rejected" became "psql interpolation is rendered,
 //! and then pgtk-sql accepts the result".
 
-use pgtk_psql::{MetaCommand, Origin, PsqlItem, Variables};
+use pgtk_psql::{BoundaryKind, MetaCommand, Origin, PsqlItem, Variables};
 
 fn variables(pairs: &[(&str, &str)]) -> Variables {
     pairs.iter().copied().collect()
@@ -1023,6 +1023,7 @@ fn every_regression_script_is_a_psql_document() {
         // With nothing bound the only rewrites allowed are client syntax
         // the server never sees -- a meta-command, a send command or `\;`
         // -- the text of an inactive `\if` branch, a buffer that `\r` clears,
+        // COPY data,
         // `:{?name}`, the one
         // interpolation psql answers rather than passes through
         // (psqlscan.l:1568-1591, `FALSE` when unset), and an interpolation
@@ -1052,6 +1053,18 @@ fn every_regression_script_is_a_psql_document() {
                 _ => None,
             })
             .collect::<std::collections::BTreeSet<_>>();
+        // psql reads COPY data itself and sends none of it as query text.
+        let copy_data = document
+            .items
+            .iter()
+            .filter_map(|item| match item {
+                PsqlItem::CopyData(data) => {
+                    let text = data.rows.text();
+                    Some(text.as_ptr() as usize - source.as_ptr() as usize)
+                }
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
         let assigned = |text: &str| {
             let name = text.trim_start_matches(':').trim_matches(['\'', '"']);
             document.items.iter().any(|item| {
@@ -1068,6 +1081,7 @@ fn every_regression_script_is_a_psql_document() {
                     || text.starts_with(":{?")
                     || branch_ends.contains(&origin.start)
                     || reset_ends.contains(&origin.end)
+                    || copy_data.contains(&origin.start)
                     || (text.starts_with(':') && assigned(text))
                     || (!cfg!(feature = "since-pg15") && text.starts_with("--")),
                 "{name}: rewrote {text:?} at {origin:?} with nothing bound",
@@ -1081,4 +1095,396 @@ fn every_regression_script_is_a_psql_document() {
 
     // 17.11 (#71) added `compression_pglz.sql` to the 17.9 scripts.
     assert_eq!(read, 226, "the vendored regression corpus changed size");
+}
+
+// --- Query buffers ------------------------------------------------------------
+
+/// The source text of each boundary, and whether it ends with a complete
+/// buffer.
+fn boundaries(source: &str) -> (Vec<(&str, BoundaryKind)>, bool) {
+    let rendered = pgtk_psql::render(source, &Variables::new())
+        .unwrap_or_else(|error| panic!("{source:?} must parse as psql: {error}"));
+    let boundaries = rendered
+        .boundaries()
+        .iter()
+        .map(|boundary| (&source[boundary.source.clone()], boundary.kind))
+        .collect();
+    (boundaries, rendered.is_complete())
+}
+
+#[test]
+fn a_begin_atomic_body_is_one_submission() {
+    // psqlscan.l counts `BEGIN ... END` in a `CREATE FUNCTION` or a
+    // `CREATE PROCEDURE`, and a `;` inside the body does not end the buffer.
+    let source = "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; SELECT 2; END;";
+    let rendered = pgtk_psql::render(source, &Variables::new()).unwrap();
+    let ends = rendered.boundaries();
+    assert_eq!(ends.len(), 1);
+    assert_eq!(ends[0].kind, BoundaryKind::Semicolon);
+    assert_eq!(ends[0].source, source.len() - 1..source.len());
+    assert!(rendered.is_complete());
+
+    // `CASE ... END` in the body ends no block, and `OR REPLACE` and
+    // `PROCEDURE` are routines too.
+    let source = "CREATE OR REPLACE PROCEDURE p() BEGIN ATOMIC \
+                  SELECT CASE WHEN true THEN 1 END; END;\nSELECT 2;";
+    assert_eq!(
+        boundaries(source).0,
+        [
+            (";", BoundaryKind::Semicolon),
+            (";", BoundaryKind::Semicolon)
+        ],
+    );
+    // Outside a routine, `BEGIN` is a statement and is not counted.
+    assert_eq!(boundaries("BEGIN; SELECT 1; END;").0.len(), 3);
+    // psqlscan.l reads `n'` as a national string, not as an identifier, so the
+    // `FUNCTION` after it is still the second word.
+    assert_eq!(
+        boundaries("CREATE n'' FUNCTION f() BEGIN ATOMIC SELECT 1; END;")
+            .0
+            .len(),
+        1,
+    );
+}
+
+#[test]
+fn a_semicolon_in_parentheses_does_not_end_the_buffer() {
+    assert_eq!(boundaries("SELECT (1;"), (vec![], false));
+    assert_eq!(
+        boundaries("SELECT ((1); 2);\nSELECT 3;").0,
+        [
+            (";", BoundaryKind::Semicolon),
+            (";", BoundaryKind::Semicolon)
+        ],
+    );
+    // `\;` inside parentheses is text too.
+    assert_eq!(boundaries("SELECT (1 \\; 2);").0.len(), 1);
+}
+
+#[test]
+fn a_send_command_ends_the_buffer_at_any_depth() {
+    // psql sends the buffer and resets the lexer state (`psql_scan_reset`),
+    // so the parenthesis does not stay open.
+    assert_eq!(
+        boundaries("SELECT (1 \\g\nSELECT 2;"),
+        (
+            vec![("\\g", BoundaryKind::Send), (";", BoundaryKind::Semicolon)],
+            true,
+        ),
+    );
+    assert_eq!(
+        boundaries("SELECT (1 \\r\nSELECT 2;"),
+        (
+            vec![
+                ("\\r", BoundaryKind::Discard),
+                (";", BoundaryKind::Semicolon)
+            ],
+            true,
+        ),
+    );
+}
+
+#[test]
+fn an_inactive_branch_gives_back_the_lexer_state() {
+    // `discard_query_text` restores the parenthesis depth of the branch start.
+    assert_eq!(
+        boundaries("\\if false\n(\n\\endif\nSELECT 1;"),
+        (vec![(";", BoundaryKind::Semicolon)], true),
+    );
+    // The `;` of an inactive branch is a boundary, but psql sends nothing.
+    let rendered = pgtk_psql::render(
+        "\\if false\nSELECT 1;\n\\endif\nSELECT 2;",
+        &Variables::new(),
+    )
+    .unwrap();
+    let places = rendered
+        .boundaries()
+        .iter()
+        .map(|boundary| boundary.rendered.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(places, [None, Some(9..10)]);
+    assert_eq!(&rendered.sql()[9..10], ";");
+}
+
+#[test]
+fn each_boundary_has_its_place_in_the_rendered_sql() {
+    let source = "SELECT :v; SELECT 2 \\gset p_\nSELECT 3 \\r\nSELECT 4;";
+    let rendered = pgtk_psql::render(source, &variables(&[("v", "100")])).unwrap();
+    let sql = rendered.sql();
+    // `\r` removes its buffer and keeps the line break before it.
+    assert_eq!(sql, "SELECT 100; SELECT 2 ;\n\nSELECT 4;");
+    let places = rendered
+        .boundaries()
+        .iter()
+        .map(|boundary| (boundary.kind, boundary.rendered.clone().unwrap()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        places,
+        [
+            (BoundaryKind::Semicolon, 10..11),
+            (BoundaryKind::Send, 21..22),
+            (BoundaryKind::Discard, 23..23),
+            (BoundaryKind::Semicolon, 32..33),
+        ],
+    );
+    for (kind, place) in &places[..2] {
+        assert_eq!(&sql[place.clone()], ";", "{kind:?}");
+    }
+}
+
+#[test]
+fn the_buffer_is_incomplete_at_end_of_input_inside_an_open_region() {
+    for source in [
+        "SELECT 'a;",
+        "SELECT \"a",
+        "SELECT $$a;",
+        "SELECT /* a",
+        "SELECT /* a /* b */",
+        "SELECT (1",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1;",
+    ] {
+        let (boundaries, complete) = boundaries(source);
+        assert!(!complete, "{source:?} ends with an open buffer");
+        assert!(boundaries.is_empty(), "{source:?} has no boundary");
+    }
+    for source in [
+        "",
+        "SELECT 1",
+        "SELECT 1;",
+        "SELECT $$a$$",
+        "SELECT 1 /* a */ -- b",
+    ] {
+        assert!(
+            boundaries(source).1,
+            "{source:?} ends with a complete buffer"
+        );
+    }
+}
+
+// --- COPY data ----------------------------------------------------------------
+
+/// Each block of COPY data of `source`: the rows and the `\.` line.
+fn copy_data(source: &str) -> Vec<(&str, Option<&str>)> {
+    // The texts are subslices of the source, which outlives the document.
+    let slice = |part: &str| {
+        let start = part.as_ptr() as usize - source.as_ptr() as usize;
+        &source[start..start + part.len()]
+    };
+    pgtk_psql::parse(source)
+        .unwrap_or_else(|error| panic!("{source:?} must parse as psql: {error}"))
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            PsqlItem::CopyData(data) => Some((
+                slice(data.rows.text()),
+                data.end.as_ref().map(|end| slice(end.marker.text())),
+            )),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn copy_from_stdin_data_is_not_psql_text() {
+    // The data is opaque: no interpolation, no command and no string.
+    let source = "COPY t FROM STDIN;\n1\t:v\t'a\n\\N\t\\set x 1\n\\.\nSELECT :v;";
+    assert_eq!(
+        copy_data(source),
+        [("1\t:v\t'a\n\\N\t\\set x 1\n", Some("\\.\n"))],
+    );
+    assert_eq!(interpolation_count(source), 1);
+    let rendered = pgtk_psql::render(source, &variables(&[("v", "42")])).unwrap();
+    assert_eq!(rendered.sql(), "COPY t FROM STDIN;\nSELECT 42;");
+    assert!(rendered.variables().get("x").is_none());
+    // The text after the data maps back to its own bytes.
+    let select = rendered.sql().find("SELECT").unwrap();
+    assert_eq!(
+        rendered.map().origin(select),
+        Origin::Verbatim(source.find("SELECT").unwrap()),
+    );
+}
+
+#[test]
+fn copy_data_starts_on_the_line_after_the_send() {
+    // The rest of the line is SQL text again after the data.
+    let source = "COPY t FROM STDIN; SELECT 1;\n1\n\\.\nSELECT 2;";
+    assert_eq!(copy_data(source), [("1\n", Some("\\.\n"))]);
+    assert_eq!(
+        render_unbound(source),
+        "COPY t FROM STDIN; SELECT 1;\nSELECT 2;"
+    );
+    // Two COPY commands on one line read two blocks, one after the other.
+    assert_eq!(
+        copy_data("COPY a FROM STDIN; COPY b FROM STDIN;\n1\n\\.\n2\n\\.\nSELECT 3;"),
+        [("1\n", Some("\\.\n")), ("2\n", Some("\\.\n"))],
+    );
+    // So do two COPY commands in one buffer.
+    assert_eq!(
+        copy_data("COPY a FROM stdin \\; COPY b FROM stdin;\n1\n\\.\n2\n\\.\n"),
+        [("1\n", Some("\\.\n")), ("2\n", Some("\\.\n"))],
+    );
+    // A send command reads the data of the first COPY of its buffer
+    // (`ExecQueryAndProcessResults`); `\gdesc` runs no query.
+    assert_eq!(
+        copy_data("COPY t FROM STDIN \\g\n1\n\\.\n"),
+        [("1\n", Some("\\.\n"))],
+    );
+    assert_eq!(copy_data("COPY t FROM STDIN \\gdesc\nSELECT 2;"), []);
+    // No line after the send: no data.
+    assert_eq!(copy_data("COPY t FROM STDIN;"), []);
+}
+
+#[test]
+fn only_a_bare_end_marker_line_ends_copy_data() {
+    assert_eq!(
+        copy_data("COPY t FROM STDIN;\n1\n\\. \n \\.\n\\.x\n\\.\nSELECT 2;"),
+        [("1\n\\. \n \\.\n\\.x\n", Some("\\.\n"))],
+    );
+    assert_eq!(
+        copy_data("COPY t FROM STDIN;\r\n1\r\n\\.\r\nSELECT 2;"),
+        [("1\r\n", Some("\\.\r\n"))],
+    );
+    // An empty block.
+    assert_eq!(
+        copy_data("COPY t FROM STDIN;\n\\.\nSELECT 2;"),
+        [("", Some("\\.\n"))]
+    );
+}
+
+#[test]
+fn copy_data_with_no_end_marker_runs_to_end_of_input() {
+    // psql reads the data to end of input with no error. pgtk-psql keeps the
+    // whole suffix as data, with no `\.` line.
+    assert_eq!(copy_data("COPY t FROM STDIN;\n1\n2"), [("1\n2", None)]);
+    // A `\.` with no line ending is data.
+    assert_eq!(copy_data("COPY t FROM STDIN;\n1\n\\."), [("1\n\\.", None)]);
+    assert_eq!(
+        render_unbound("COPY t FROM STDIN;\n1\n2"),
+        "COPY t FROM STDIN;\n"
+    );
+}
+
+#[test]
+fn a_client_copy_from_stdin_reads_data_as_a_server_copy_does() {
+    assert_eq!(
+        copy_data("\\copy t from stdin\n1\n\\.\nSELECT 2;"),
+        [("1\n", Some("\\.\n"))],
+    );
+    assert_eq!(
+        copy_data("\\COPY s.t (a, b) FROM STDIN WITH (FORMAT csv)\n1,2\n\\.\n"),
+        [("1,2\n", Some("\\.\n"))],
+    );
+    assert_eq!(
+        render_unbound("\\copy t from stdin\n1\n\\.\nSELECT 2;"),
+        "\nSELECT 2;"
+    );
+    // `pstdin` is psql's own standard input, and `'stdin'` is a file.
+    for source in [
+        "\\copy t to stdout\nSELECT 2;",
+        "\\copy t from pstdin\nSELECT 2;",
+        "\\copy t from 'stdin'\nSELECT 2;",
+        "\\copy (select 1) to stdout\nSELECT 2;",
+    ] {
+        assert_eq!(copy_data(source), [], "{source:?}");
+    }
+}
+
+#[test]
+fn only_a_copy_from_stdin_reads_data() {
+    for source in [
+        "COPY t TO STDOUT;\n1\n\\.\n",
+        "COPY t FROM '/tmp/x';\n1\n\\.\n",
+        "COPY (SELECT 1) TO STDOUT;\n1\n\\.\n",
+        "COPY t STDIN;\n1\n\\.\n",
+        "SELECT 'COPY t FROM STDIN';\n1\n\\.\n",
+        "COPY t FROM STDIN",
+    ] {
+        assert_eq!(copy_data(source), [], "{source:?}");
+    }
+    // psqlscan.l reads words, not grammar, so psql reads data after a COPY
+    // that the server refuses, and so does pgtk-psql.
+    assert_eq!(
+        copy_data("COPY BINARY t FROM STDIN;\n1\n\\.\n"),
+        [("1\n", Some("\\.\n"))]
+    );
+    assert_eq!(
+        copy_data("COPY FROM STDIN;\n1\n\\.\n"),
+        [("1\n", Some("\\.\n"))]
+    );
+}
+
+#[test]
+fn copy_in_an_inactive_branch_reads_no_data() {
+    // psql sends no buffer in an inactive branch, so the data reading follows
+    // the variables of the render.
+    let source = "\\if :{?load}\nCOPY t FROM STDIN;\n1\n\\.\n\\endif\nSELECT 2;";
+    assert_eq!(copy_data(source), []);
+    let rendered = pgtk_psql::render(source, &variables(&[("load", "")])).unwrap();
+    assert_eq!(rendered.sql(), "\nCOPY t FROM STDIN;\n\nSELECT 2;");
+    assert_eq!(render_unbound(source), "\nSELECT 2;");
+}
+
+// --- Typed literals with a psql value (freshtonic/pgtk#25) --------------------
+
+#[test]
+fn a_psql_value_after_any_type_name_renders_and_parses() {
+    // pg-sql once read `:'var'` after some type names in its SQL grammar, and
+    // `numeric` and `decimal` did not agree (freshtonic/pgtk#25). The SQL
+    // grammar now has no psql construct (ADR 0007): psql substitutes first,
+    // so every spelling is a typed literal and parses as PostgreSQL parses
+    // it.
+    let bound = variables(&[("var", "1"), ("v", "x"), ("file", "/tmp/t.csv")]);
+    let mut rows = vec![
+        ("SELECT bigint :'var'", "SELECT bigint '1'"),
+        ("SELECT int8 :'var'", "SELECT int8 '1'"),
+        ("SELECT oid :'var'", "SELECT oid '1'"),
+        ("SELECT jsonb :'var'", "SELECT jsonb '1'"),
+        ("SELECT timestamptz :'var'", "SELECT timestamptz '1'"),
+        ("SELECT decimal :'var'", "SELECT decimal '1'"),
+        ("SELECT numeric :'var'", "SELECT numeric '1'"),
+        ("SELECT name(10) :'var'", "SELECT name(10) '1'"),
+        ("SELECT varchar(10) :'var'", "SELECT varchar(10) '1'"),
+        ("SELECT interval :'var'", "SELECT interval '1'"),
+        ("SELECT bigint '123'", "SELECT bigint '123'"),
+        ("SELECT :'var'", "SELECT '1'"),
+        ("COPY t FROM :'file'", "COPY t FROM '/tmp/t.csv'"),
+        (
+            "SELECT * FROM t WHERE a = :'v'",
+            "SELECT * FROM t WHERE a = 'x'",
+        ),
+    ];
+    // Added in 16: the SQL/JSON constructors (`REL_16_15:gram.y`
+    // `json_object_constructor`), whose `key : value` entry was the reason
+    // for the pg-sql change.
+    if cfg!(feature = "since-pg16") {
+        rows.push(("SELECT JSON_OBJECT('a': 1)", "SELECT JSON_OBJECT('a': 1)"));
+        rows.push((
+            "SELECT JSON_OBJECTAGG(k: v) FROM t",
+            "SELECT JSON_OBJECTAGG(k: v) FROM t",
+        ));
+    }
+    for (source, sql) in rows {
+        let rendered = pgtk_psql::render(source, &bound).unwrap();
+        assert_eq!(rendered.sql(), sql, "{source:?}");
+        assert_eq!(
+            rendered
+                .parse_sql()
+                .unwrap_or_else(|error| panic!("{sql:?} must parse: {error:?}"))
+                .statements()
+                .len(),
+            1,
+            "{source:?}",
+        );
+    }
+}
+
+#[test]
+fn numeric_and_decimal_agree_with_an_unbound_value() {
+    // An unbound variable stays in the text, so the SQL parse fails on the
+    // colon for each type name alike.
+    for source in ["SELECT numeric :'var'", "SELECT decimal :'var'"] {
+        let rendered = pgtk_psql::render(source, &Variables::new()).unwrap();
+        assert_eq!(rendered.sql(), source);
+        assert!(rendered.parse_sql().is_err(), "{source:?}");
+    }
 }

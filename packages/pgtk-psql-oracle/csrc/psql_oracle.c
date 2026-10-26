@@ -17,6 +17,15 @@
  * backquoted shell command: the lexer's passthrough is a conditional stack
  * whose only entry is inactive, so psqlscanslash.l does not evaluate one.
  *
+ * When psql sends a query buffer that holds `COPY ... FROM STDIN`, or runs
+ * `\copy ... from stdin`, it reads the data lines from the script itself
+ * (`handleCopyIn` in `src/bin/psql/copy.c`), from the line after the line
+ * that sent the buffer up to a line that is exactly `\.`.  The shim does the
+ * same: it reports each data block and does not lex it.  It then lexes the
+ * rest of the line that sent the buffer, and continues after the data, as
+ * psql does.  It counts the COPY commands as `MainLoop` and
+ * `ExecQueryAndProcessResults` count them, with `psql_scan_count_copy_from_stdin`.
+ *
  * Two adaptations of psql's own main loop are deliberate, and both follow
  * pgtk-psql's document model (ADR 0007):
  *
@@ -32,7 +41,9 @@
  *	  while the buffer is empty, so psql drops the leading trivia of every
  *	  statement.  pgtk-psql renders one buffer for a whole document, so the
  *	  buffer is seeded with one byte that is removed at the end; the trivia
- *	  then survives and the two texts are comparable.
+ *	  then survives and the two texts are comparable.  The lexer state is
+ *	  reset where psql resets it (`psql_scan_reset`), so the parenthesis and
+ *	  `BEGIN` depths start again after each submission.
  *
  *-------------------------------------------------------------------------
  */
@@ -46,6 +57,7 @@
 #include "fe_utils/psqlscan_int.h"
 #include "psqlscanslash.h"
 #include "pqexpbuffer.h"
+#include "stringutils.h"
 #include "mb/pg_wchar.h"
 
 /*
@@ -80,6 +92,7 @@ SetShellResultVariables(int exit_code)
 #define PGPSO_INCOMPLETE 5
 #define PGPSO_OPTION 6
 #define PGPSO_DISCARD 7
+#define PGPSO_COPY_DATA 8
 
 typedef struct PgpsoEvent
 {
@@ -109,8 +122,6 @@ typedef struct PgpsoResult
 	/* The text psql forwards to the server, for the whole document. */
 	char	   *sql;
 	int			sql_len;
-	/* psqlscan.l's count of `COPY ... FROM STDIN` commands. */
-	int			copy_from_stdin;
 } PgpsoResult;
 
 typedef struct PgpsoContext
@@ -129,6 +140,18 @@ typedef struct PgpsoContext
 	int			seed;
 	/* The \if stack of the script, as MainLoop keeps it. */
 	ConditionalStack cstack;
+	/* The document. */
+	const char *source;
+	int			source_len;
+	/* Where the current query buffer starts in `output`. */
+	int			buffer_start;
+	/* Where the next block of COPY data starts, or -1. */
+	int			copy_pos;
+	/*
+	 * The end of the line whose sends read COPY data, or -1.  The lexer reads
+	 * to here, and then goes on at `copy_pos`.
+	 */
+	int			copy_line_end;
 } PgpsoContext;
 
 /*
@@ -687,15 +710,243 @@ run_conditional(PgpsoContext *context, const char *name, int limit)
 	}
 }
 
+/* What a backslash command does with the query buffer. */
+typedef enum BufferEffect
+{
+	BUFFER_KEEP,				/* the buffer goes on */
+	BUFFER_SEND,				/* PSQL_CMD_SEND, and psql reads COPY data */
+	BUFFER_SEND_NO_COPY,		/* PSQL_CMD_SEND, but no COPY data is read */
+	BUFFER_DISCARD				/* the buffer ends and is not sent */
+} BufferEffect;
+
+/*
+ * The effect of `name`, as the Rust `classify` gives it.  `\gdesc` runs
+ * DescribeQuery, which reads no COPY data, and from 18 `\sendpipeline`
+ * queues the query in a pipeline, where ExecQueryAndProcessResults returns
+ * before it counts the COPY commands.  `\watch` runs the query again and
+ * again; the shim reads its data once.
+ */
+static BufferEffect
+buffer_effect(const char *name)
+{
+	static const char *const send[] = {
+		"crosstabview", "g", "gx", "gexec", "gset", "watch",
+#if PG_VERSION_NUM >= 180000
+		"parse",
+#endif
+		NULL
+	};
+	static const char *const send_no_copy[] = {
+		"gdesc",
+#if PG_VERSION_NUM >= 180000
+		"sendpipeline",
+#endif
+		NULL
+	};
+	static const char *const discard[] = {
+		"r", "reset",
+#if PG_VERSION_NUM >= 180000
+		"close_prepared", "endpipeline", "flush", "flushrequest",
+		"getresults", "startpipeline", "syncpipeline",
+#endif
+		NULL
+	};
+
+	if (is_one_of(name, send))
+		return BUFFER_SEND;
+	if (is_one_of(name, send_no_copy))
+		return BUFFER_SEND_NO_COPY;
+	if (is_one_of(name, discard))
+		return BUFFER_DISCARD;
+	return BUFFER_KEEP;
+}
+
+/*
+ * The decision of parse_slash_copy (src/bin/psql/copy.c): whether the
+ * arguments of `\copy` say `from stdin` (or `from stdout`), so that do_copy
+ * reads the data from the script, `pset.cur_cmd_source`.  The tokens come
+ * from psql's own strtokx; the shim assumes standard_conforming_strings.
+ */
+static int
+copy_reads_script(const char *args)
+{
+	const char *whitespace = " \t\n\r";
+	char	   *token;
+
+	if (args == NULL)
+		return 0;
+	token = strtokx(args, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+	if (!token)
+		return 0;
+	if (pg_strcasecmp(token, "binary") == 0)
+	{
+		token = strtokx(NULL, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+		if (!token)
+			return 0;
+	}
+	if (token[0] == '(')
+	{
+		int			parens = 1;
+
+		while (parens > 0)
+		{
+			token = strtokx(NULL, whitespace, "()", "\"'", 0, true, false, PG_UTF8);
+			if (!token)
+				return 0;
+			if (token[0] == '(')
+				parens++;
+			else if (token[0] == ')')
+				parens--;
+		}
+	}
+	token = strtokx(NULL, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+	if (!token)
+		return 0;
+	if (token[0] == '.')
+	{
+		token = strtokx(NULL, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+		if (!token)
+			return 0;
+		token = strtokx(NULL, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+		if (!token)
+			return 0;
+	}
+	if (token[0] == '(')
+	{
+		for (;;)
+		{
+			token = strtokx(NULL, whitespace, "()", "\"", 0, false, false, PG_UTF8);
+			if (!token)
+				return 0;
+			if (token[0] == ')')
+				break;
+		}
+		token = strtokx(NULL, whitespace, ".,()", "\"", 0, false, false, PG_UTF8);
+		if (!token)
+			return 0;
+	}
+	if (pg_strcasecmp(token, "from") != 0)
+		return 0;
+	token = strtokx(NULL, whitespace, ";", "'", 0, false, false, PG_UTF8);
+	if (!token)
+		return 0;
+	return pg_strcasecmp(token, "stdin") == 0 || pg_strcasecmp(token, "stdout") == 0;
+}
+
+/*
+ * The number of COPY commands of the current query buffer, as
+ * ExecQueryAndProcessResults counts them when a send command gives it -1: a
+ * new lexer reads the buffer text with one psql_scan call, which stops at the
+ * first `;`, and psql_scan_count_copy_from_stdin counts.  The buffer text is
+ * the output from `buffer_start`, without the ranges that psql discards.
+ */
+static int
+count_copy_of_buffer(PgpsoContext *context)
+{
+	PQExpBufferData text;
+	PQExpBufferData scratch;
+	PsqlScanCallbacks callbacks;
+	PsqlScanState state;
+	promptStatus_t prompt;
+	int			length = (int) context->output->len - context->seed;
+	char	   *keep = malloc((size_t) length + 1);
+	int			count;
+	int			i;
+
+	memset(keep, 1, (size_t) length + 1);
+	for (i = 0; i < context->result->nevents; i++)
+	{
+		PgpsoEvent *event = &context->result->events[i];
+		int			at;
+
+		if (event->kind != PGPSO_DISCARD)
+			continue;
+		for (at = event->output_start; at < event->output_end && at < length; at++)
+			keep[at] = 0;
+	}
+	initPQExpBuffer(&text);
+	for (i = context->buffer_start; i < length; i++)
+		if (keep[i])
+			appendPQExpBufferChar(&text, context->output->data[context->seed + i]);
+	free(keep);
+
+	/* No variable callback: the text is already substituted. */
+	memset(&callbacks, 0, sizeof(callbacks));
+	state = psql_scan_create(&callbacks);
+	psql_scan_setup(state, text.data, (int) text.len, PG_UTF8, true);
+	initPQExpBuffer(&scratch);
+	(void) psql_scan(state, &scratch, &prompt);
+	count = psql_scan_count_copy_from_stdin(state);
+	psql_scan_finish(state);
+	psql_scan_destroy(state);
+	termPQExpBuffer(&scratch);
+	termPQExpBuffer(&text);
+	return count;
+}
+
+/*
+ * psql reads `count` blocks of COPY data after a send that ends at the
+ * document offset `end`.  handleCopyIn reads whole lines from the line after
+ * the current one, up to a line that is exactly `\.` and LF or CRLF, or to
+ * the end of input.  The shim reports each block, and lexes the rest of the
+ * current line before it goes on after the data.
+ */
+static void
+read_copy_data(PgpsoContext *context, int end, int count)
+{
+	const char *source = context->source;
+	int			line_end = end;
+
+	while (line_end < context->source_len && source[line_end] != '\n')
+		line_end++;
+	if (count <= 0 || line_end >= context->source_len)
+		return;
+	if (context->copy_pos < line_end + 1)
+		context->copy_pos = line_end + 1;
+	context->copy_line_end = line_end + 1;
+
+	for (; count > 0 && context->copy_pos < context->source_len; count--)
+	{
+		int			rows = context->copy_pos;
+		int			line = rows;
+		PgpsoEvent *event = push_event(context->result, PGPSO_COPY_DATA);
+
+		event->source_start = rows;
+		while (line < context->source_len)
+		{
+			int			next = line;
+			int			length;
+
+			while (next < context->source_len && source[next] != '\n')
+				next++;
+			if (next < context->source_len)
+				next++;
+			length = next - line;
+			if ((length == 3 && memcmp(source + line, "\\.\n", 3) == 0) ||
+				(length == 4 && memcmp(source + line, "\\.\r\n", 4) == 0))
+			{
+				event->output_start = line;
+				event->output_end = next;
+				break;
+			}
+			line = next;
+		}
+		event->source_end = line;
+		context->copy_pos = event->output_end >= 0 ? event->output_end : line;
+	}
+}
+
 /*
  * Reads the arguments of the command `name` as HandleSlashCmds and
  * exec_command read them, and applies \set, \unset and the conditional
- * commands.  `limit` is the end of the line.
+ * commands.  `limit` is the end of the line.  Returns the number of COPY
+ * data blocks that `\copy` reads.
  */
-static void
+static int
 read_command(PgpsoContext *context, const char *name, int limit)
 {
 	int			success = 1;
+	int			copies = 0;
 	char	   *value;
 
 	if (strcmp(name, "if") == 0 || strcmp(name, "elif") == 0 ||
@@ -737,6 +988,11 @@ read_command(PgpsoContext *context, const char *name, int limit)
 		{
 			case SHAPE_WHOLE_LINE:
 				value = read_option(context, OT_WHOLE_LINE, limit);
+				/* exec_command_copy runs only in an active branch. */
+				if (pg_strcasecmp(name, "copy") == 0 &&
+					conditional_active(context->cstack) &&
+					copy_reads_script(value))
+					copies = 1;
 				free(value);
 				break;
 			case SHAPE_FILEPIPE:
@@ -776,6 +1032,7 @@ read_command(PgpsoContext *context, const char *name, int limit)
 	else
 		read_all_options(context, OT_WHOLE_LINE, limit);
 	psql_scan_slash_command_end(context->state);
+	return copies;
 }
 
 /*
@@ -818,6 +1075,11 @@ pgpso_scan(const char *source, int source_len,
 	context.base = 0;
 	context.seed = 1;
 	context.cstack = conditional_stack_create();
+	context.source = source;
+	context.source_len = source_len;
+	context.buffer_start = 0;
+	context.copy_pos = -1;
+	context.copy_line_end = -1;
 	current_context = &context;
 
 	/*
@@ -831,7 +1093,13 @@ pgpso_scan(const char *source, int source_len,
 
 	while (!finished)
 	{
-		psql_scan_setup(state, source + base, source_len - base,
+		/*
+		 * The input ends at the end of the line whose sends read COPY data,
+		 * and goes on after the data.
+		 */
+		int			input_end = context.copy_line_end >= 0 ? context.copy_line_end : source_len;
+
+		psql_scan_setup(state, source + base, input_end - base,
 						PG_UTF8, true);
 		context.base = base;
 
@@ -845,14 +1113,36 @@ pgpso_scan(const char *source, int source_len,
 
 			if (scanned == PSCAN_SEMICOLON)
 			{
+				int			copies;
+				int			token_end = -1;
+
 				event = push_event(result, PGPSO_SEMICOLON);
 				if (current_token(&context, &start, &end))
 				{
 					event->source_start = start;
 					event->source_end = end;
+					token_end = end;
 				}
 				event->output_end = (int) output.len - context.seed;
 				event->output_start = event->output_end - 1;
+				/* MainLoop sends nothing in an inactive branch. */
+				if (!conditional_active(context.cstack))
+					continue;
+				/* MainLoop: SendQuery, then psql_scan_reset. */
+				copies = psql_scan_count_copy_from_stdin(state);
+				psql_scan_reset(state);
+				context.buffer_start = (int) output.len - context.seed;
+				if (copies > 0 && token_end >= 0)
+				{
+					read_copy_data(&context, token_end, copies);
+					if (context.copy_line_end >= 0)
+					{
+						/* Lex the rest of the line, then the text after the data. */
+						psql_scan_finish(state);
+						base = token_end;
+						break;
+					}
+				}
 				continue;
 			}
 
@@ -864,6 +1154,7 @@ pgpso_scan(const char *source, int source_len,
 				int			command_end;
 				int			name_end;
 				int			event_index;
+				int			copies;
 
 				if (current_token(&context, &start, &end))
 					at = start;
@@ -899,7 +1190,7 @@ pgpso_scan(const char *source, int source_len,
 				name = psql_scan_slash_command(state);
 				name_end = at + 1 + (int) strlen(name);
 				/* The name stops before the space or the backslash. */
-				read_command(&context, name, line_end);
+				copies = read_command(&context, name, line_end);
 				command_end = slash_position(&context, line_end);
 				if (command_end < name_end)
 					command_end = name_end;
@@ -910,9 +1201,43 @@ pgpso_scan(const char *source, int source_len,
 				event->detail = 1 + (int) strlen(name);
 				event->text = name;
 
+				/*
+				 * A command that ends the buffer in an active branch: MainLoop
+				 * sends it (and ExecQueryAndProcessResults counts its COPY
+				 * commands) and resets the lexer, and `\r` and `\watch` reset
+				 * it themselves.
+				 */
+				if (conditional_active(context.cstack))
+				{
+					switch (buffer_effect(name))
+					{
+						case BUFFER_SEND:
+							copies = count_copy_of_buffer(&context);
+							/* FALLTHROUGH */
+						case BUFFER_SEND_NO_COPY:
+						case BUFFER_DISCARD:
+							psql_scan_reset(state);
+							context.buffer_start = (int) output.len - context.seed;
+							break;
+						case BUFFER_KEEP:
+							break;
+					}
+				}
+				read_copy_data(&context, command_end, copies);
+
 				/* Resume SQL lexing where the command ends (adaptation 1). */
 				psql_scan_finish(state);
 				base = command_end;
+				break;
+			}
+
+			if (context.copy_line_end >= 0)
+			{
+				/* The end of the line that read COPY data: go on after it. */
+				psql_scan_finish(state);
+				base = context.copy_pos;
+				context.copy_line_end = -1;
+				context.copy_pos = -1;
 				break;
 			}
 
@@ -929,7 +1254,6 @@ pgpso_scan(const char *source, int source_len,
 		}
 	}
 
-	result->copy_from_stdin = psql_scan_count_copy_from_stdin(state);
 	result->sql_len = (int) output.len - context.seed;
 	result->sql = malloc((size_t) result->sql_len + 1);
 	memcpy(result->sql, output.data + context.seed, (size_t) result->sql_len);

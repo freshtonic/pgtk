@@ -22,6 +22,13 @@ pgtk-psql is part of [pgtk](https://github.com/freshtonic/pgtk), the PostgreSQL 
 - **Meta-commands as psql reads them.** Each meta-command is one token, with the arguments that
   psql reads for that command: up to a space or a backslash, the whole line for `\copy` and
   `\!`, and up to `\\` when SQL follows on the same line.
+- **Query buffers as psql ends them.** A `;` inside parentheses or inside the `BEGIN ... END`
+  body of a `CREATE FUNCTION` does not end the buffer, as in psql. `Rendered::boundaries` gives
+  each place where psql sends the buffer, and `Rendered::is_complete` tells whether the script
+  ends with an open buffer.
+- **COPY data as psql reads it.** The data lines after `COPY ... FROM STDIN` or
+  `\copy ... from stdin`, up to `\.`, are one `PsqlItem::CopyData` item. They are never read as
+  SQL or as psql text, and they are not part of the rendered SQL.
 - **Scripts that change their own variables.** `\set` and `\unset` change the variables for the
   rest of the script, and only the active branches of an `\if` block go to the server.
 - **Errors that point to the script.** A source map links each byte of the rendered SQL to the
@@ -97,8 +104,7 @@ evaluation.
 ## What it does not do
 
 pgtk-psql runs no command. It does not read an included file, run a shell command or a
-backquoted argument, or connect to a server. It does not read the data lines after
-`COPY ... FROM STDIN`. A command name that psql does not know stays in the SQL text, so the
+backquoted argument, or connect to a server. A command name that psql does not know stays in the SQL text, so the
 result is an error, never a silent change. `docs/adr/0013-keep-most-meta-command-arguments-as-text.md`
 in `pgtk-sql` gives the details.
 

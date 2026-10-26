@@ -20,6 +20,8 @@ published.
 - one event for each backslash command, with its name as `psqlscanslash.l` reads it, and the
   extent and value of each argument that `psql_scan_slash_option` reads for it,
 - one event each time psql discards the query text of an inactive `\if` branch,
+- one event for each block of COPY data that psql reads from the script after
+  `COPY ... FROM STDIN` or `\copy ... from stdin`,
 - a final event that tells if the script ended with a complete query buffer.
 
 The oracle reads the arguments of each command as `command.c` reads them. It applies `\set`,
@@ -41,8 +43,9 @@ constants, so pgtk-psql can have it as a dev-dependency that builds no PostgreSQ
 psql reads one line at a time, and it clears the query buffer after each send. The oracle scans
 the SQL text of the whole script as one input and never clears the buffer, so that its text and
 the text of pgtk-psql are comparable. It reads the arguments of a command from the rest of its
-line only, as psql does. `csrc/psql_oracle.c` and `docs/psql-oracle.md` in `pgtk-sql` record
-these two changes.
+line only, as psql does. It resets the lexer state where psql resets it, and it reads COPY data
+from the script and not with the lexer, as psql does. `csrc/psql_oracle.c` and
+`docs/psql-oracle.md` in `pgtk-sql` record these changes.
 
 ## Licence
 
