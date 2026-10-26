@@ -776,8 +776,22 @@ recursa::ast_node! {
     /// Variant ordering: the forms part on the `(` after `ONLY`.
     #[derive(Debug)]
     pub enum OnlyRelation {
-        Parens(#[tok(ONLY, LPAREN, this, RPAREN)] QualifiedName),
+        Parens(#[tok(ONLY, this)] ParenthesizedQualifiedName),
         Plain(#[tok(ONLY, this)] QualifiedName),
+    }
+}
+
+recursa::ast_node! {
+    /// `'(' qualified_name ')'` after `ONLY`. The `)` closes through
+    /// [`ParenthesizedClose`](crate::ast::shared::expr::ParenthesizedClose),
+    /// because before a set operator it is the merged kind
+    /// `RPAREN_SELECT_LA`: `TABLE ONLY (t) UNION TABLE u` (issue #60).
+    #[derive(Debug, derive_more :: Deref)]
+    pub struct ParenthesizedQualifiedName {
+        #[tok(LPAREN, this)]
+        #[deref]
+        pub name: QualifiedName,
+        pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
 
@@ -811,7 +825,8 @@ impl<'input> OnlyRelation<'input> {
     /// The relation's name, with or without its parentheses.
     pub fn name(&self) -> &QualifiedName<'input> {
         match self {
-            Self::Parens(name) | Self::Plain(name) => name,
+            Self::Parens(name) => &name.name,
+            Self::Plain(name) => name,
         }
     }
 }

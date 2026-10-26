@@ -1180,7 +1180,7 @@ recursa::ast_node! {
     /// qualified_name ')'`.
     #[derive(Debug)]
     pub enum OnlyRelationName {
-        Parens(#[tok(LPAREN, this, RPAREN)] QualifiedName),
+        Parens(crate::ast::shared::names::ParenthesizedQualifiedName),
         Plain(QualifiedName),
     }
 }
@@ -2107,10 +2107,13 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `GROUPING SETS ( item, ... )`.
     #[derive(Debug)]
-    #[tok(GROUPING, SETS, LPAREN, this, RPAREN)]
+    #[tok(GROUPING, SETS, LPAREN, this)]
     pub struct GroupingSetsItem {
         #[sep(COMMA)]
         pub groups: one_or_many!(boxed!(GroupByItem)),
+        /// The `)`, which before a set operator is the merged kind
+        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
 
@@ -2125,10 +2128,13 @@ recursa::ast_node! {
     /// parenthesized `(rollup(a, b))` and a qualified `s.rollup(a, b)` stay
     /// function calls, because neither starts a `group_by_item` with the word.
     #[derive(Debug)]
-    #[tok(ROLLUP, LPAREN, this, RPAREN)]
+    #[tok(ROLLUP, LPAREN, this)]
     pub struct RollupItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
+        /// The `)`, which before a set operator is the merged kind
+        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
 
@@ -2137,10 +2143,13 @@ recursa::ast_node! {
     /// `GroupingSet` of kind `GROUPING_SET_CUBE`. [`RollupItem`] describes how
     /// it wins over the function call of the same spelling.
     #[derive(Debug)]
-    #[tok(CUBE, LPAREN, this, RPAREN)]
+    #[tok(CUBE, LPAREN, this)]
     pub struct CubeItem {
         #[sep(COMMA)]
         pub items: one_or_many!(Expr),
+        /// The `)`, which before a set operator is the merged kind
+        /// `RPAREN_SELECT_LA` (`ParenthesizedClose`; issue #60).
+        pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
 
@@ -2162,11 +2171,15 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// The empty grouping set `()`, used inside `GROUPING SETS` and also valid as
-    /// a top-level grouping item.
+    /// a top-level grouping item. Before a set operator, the `)` is the merged
+    /// kind `RPAREN_SELECT_LA`: `SELECT 1 GROUP BY () UNION SELECT 2` (issue
+    /// #60).
     #[derive(Debug)]
     pub enum EmptyGroupingSet {
         #[tok(LPAREN, RPAREN)]
         Value,
+        #[tok(LPAREN, RPAREN_SELECT_LA)]
+        MergedSelect,
     }
 }
 

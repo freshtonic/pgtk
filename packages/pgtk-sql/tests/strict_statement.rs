@@ -1023,3 +1023,23 @@ fn narrow_places_keep_the_forms_of_gram_y() {
         "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
     ]);
 }
+
+/// A `)` before a set operator is the merged kind `RPAREN_SELECT_LA`, so
+/// each closing rule that can end a `select_clause` must take it (issue
+/// #60).
+#[test]
+fn a_close_before_a_set_operator_parses() {
+    assert_accepts(&[
+        "TABLE ONLY (t) UNION TABLE u",
+        "TABLE ONLY (s.t) INTERSECT TABLE ONLY (u)",
+        "(TABLE ONLY (t) EXCEPT TABLE u)",
+        "SELECT * FROM ONLY (t) UNION TABLE u",
+        "SELECT 1 GROUP BY () UNION SELECT 2",
+        "SELECT 1 GROUP BY ALL () INTERSECT SELECT 2",
+        "SELECT 1 GROUP BY ROLLUP (a) UNION SELECT 2",
+        "SELECT 1 GROUP BY CUBE (a) UNION SELECT 2",
+        "SELECT 1 GROUP BY GROUPING SETS (a, ()) EXCEPT SELECT 2",
+        "TABLE ONLY (t) ORDER BY 1",
+        "SELECT 1 GROUP BY () ORDER BY 1",
+    ]);
+}

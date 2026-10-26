@@ -4299,7 +4299,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn relation_expr(&self, r: Handle<FlatRelationExpr>) -> (Handle<FlatQualifiedName>, bool) {
         match self.get(r) {
             FlatRelationExpr::Only(o) => match self.get(*o) {
-                FlatOnlyRelation::Parens(q) | FlatOnlyRelation::Plain(q) => (*q, false),
+                FlatOnlyRelation::Parens(p) => (self.get(*p).name, false),
+                FlatOnlyRelation::Plain(q) => (*q, false),
             },
             FlatRelationExpr::Named(n) => (self.get(*n).name, true),
         }
@@ -9289,7 +9290,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 FlatSimpleTableRef::Only(only) => {
                     let only = self.get(*only);
                     let qn = match self.get(only.name) {
-                        FlatOnlyRelationName::Parens(q) | FlatOnlyRelationName::Plain(q) => *q,
+                        FlatOnlyRelationName::Parens(p) => self.get(*p).name,
+                        FlatOnlyRelationName::Plain(q) => *q,
                     };
                     let mut parts = self.qualified_name_parts(qn)?;
                     if parts.len() > 2 {
