@@ -1550,7 +1550,7 @@ mod tests {
             "SELECT x FROM t ORDER BY x USING operator(s.t.>) NULLS LAST",
         ] {
             let tree = tree(src);
-            assert!(tree.contains("op: Decorated(DecoratedOperator"), "{src:?}: {tree}");
+            assert!(tree.contains("op: Decorated(Value("), "{src:?}: {tree}");
         }
         // The same `sortby` stands in an aggregate, in WITHIN GROUP and in a
         // window.
