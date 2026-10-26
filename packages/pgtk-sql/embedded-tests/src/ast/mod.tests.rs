@@ -778,9 +778,9 @@ mod tests {
             // typed literal, before its string payload.
             "SELECT char(20) 'x'",
             "SELECT numeric(10, 2) '1234.50'",
-            // `RPAREN_SELECT_LA`, pgtk-sql's own: the `)` of a parenthesized
-            // form that a set operator continues. One statement per closing
-            // rule that names it.
+            // A `)` that a set operator follows has no lookahead filter, as
+            // in parser.c (issue #74). One statement per closing rule that
+            // had one before.
             "(SELECT 1) UNION SELECT 2",
             "SELECT f(g(x)) UNION SELECT 1",
             "VALUES (1, 2) UNION ALL SELECT 3, 4",

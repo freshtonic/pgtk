@@ -35,10 +35,9 @@ use pgtk_sql::ast::shared::expr::{
     FlatBitType, FlatBoolTestKind, FlatCastTypeHead, FlatCharacterType, FlatCharacterTypeName,
     FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFloatPrecision, FlatFuncArg,
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
-    FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType, FlatParenContent,
-    FlatParenthesizedIndirection, FlatPrecisionSqlValueFuncName, FlatQualifiedRefFirstIndirection,
-    FlatSqlValueFunction, FlatStringLitSeq0, FlatTimeZoneQualifier, FlatTypeCastFunc,
-    FlatTypeModifierSign,
+    FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType,
+    FlatPrecisionSqlValueFuncName, FlatSqlValueFunction, FlatStringLitSeq0, FlatTimeZoneQualifier,
+    FlatTypeCastFunc, FlatTypeModifierSign,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -126,8 +125,8 @@ use pgtk_sql::ast::shared::expr::{FlatFuncCallName, FlatFunctionApplicationExpr}
 use pgtk_sql::ast::shared::expr::{
     FlatFunctionCallApplication, FlatInlineWindowSpec, FlatQuantifiedComparisonOperand,
     FlatQuantifiedComparisonTail, FlatQuantifiedLikeOperator, FlatWindowFrameBody,
-    FlatWindowFrameBound, FlatWindowFrameClause, FlatWindowFrameDirection, FlatWindowFrameUnit,
-    FlatWindowSpec, FlatWindowSpecBody, FlatWithinGroupClause,
+    FlatWindowFrameClause, FlatWindowFrameUnit, FlatWindowSpec, FlatWindowSpecBody,
+    FlatWithinGroupClause,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -139,7 +138,7 @@ use pgtk_sql::ast::shared::expr::{
 use pgtk_sql::ast::shared::expr::{
     FlatJsonBehavior, FlatJsonBehaviorClause, FlatJsonConstructor, FlatJsonExists, FlatJsonPassing,
     FlatJsonQuery, FlatJsonQuotes, FlatJsonScalar, FlatJsonSerialize, FlatJsonValue,
-    FlatJsonWrapper, FlatKeepOrOmit, FlatWrapperBehavior,
+    FlatJsonWrapper, FlatKeepOrOmit,
 };
 use pgtk_sql::ast::shared::names::{FlatAnyName, FlatQualifiedName};
 use pgtk_sql::ast::shared::names::{FlatOnlyRelation, FlatRelationExpr};
@@ -2206,13 +2205,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             for e in written {
                 if let FlatExpr::QualRef(q_handle) = self.get(e) {
                     let q_handle = *q_handle;
-                    let q = self.get(q_handle);
-                    let star =
-                        matches!(self.get(q.first), FlatQualifiedRefFirstIndirection::Star(_))
-                            || self.list(q.rest).last().is_some_and(|last| {
-                                matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
-                            });
-                    if star && q.call.is_none() {
+                    if self.qref_star(q_handle) {
                         for entry in self.expand_qualified_star(&scope, q_handle)? {
                             exprs.push((e, Some(entry)));
                         }
@@ -7028,13 +7021,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         if let FlatExpr::Parenthesized(p) = self.get(expr) {
             let p = self.get(*p);
-            if self.list(p.indirection).is_empty()
-                && let FlatParenContent::Exprs(list) = self.get(p.content)
-            {
-                let exprs = self.list1(*list);
-                if exprs.len() == 1 {
-                    return self.plain_var(exprs[0]);
-                }
+            if p.indirection.is_none() {
+                return self.plain_var(p.expr);
             }
         }
         None
@@ -7062,7 +7050,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // written.
                 let indirect = |w: &Self, h: Handle<FlatExpr>| match w.get(h) {
                     FlatExpr::ColumnRef(c) => !w.list(w.get(*c).subscripts).is_empty(),
-                    FlatExpr::QualRef(q) => !w.list(w.get(*q).rest).is_empty(),
+                    FlatExpr::QualRef(q) => w.qref_indirect(*q),
                     _ => false,
                 };
                 match (indirect(self, a), indirect(self, b)) {
@@ -7183,15 +7171,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 return e;
             };
             let p = self.get(*p);
-            if !self.list(p.indirection).is_empty() {
+            if !p.indirection.is_none() {
                 return e;
             }
-            match self.get(p.content) {
-                FlatParenContent::Exprs(list) if self.list1(*list).len() == 1 => {
-                    e = self.list1(*list)[0]
-                }
-                _ => return e,
-            }
+            e = p.expr;
         }
     }
 
@@ -7479,16 +7462,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         target_exprs: &mut Vec<Option<Handle<FlatExpr>>>,
         grouping: &mut Grouping,
     ) -> Result<Vec<usize>> {
-        // An `if let` chain, not an `if let` guard: the guards need a Rust newer than the
-        // rust-version of the crate.
-        let elements = if let FlatExpr::Parenthesized(p) = self.get(expr)
-            && self.list(self.get(*p).indirection).is_empty()
-            && let FlatParenContent::Exprs(list) = self.get(self.get(*p).content)
-            && self.list1(*list).len() > 1
-        {
-            self.list1(*list).to_vec()
-        } else {
-            vec![expr]
+        let elements = match self.get(expr) {
+            FlatExpr::ImplicitRow(row) => self.implicit_row_values(*row),
+            _ => vec![expr],
         };
         let mut refs = Vec::new();
         for e in elements {
@@ -8818,16 +8794,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         lscope: &Scope,
         inner: &FlatJsonTableInner,
     ) -> Result<Vec<(String, TypeRef, Typmod)>> {
-        // The path is a string constant: gram.y refuses anything else.
-        let path = self.unparen(inner.path);
-        if !matches!(self.get(path), FlatExpr::StringLit(_)) {
-            return Err(Diagnostic::new(
-                "0A000",
-                "only string constants are supported in JSON_TABLE path specification",
-            )
-            .at(self.span(inner.path).start)
-            .into());
-        }
+        // The path is a string constant: the grammar takes nothing else.
+        let path = {
+            use pgtk_sql::ast::dml::select::FlatJsonTablePath;
+            let mut path = inner.path;
+            loop {
+                match self.get(path) {
+                    FlatJsonTablePath::Const(e) => break *e,
+                    FlatJsonTablePath::Parens(p) => path = self.get(*p).path,
+                }
+            }
+        };
         let jsonb = self.types().builtin(Builtin::Jsonb);
         let context_format = self.json_table_format(inner.context_format)?;
         self.json_value_expr_formatted(
@@ -8839,7 +8816,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             Some(jsonb),
             false,
         )?;
-        let path_t = self.expr(lscope, inner.path)?;
+        let path_t = self.expr(lscope, path)?;
         let jsonpath = self.types().builtin(Builtin::Jsonpath);
         if let Some((_, steps)) = self.coercer().coerce_to_target_type(
             &path_t,
@@ -8847,7 +8824,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             -1,
             CoercionContext::Explicit,
         )? {
-            self.record_coercions(inner.path, steps);
+            self.record_coercions(path, steps);
         }
         if let Some(p) = inner.passing {
             for arg in self.list1(self.get(p).args).to_vec() {
@@ -9626,13 +9603,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // `t.*` inside an expression item.
                 if let FlatExpr::QualRef(q_handle) = self.get(e.expr) {
                     let q_handle = *q_handle;
-                    let q = self.get(q_handle);
-                    let star =
-                        matches!(self.get(q.first), FlatQualifiedRefFirstIndirection::Star(_))
-                            || self.list(q.rest).last().is_some_and(|last| {
-                                matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
-                            });
-                    if star && q.call.is_none() && e.alias.is_none() {
+                    if self.qref_star(q_handle) && e.alias.is_none() {
                         let mut entries = self.expand_qualified_star(scope, q_handle)?;
                         let star_location = self.span(item).start;
                         for e in &mut entries {
@@ -9646,8 +9617,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // `(SELECT ...).*`: ExpandRowReference of a sublink.
                 if e.alias.is_none()
                     && let FlatExpr::SubSelectIndirection(q) = self.get(e.expr)
-                    && let Some(last) = self.list1(self.get(*q).indirection).last()
-                    && matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
+                    && matches!(
+                        self.indirection_parts(self.get(*q).indirection).last(),
+                        Some(IndirPart::Star)
+                    )
                 {
                     let at = self.span(e.expr).start;
                     return Err(unsupported("row expansion of a subquery", Some(at..at)));
@@ -9657,14 +9630,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     && let FlatExpr::Parenthesized(p) = self.get(e.expr)
                 {
                     let p = self.get(*p);
-                    let parts = self.list(p.indirection).to_vec();
-                    if let Some(last) = parts.last()
-                        && matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
-                    {
+                    let parts = self.opt_indirection_parts(p.indirection);
+                    if let Some(IndirPart::Star) = parts.last() {
                         let mut entries = self.expand_row_reference(
                             scope,
                             e.expr,
-                            p.content,
+                            p.expr,
                             &parts[..parts.len() - 1],
                         )?;
                         let star_location = self.span(item).start;
@@ -9783,14 +9754,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                if !self.list(p.indirection).is_empty() {
+                if !p.indirection.is_none() {
                     return None;
                 }
-                let FlatParenContent::Exprs(list) = self.get(p.content);
-                let exprs = self.list1(*list);
-                (exprs.len() == 1)
-                    .then(|| self.var_origin(scope, exprs[0]))
-                    .flatten()
+                self.var_origin(scope, p.expr)
             }
             _ => None,
         }
@@ -10997,7 +10964,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Collate(inner, _) => self.valid_json_default(*inner),
             // doNegate folds the sign into the constant.
             FlatExpr::Neg(inner) if self.negatable_literal(*inner).is_some() => true,
-            FlatExpr::Parenthesized(_) => false,
+            FlatExpr::Parenthesized(_) | FlatExpr::ImplicitRow(_) => false,
             node if matches!(fixed_operands(node), Some((None, r)) if self.negatable_literal(r).is_some()) => {
                 true
             }
@@ -11070,16 +11037,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let omit = parts.quotes.is_some_and(|q| {
                 matches!(self.get(self.get(q).keep_or_omit), FlatKeepOrOmit::Omit)
             });
-            let wrapped = parts.wrapper.is_some_and(|w| {
-                let w = self.get(w);
-                matches!(self.get(w.with_or_without), FlatWithOrWithout::With)
-                    && w.behavior.is_none_or(|b| {
-                        matches!(
-                            self.get(b),
-                            FlatWrapperBehavior::Conditional | FlatWrapperBehavior::Unconditional
-                        )
-                    })
-            });
+            let wrapped = parts
+                .wrapper
+                .is_some_and(|w| matches!(self.get(w), FlatJsonWrapper::With(_)));
             if omit && wrapped {
                 return Err(Diagnostic::new(
                     "42601",
@@ -11380,14 +11340,37 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         if let FlatExpr::Parenthesized(p) = self.get(h) {
             let p = self.get(*p);
-            if self.list(p.indirection).is_empty()
-                && let FlatParenContent::Exprs(list) = self.get(p.content)
-                && let [inner] = self.list1(*list)
-            {
-                return self.record_shape(scope, *inner);
+            if p.indirection.is_none() {
+                return self.record_shape(scope, p.expr);
             }
         }
         None
+    }
+
+    /// The values of an operand of `OVERLAPS`, gram.y `row`.
+    fn overlaps_row_values(
+        &self,
+        row: Handle<pgtk_sql::ast::shared::expr::FlatRow>,
+    ) -> Vec<Handle<FlatExpr>> {
+        match self.get(row) {
+            pgtk_sql::ast::shared::expr::FlatRow::Explicit(r) => self
+                .get(*r)
+                .values
+                .map_or_else(Vec::new, |v| self.list1(v).to_vec()),
+            pgtk_sql::ast::shared::expr::FlatRow::Implicit(r) => self.implicit_row_values(*r),
+        }
+    }
+
+    /// The values of an implicit row, `(a, b, ...)`: the first value and the
+    /// rest, in order.
+    fn implicit_row_values(
+        &self,
+        row: Handle<pgtk_sql::ast::shared::expr::FlatImplicitRow>,
+    ) -> Vec<Handle<FlatExpr>> {
+        let row = self.get(row);
+        let mut values = vec![row.first];
+        values.extend_from_slice(self.list1(row.rest));
+        values
     }
 
     /// `ExpandRowReference` for `(expr).*` in a target list: one entry per
@@ -11396,20 +11379,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         &mut self,
         scope: &Scope,
         handle: Handle<FlatExpr>,
-        content: Handle<FlatParenContent>,
-        parts: &[Handle<FlatParenthesizedIndirection>],
+        inner: Handle<FlatExpr>,
+        parts: &[IndirPart],
     ) -> Result<Vec<TargetEntry>> {
         let location = self.span(handle).start;
-        let FlatParenContent::Exprs(list) = self.get(content);
-        let exprs = self.list1(*list).to_vec();
-        let (base, base_handle) = if exprs.len() == 1 {
-            (self.expr(scope, exprs[0])?, Some(exprs[0]))
-        } else {
-            (
-                self.row_expr(scope, handle, &exprs, location)?,
-                Some(handle),
-            )
-        };
+        let (base, base_handle) = (self.expr(scope, inner)?, Some(inner));
         let (base, base_handle) = if parts.is_empty() {
             (base, base_handle)
         } else {
@@ -11497,7 +11471,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         let is_column = match self.get(a.value) {
             FlatExpr::ColumnRef(_) => true,
-            FlatExpr::QualRef(q) => self.get(*q).call.is_none(),
+            FlatExpr::QualRef(q) => !self.qref_function(*q),
             _ => false,
         };
         if !is_column {
@@ -11519,12 +11493,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let FlatExpr::QualRef(q_handle) = self.get(e) else {
             return Ok(None);
         };
-        let q = self.get(*q_handle);
-        let star = matches!(self.get(q.first), FlatQualifiedRefFirstIndirection::Star(_))
-            || self.list(q.rest).last().is_some_and(|last| {
-                matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
-            });
-        if !star || q.call.is_some() {
+        if !self.qref_star(*q_handle) {
             return Ok(None);
         }
         Ok(Some(self.expand_qualified_star(scope, *q_handle)?))
@@ -11578,18 +11547,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     .values
                     .map_or_else(Vec::new, |v| self.list1(v).to_vec()),
             ),
-            FlatExpr::Parenthesized(p) => {
-                let p = self.get(*p);
-                if !self.list(p.indirection).is_empty() {
-                    return None;
-                }
-                match self.get(p.content) {
-                    FlatParenContent::Exprs(list) if self.list1(*list).len() > 1 => {
-                        Some(self.list1(*list).to_vec())
-                    }
-                    _ => None,
-                }
-            }
+            FlatExpr::ImplicitRow(row) => Some(self.implicit_row_values(*row)),
             _ => None,
         }
     }
@@ -11827,14 +11785,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         handle: Handle<FlatExpr>,
         mut base: Typed,
         mut base_handle: Option<Handle<FlatExpr>>,
-        parts: &[Handle<FlatParenthesizedIndirection>],
+        parts: &[IndirPart],
         location: usize,
     ) -> Result<Typed> {
         let mut subs: Vec<Handle<FlatBracketSubscript>> = Vec::new();
         for part in parts {
-            match self.get(*part) {
-                FlatParenthesizedIndirection::Subscript(b) => subs.push(*b),
-                FlatParenthesizedIndirection::Star(_) => {
+            match *part {
+                IndirPart::Subscript(b) => subs.push(b),
+                IndirPart::Star => {
                     return Err(Diagnostic::new(
                         "0A000",
                         "row expansion via \"*\" is not supported here",
@@ -11842,13 +11800,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     .at(base.location)
                     .into());
                 }
-                FlatParenthesizedIndirection::Field(f) => {
+                IndirPart::Field(f) => {
                     if !subs.is_empty() {
                         base = self.subscripts(scope, &base, &subs, location)?;
                         base_handle = None;
                         subs.clear();
                     }
-                    let (name, _) = self.alias_name(self.get(*f).name)?;
+                    let (name, _) = self.alias_name(self.get(f).name)?;
                     base = self.field_select(
                         scope,
                         handle,
@@ -11961,71 +11919,150 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         &self,
         q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>,
     ) -> Result<(Vec<String>, bool)> {
-        let q = self.get(q);
-        let (table, _) = self.col_id(q.table)?;
-        let mut names = vec![table];
-        let mut star = false;
-        match self.get(q.first) {
-            FlatQualifiedRefFirstIndirection::Field(f) => {
-                names.push(self.alias_name(self.get(*f).name)?.0)
-            }
-            FlatQualifiedRefFirstIndirection::Star(_) => star = true,
-        }
-        for rest in self.list(q.rest) {
-            if star {
-                return Err(unsupported("indirection after .*", None));
-            }
-            match self.get(*rest) {
-                FlatParenthesizedIndirection::Field(f) => {
-                    names.push(self.alias_name(self.get(*f).name)?.0)
-                }
-                FlatParenthesizedIndirection::Star(_) => star = true,
-                FlatParenthesizedIndirection::Subscript(_) => {
-                    return Err(unsupported("subscript", None));
-                }
-            }
+        let (names, star, rest) = self.qualified_parts(q)?;
+        if !rest.is_empty() {
+            return Err(unsupported("subscript", None));
         }
         Ok((names, star))
     }
 
     /// The dotted names of a qualified reference up to its first
     /// subscript, whether they end in `*`, and the indirection after them.
-    #[allow(clippy::type_complexity)]
     fn qualified_parts(
         &self,
         q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>,
-    ) -> Result<(Vec<String>, bool, Vec<Handle<FlatParenthesizedIndirection>>)> {
+    ) -> Result<(Vec<String>, bool, Vec<IndirPart>)> {
+        use pgtk_sql::ast::shared::expr::{FlatQualifiedPath, FlatQualifiedTail};
         let q = self.get(q);
         let (table, _) = self.col_id(q.table)?;
         let mut names = vec![table];
         let mut star = false;
-        match self.get(q.first) {
-            FlatQualifiedRefFirstIndirection::Field(f) => {
-                names.push(self.alias_name(self.get(*f).name)?.0)
-            }
-            FlatQualifiedRefFirstIndirection::Star(_) => star = true,
-        }
-        let mut rest: Vec<Handle<FlatParenthesizedIndirection>> = Vec::new();
-        for part in self.list(q.rest) {
-            if star {
-                return Err(unsupported("indirection after .*", None));
-            }
-            if rest.is_empty() {
-                match self.get(*part) {
-                    FlatParenthesizedIndirection::Field(f) => {
-                        names.push(self.alias_name(self.get(*f).name)?.0);
-                        continue;
+        let mut rest = Vec::new();
+        match self.get(q.path) {
+            FlatQualifiedPath::Star(_) => star = true,
+            FlatQualifiedPath::Attrs(a) => {
+                let a = self.get(*a);
+                for f in self.list1(a.attrs) {
+                    names.push(self.alias_name(self.get(*f).name)?.0);
+                }
+                match a.tail.map(|t| self.get(t)) {
+                    None
+                    | Some(FlatQualifiedTail::Call(_))
+                    | Some(FlatQualifiedTail::TypedLiteral(_)) => {}
+                    Some(FlatQualifiedTail::Star(_)) => star = true,
+                    Some(FlatQualifiedTail::Subscripted(sub)) => {
+                        let sub = self.get(*sub);
+                        rest.push(IndirPart::Subscript(sub.subscript));
+                        if let Some(more) = sub.rest {
+                            rest.extend(self.indirection_parts(more));
+                        }
                     }
-                    FlatParenthesizedIndirection::Star(_) => {
-                        star = true;
-                        continue;
-                    }
-                    FlatParenthesizedIndirection::Subscript(_) => {}
                 }
             }
-            rest.push(*part);
         }
         Ok((names, star, rest))
+    }
+
+    /// The tail of a qualified reference after its dotted names, if any.
+    fn qref_tail(
+        &self,
+        q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>,
+    ) -> Option<&pgtk_sql::ast::shared::expr::FlatQualifiedTail> {
+        use pgtk_sql::ast::shared::expr::FlatQualifiedPath;
+        match self.get(self.get(q).path) {
+            FlatQualifiedPath::Star(_) => None,
+            FlatQualifiedPath::Attrs(a) => self.get(*a).tail.map(|t| self.get(t)),
+        }
+    }
+
+    /// The call of a dotted function name: `s.f(x)` or `s.t(10) 'v'`.
+    fn qref_call(
+        &self,
+        q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>,
+    ) -> Option<Handle<pgtk_sql::ast::shared::expr::FlatFunctionCallTail>> {
+        match self.qref_tail(q) {
+            Some(pgtk_sql::ast::shared::expr::FlatQualifiedTail::Call(call)) => Some(*call),
+            _ => None,
+        }
+    }
+
+    /// Whether a qualified reference is `func_name Sconst`: `s.t 'v'`.
+    fn qref_typed_literal(&self, q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>) -> bool {
+        matches!(
+            self.qref_tail(q),
+            Some(pgtk_sql::ast::shared::expr::FlatQualifiedTail::TypedLiteral(_))
+        )
+    }
+
+    /// Whether a qualified reference is a function call or a typed literal,
+    /// not a column reference.
+    fn qref_function(&self, q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>) -> bool {
+        self.qref_call(q).is_some() || self.qref_typed_literal(q)
+    }
+
+    /// Whether a qualified reference ends in `.*`.
+    fn qref_star(&self, q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>) -> bool {
+        use pgtk_sql::ast::shared::expr::{FlatIndirection, FlatQualifiedPath, FlatQualifiedTail};
+        if matches!(self.get(self.get(q).path), FlatQualifiedPath::Star(_)) {
+            return true;
+        }
+        match self.qref_tail(q) {
+            Some(FlatQualifiedTail::Star(_)) => true,
+            Some(FlatQualifiedTail::Subscripted(sub)) => self.get(*sub).rest.is_some_and(|more| {
+                matches!(
+                    self.get(more),
+                    FlatIndirection::Star(_) | FlatIndirection::ElementsStar(..)
+                )
+            }),
+            _ => false,
+        }
+    }
+
+    /// Whether a qualified reference selects a field or a subscript past
+    /// `t.a`: `t.a.b`, `t.a[1]`.
+    fn qref_indirect(&self, q: Handle<pgtk_sql::ast::shared::expr::FlatQualifiedRef>) -> bool {
+        use pgtk_sql::ast::shared::expr::FlatQualifiedPath;
+        match self.get(self.get(q).path) {
+            FlatQualifiedPath::Star(_) => false,
+            FlatQualifiedPath::Attrs(a) => {
+                let a = self.get(*a);
+                self.list1(a.attrs).len() > 1 || a.tail.is_some()
+            }
+        }
+    }
+
+    /// The parts of an [`Indirection`](pgtk_sql::ast::shared::expr::Indirection).
+    fn indirection_parts(
+        &self,
+        i: Handle<pgtk_sql::ast::shared::expr::FlatIndirection>,
+    ) -> Vec<IndirPart> {
+        use pgtk_sql::ast::shared::expr::{FlatIndirection, FlatIndirectionEl};
+        let elements = |list| {
+            self.list1(list)
+                .iter()
+                .map(|el| match self.get(*el) {
+                    FlatIndirectionEl::Subscript(b) => IndirPart::Subscript(*b),
+                    FlatIndirectionEl::Field(f) => IndirPart::Field(*f),
+                })
+                .collect::<Vec<_>>()
+        };
+        match self.get(i) {
+            FlatIndirection::Star(_) => vec![IndirPart::Star],
+            FlatIndirection::Elements(list) => elements(*list),
+            FlatIndirection::ElementsStar(list, _) => {
+                let mut parts = elements(*list);
+                parts.push(IndirPart::Star);
+                parts
+            }
+        }
+    }
+
+    /// The parts of an optional indirection chain; none when it is absent.
+    fn opt_indirection_parts(
+        &self,
+        i: Option<Handle<pgtk_sql::ast::shared::expr::FlatIndirection>>,
+    ) -> Vec<IndirPart> {
+        i.map_or_else(Vec::new, |i| self.indirection_parts(i))
     }
 
     /// `FigureColnameInternal`.
@@ -12051,7 +12088,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::QualRef(q) => {
                 let q_handle = *q;
-                if self.get(q_handle).call.is_some() {
+                if self.qref_function(q_handle) {
                     return Colname {
                         name: self
                             .qualified_names(q_handle)
@@ -12065,8 +12102,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         // The last field name, through any subscripts.
                         let mut name = None;
                         for part in rest {
-                            if let FlatParenthesizedIndirection::Field(f) = self.get(part) {
-                                name = self.alias_name(self.get(*f).name).ok().map(|(n, _)| n);
+                            if let IndirPart::Field(f) = part {
+                                name = self.alias_name(self.get(f).name).ok().map(|(n, _)| n);
                             }
                         }
                         Colname {
@@ -12330,21 +12367,16 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
                 // A_Indirection: the last field name, if any.
-                let name = self.last_field_name(self.list(p.indirection));
+                let name = self.last_field_name(&self.opt_indirection_parts(p.indirection));
                 if name.is_some() {
                     return Colname { name, strength: 2 };
                 }
-                let FlatParenContent::Exprs(list) = self.get(p.content);
-                let exprs = self.list1(*list);
-                if exprs.len() == 1 {
-                    self.figure_colname(exprs[0])
-                } else {
-                    Colname {
-                        name: Some("row".to_owned()),
-                        strength: 2,
-                    }
-                }
+                self.figure_colname(p.expr)
             }
+            FlatExpr::ImplicitRow(_) => Colname {
+                name: Some("row".to_owned()),
+                strength: 2,
+            },
             FlatExpr::User => Colname {
                 name: Some("user".to_owned()),
                 strength: 2,
@@ -12364,7 +12396,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::SubSelectIndirection(q) => {
                 // A_Indirection: the last field name, else the sublink's.
                 let name = self
-                    .last_field_name(self.list1(self.get(*q).indirection))
+                    .last_field_name(&self.indirection_parts(self.get(*q).indirection))
                     .or_else(|| self.sublink_names.get(&handle).cloned());
                 if name.is_some() {
                     Colname { name, strength: 2 }
@@ -12378,11 +12410,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// The last field name of an `A_Indirection`, if any.
-    fn last_field_name(&self, parts: &[Handle<FlatParenthesizedIndirection>]) -> Option<String> {
-        parts.iter().rev().find_map(|ind| match self.get(*ind) {
-            FlatParenthesizedIndirection::Field(f) => {
-                self.alias_name(self.get(*f).name).ok().map(|(n, _)| n)
-            }
+    fn last_field_name(&self, parts: &[IndirPart]) -> Option<String> {
+        parts.iter().rev().find_map(|ind| match *ind {
+            IndirPart::Field(f) => self.alias_name(self.get(f).name).ok().map(|(n, _)| n),
             _ => None,
         })
     }
@@ -13069,7 +13099,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::QualRef(q) => {
                 let q_handle = *q;
-                if let Some(call) = self.get(q_handle).call {
+                if self.qref_typed_literal(q_handle) {
+                    return Err(unsupported(
+                        "qualified typed literal",
+                        Some(location..location),
+                    ));
+                }
+                if let Some(call) = self.qref_call(q_handle) {
                     // A qualified function call: s.f(...).
                     let (names, star) = self.qualified_names(q_handle)?;
                     if star {
@@ -13140,26 +13176,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                let parts = self.list(p.indirection).to_vec();
-                let FlatParenContent::Exprs(list) = self.get(p.content);
-                let exprs = self.list1(*list).to_vec();
+                let parts = self.opt_indirection_parts(p.indirection);
                 if !parts.is_empty() {
-                    let (base, base_handle) = if exprs.len() == 1 {
-                        (self.expr(scope, exprs[0])?, Some(exprs[0]))
-                    } else {
-                        (
-                            self.row_expr(scope, handle, &exprs, location)?,
-                            Some(handle),
-                        )
-                    };
+                    let base = self.expr(scope, p.expr)?;
                     // transformIndirection locates its errors at the base.
                     let at = base.location;
-                    return self.indirection(scope, handle, base, base_handle, &parts, at);
+                    return self.indirection(scope, handle, base, Some(p.expr), &parts, at);
                 }
-                if exprs.len() != 1 {
-                    return self.row_expr(scope, handle, &exprs, location);
-                }
-                self.expr(scope, exprs[0])
+                self.expr(scope, p.expr)
+            }
+            FlatExpr::ImplicitRow(row) => {
+                let elements = self.implicit_row_values(*row);
+                self.row_expr(scope, handle, &elements, location)
             }
             FlatExpr::SubSelect(q) => {
                 let sub = self.get(*q).inner;
@@ -13173,7 +13201,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::SubSelectIndirection(q) => {
                 let q = self.get(*q);
                 let sub = self.get(q.query).inner;
-                let parts = self.list1(q.indirection).to_vec();
+                let parts = self.indirection_parts(q.indirection);
                 let base = self.expr_sublink(scope, handle, sub, location)?;
                 // transformIndirection locates its errors at the base.
                 let at = base.location;
@@ -14029,8 +14057,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             // gram.y: `row OVERLAPS row` is the function overlaps(l1, l2, r1, r2).
             FlatExpr::Overlaps(l, r) => {
                 let (l, r) = (*l, *r);
-                let left = self.row_elements(l).unwrap_or_else(|| vec![l]);
-                let right = self.row_elements(r).unwrap_or_else(|| vec![r]);
+                let left = self.overlaps_row_values(l);
+                let right = self.overlaps_row_values(r);
                 if left.len() != 2 {
                     return Err(Diagnostic::new(
                         "42601",
@@ -14606,16 +14634,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::NumericLit(t) => Some((LiteralKind::Float, self.text(*t).to_owned())),
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                if !self.list(p.indirection).is_empty() {
+                if !p.indirection.is_none() {
                     return None;
                 }
-                let FlatParenContent::Exprs(list) = self.get(p.content);
-                let exprs = self.list1(*list);
-                if exprs.len() == 1 {
-                    self.negatable_literal(exprs[0])
-                } else {
-                    None
-                }
+                self.negatable_literal(p.expr)
             }
             _ => None,
         }
@@ -15489,22 +15511,85 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         })
     }
 
-    /// A frame bound as written.
-    fn frame_bound(&self, bound: Handle<FlatWindowFrameBound>) -> Result<FrameBound> {
-        Ok(match self.get(bound) {
-            FlatWindowFrameBound::CurrentRow => FrameBound::CurrentRow,
-            FlatWindowFrameBound::Unbounded(d) => match self.get(*d) {
-                FlatWindowFrameDirection::Preceding => FrameBound::UnboundedPreceding,
-                FlatWindowFrameDirection::Following => FrameBound::UnboundedFollowing,
-            },
-            FlatWindowFrameBound::Offset(o) => {
-                let o = self.get(*o);
-                match self.get(o.direction) {
-                    FlatWindowFrameDirection::Preceding => FrameBound::OffsetPreceding(o.expr),
-                    FlatWindowFrameDirection::Following => FrameBound::OffsetFollowing(o.expr),
+    /// The start and end bounds of a frame as written; `None` for the end of
+    /// a frame without `BETWEEN`. The grammar admits only the combinations
+    /// that gram.y's `frame_extent` keeps.
+    fn frame_bounds(
+        &self,
+        body: Handle<FlatWindowFrameBody>,
+    ) -> (FrameBound, usize, Option<FrameBound>, usize) {
+        use pgtk_sql::ast::shared::expr::{
+            FlatWindowFrameBetweenExtent as Extent, FlatWindowFrameEnd as End,
+            FlatWindowFrameEndAfterCurrentRow as AfterCurrent,
+            FlatWindowFrameEndAfterFollowing as AfterFollowing,
+            FlatWindowFrameSingleBound as Single,
+        };
+        let preceding = |h: Handle<pgtk_sql::ast::shared::expr::FlatWindowFramePreceding>| {
+            FrameBound::OffsetPreceding(self.get(h).offset)
+        };
+        let following = |h: Handle<pgtk_sql::ast::shared::expr::FlatWindowFrameFollowing>| {
+            FrameBound::OffsetFollowing(self.get(h).offset)
+        };
+        let end = |h: Handle<End>| match self.get(h) {
+            End::CurrentRow => FrameBound::CurrentRow,
+            End::UnboundedPreceding => FrameBound::UnboundedPreceding,
+            End::UnboundedFollowing => FrameBound::UnboundedFollowing,
+            End::Preceding(p) => preceding(*p),
+            End::Following(f) => following(*f),
+        };
+        match self.get(body) {
+            FlatWindowFrameBody::Single(single) => {
+                let start = match self.get(self.get(*single).bound) {
+                    Single::CurrentRow => FrameBound::CurrentRow,
+                    Single::UnboundedPreceding => FrameBound::UnboundedPreceding,
+                    Single::Preceding(p) => preceding(*p),
+                };
+                (start, self.span(body).start, None, NO_LOCATION)
+            }
+            FlatWindowFrameBody::Between(between) => {
+                let extent = self.get(*between).extent;
+                let start_at = self.span(extent).start;
+                match self.get(extent) {
+                    Extent::FromUnboundedFollowing(e) => (
+                        FrameBound::UnboundedFollowing,
+                        start_at,
+                        Some(end(*e)),
+                        self.span(*e).start,
+                    ),
+                    Extent::FromUnboundedPreceding(e) => (
+                        FrameBound::UnboundedPreceding,
+                        start_at,
+                        Some(end(*e)),
+                        self.span(*e).start,
+                    ),
+                    Extent::FromPreceding(f) => {
+                        let f = self.get(*f);
+                        (
+                            preceding(f.start),
+                            start_at,
+                            Some(end(f.end)),
+                            self.span(f.end).start,
+                        )
+                    }
+                    Extent::FromCurrentRow(e) => {
+                        let bound = match self.get(*e) {
+                            AfterCurrent::CurrentRow => FrameBound::CurrentRow,
+                            AfterCurrent::UnboundedFollowing => FrameBound::UnboundedFollowing,
+                            AfterCurrent::Following(f) => following(*f),
+                        };
+                        (FrameBound::CurrentRow, start_at, Some(bound), NO_LOCATION)
+                    }
+                    Extent::FromFollowing(f) => {
+                        let f = self.get(*f);
+                        let bound = match self.get(f.end) {
+                            AfterFollowing::UnboundedFollowing => FrameBound::UnboundedFollowing,
+                            AfterFollowing::Following(h) => following(*h),
+                        };
+                        (following(f.start), start_at, Some(bound), NO_LOCATION)
+                    }
                 }
             }
-        })
+        }
     }
 
     /// `transformWindowDefinitions` over the query level's windows.
@@ -15675,62 +15760,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let has_order = order_count > 0;
         let f = self.get(frame);
         let unit = *self.get(f.unit);
-        let (start, start_at, end, end_at) = match self.get(f.body) {
-            FlatWindowFrameBody::Single(s) => {
-                let s = self.get(*s);
-                (
-                    self.frame_bound(s.bound)?,
-                    self.span(s.bound).start,
-                    None,
-                    NO_LOCATION,
-                )
-            }
-            FlatWindowFrameBody::Between(b) => {
-                let b = self.get(*b);
-                (
-                    self.frame_bound(b.start)?,
-                    self.span(b.start).start,
-                    Some(self.frame_bound(b.end)?),
-                    self.span(b.end).start,
-                )
-            }
-        };
-        // gram.y's frame_extent rules, at the offending bound.
+        let (start, start_at, end, end_at) = self.frame_bounds(f.body);
+        // gram.y's frame_extent rules that the grammar does not state (see
+        // `WindowFrameBetween`), at the offending bound.
         let err = |m: &str, at: usize| -> crate::diagnostic::AnalyzeError {
             Diagnostic::new("42P20", m.to_owned()).at(at).into()
         };
         if start == FrameBound::UnboundedFollowing {
             return Err(err("frame start cannot be UNBOUNDED FOLLOWING", start_at));
         }
-        match end {
-            None => {
-                if matches!(start, FrameBound::OffsetFollowing(_)) {
-                    return Err(err(
-                        "frame starting from following row cannot end with current row",
-                        start_at,
-                    ));
-                }
-            }
-            Some(end) => {
-                if end == FrameBound::UnboundedPreceding {
-                    return Err(err("frame end cannot be UNBOUNDED PRECEDING", end_at));
-                }
-                if start == FrameBound::CurrentRow && matches!(end, FrameBound::OffsetPreceding(_))
-                {
-                    return Err(err(
-                        "frame starting from current row cannot have preceding rows",
-                        end_at,
-                    ));
-                }
-                if matches!(start, FrameBound::OffsetFollowing(_))
-                    && matches!(end, FrameBound::OffsetPreceding(_) | FrameBound::CurrentRow)
-                {
-                    return Err(err(
-                        "frame starting from following row cannot have preceding rows",
-                        end_at,
-                    ));
-                }
-            }
+        if end == Some(FrameBound::UnboundedPreceding) {
+            return Err(err("frame end cannot be UNBOUNDED PRECEDING", end_at));
         }
         let offsets: Vec<Handle<FlatExpr>> = [Some(start), end]
             .into_iter()
@@ -17268,6 +17308,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 }
 
+/// One element of an indirection chain, from any of the AST forms that
+/// hold one.
+#[derive(Clone, Copy)]
+enum IndirPart {
+    Field(Handle<pgtk_sql::ast::shared::expr::FlatIndirectionField>),
+    Subscript(Handle<FlatBracketSubscript>),
+    Star,
+}
+
 /// The two operand handles of a fixed-spelling operator variant: `(left,
 /// right)` for infix, `(None, operand)` for prefix; `None` for anything
 /// else.
@@ -17291,7 +17340,6 @@ fn fixed_operands(node: &FlatExpr) -> Option<(Option<Handle<FlatExpr>>, Handle<F
         | LikeOpI(a, b)
         | LikeOpNeg(a, b)
         | LikeOp(a, b)
-        | Overlaps(a, b)
         | RecordLte(a, b)
         | RecordGte(a, b)
         | RecordNeq(a, b)

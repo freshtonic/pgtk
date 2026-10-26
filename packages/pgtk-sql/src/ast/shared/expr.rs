@@ -20,29 +20,17 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Required closing delimiter for structurally parenthesized SQL forms.
+    /// Required closing delimiter for structurally parenthesized SQL forms,
+    /// the pair of [`ParenthesizedOpen`].
     ///
-    /// `RPAREN` is this rule's last token, so the rule itself says nothing
-    /// about what follows it and the lookahead substitution, which reads
-    /// `FIRST` of the rest of the rule only, cannot reach the position. The
-    /// grammar therefore names the merged kind here, the way gram.y writes
-    /// `any_with: WITH | WITH_LA` by hand (REL_17_11 gram.y 11691-11692).
-    ///
-    /// `RPAREN_SELECT_LA` is pgtk-sql's own merged kind and has no gram.y
-    /// counterpart: it marks a `)` that a set operator follows
-    /// (`crate::tokens`, `RPAREN_SELECT_LA = RPAREN before { UNION,
-    /// INTERSECT, EXCEPT }`), which is what lets a completed parenthesized
-    /// form part from a grouped set query on one token. So `(SELECT 1)` of
-    /// `(SELECT 1) UNION SELECT 2` closes through the merged arm and
-    /// `(SELECT 1)` alone closes through the plain one. Both arms render `)`:
-    /// a merged kind is the same record read differently, and keeps the
-    /// source token's spelling and span.
+    /// It is a rule of its own, not a fixed `RPAREN` of each form, so that a
+    /// form can name it as a field. A `)` before a set operator needs no
+    /// other kind here: gram.y has no lookahead token for it, and neither has
+    /// pgtk-sql (`crate::tokens`, issue #74).
     #[derive(Debug)]
     pub enum ParenthesizedClose {
         #[tok(RPAREN)]
         Value,
-        #[tok(RPAREN_SELECT_LA)]
-        MergedSelect,
     }
 }
 
@@ -116,16 +104,12 @@ recursa::ast_node! {
     /// `RPAREN` is this rule's last token, so the rule says nothing about what
     /// follows it and lookahead substitution, which reads `FIRST` of the rest
     /// of the rule only, cannot reach the position. A type-modifier list ends
-    /// a type name, and a type name stands before both of the records that
-    /// make one of pgtk-sql's own merged kinds (`crate::tokens`), so the rule
-    /// names them here, the way gram.y writes `any_with: WITH | WITH_LA` by
-    /// hand (REL_17_11 gram.y 11691-11692):
-    ///
-    /// - `RPAREN_TYPED_LA` for the string of a function-style typed literal,
-    ///   `numeric(10, 2) '1234.50'` and `timestamp(3) '2000-01-01'`
-    ///   (gram.y `AexprConst: ConstTypename Sconst`, REL_17_11 15403);
-    /// - `RPAREN_SELECT_LA` for a set operator after the last target of a
-    ///   query, `SELECT 1::numeric(3) UNION SELECT 2`.
+    /// a type name, and a type name stands before the string of a
+    /// function-style typed literal, which makes pgtk-sql's own merged kind
+    /// `RPAREN_TYPED_LA` (`crate::tokens`): `numeric(10, 2) '1234.50'` and
+    /// `timestamp(3) '2000-01-01'` (gram.y `AexprConst: ConstTypename Sconst`,
+    /// REL_17_11 15403). So the rule names it here, the way gram.y writes
+    /// `any_with: WITH | WITH_LA` by hand (REL_17_11 gram.y 11691-11692).
     ///
     /// Each arm renders `)`: a merged kind is the same record read
     /// differently, and keeps the source token's spelling and span.
@@ -135,8 +119,6 @@ recursa::ast_node! {
         Value,
         #[tok(RPAREN_TYPED_LA)]
         MergedTyped,
-        #[tok(RPAREN_SELECT_LA)]
-        MergedSelect,
     }
 }
 
@@ -527,30 +509,100 @@ recursa::ast_node! {
     /// admitted every keyword would put `UNION`, `EXCEPT`, `INTERSECT` and every
     /// other reserved word into that selector and make a targetless `SELECT`
     /// unusable as a set-operation operand (issue #55).
+    ///
+    /// The forms after the first `.` follow gram.y and the checks of its
+    /// actions (issues #55 and #59):
+    ///
+    /// - `check_indirection` refuses a `.*` that is not the last element
+    ///   ("improper use of *", REL_17_11 gram.y 18779), so a star ends the
+    ///   chain ([`QualifiedPath::Star`], [`QualifiedTail::Star`] and
+    ///   [`Indirection`]).
+    /// - `check_func_name` refuses a function name with a `.*` or a subscript
+    ///   (a syntax error, REL_17_11 gram.y 18759), so a call or a typed
+    ///   literal follows the dotted attribute names only
+    ///   ([`QualifiedTail::Call`] and [`QualifiedTail::TypedLiteral`]).
     #[derive(Debug)]
     pub struct QualifiedRef {
         pub table: crate::tokens::ColId,
-        /// Requiring the first indirection here keeps this branch disjoint from
-        /// [`ColumnRef`], while putting fields, wildcards, and subscripts in one
-        /// chain mirrors gram.y's `columnref: ColId indirection` for references
-        /// of any supported qualification depth.
-        pub first: QualifiedRefFirstIndirection,
-        pub rest: zero_or_many!(ParenthesizedIndirection),
-        /// A dotted function name and a dotted column reference share the same
-        /// unbounded prefix. Owning the optional call tail here lets the parser
-        /// decide at the first non-indirection token instead of trying to peek
-        /// past an arbitrary number of name parts.
-        pub call: Option<FunctionCallTail>,
+        pub path: QualifiedPath,
+    }
+}
+
+impl<'input> QualifiedRef<'input> {
+    /// The call or the typed literal of a dotted function name: `s.f(x)`,
+    /// `s.t(10) 'v'`. `None` for a column reference.
+    pub fn call(&self) -> Option<&FunctionCallTail<'input>> {
+        match &self.path {
+            QualifiedPath::Attrs(attrs) => match &attrs.tail {
+                Some(QualifiedTail::Call(call)) => Some(call),
+                _ => None,
+            },
+            QualifiedPath::Star(_) => None,
+        }
     }
 }
 
 recursa::ast_node! {
-    /// The first indirection of a qualified reference must start with a dot.
-    /// Later elements may also be subscripts.
+    /// What follows the `ColId` of a [`QualifiedRef`]: `.*`, or one or more
+    /// `.attr_name` and an optional tail.
     #[derive(Debug)]
-    pub enum QualifiedRefFirstIndirection {
-        Field(IndirectionField),
+    pub enum QualifiedPath {
+        /// `t.*`.
         Star(ParenthesizedDotStar),
+        /// `t.a`, `s.t.a[1]`, `s.f(x)`.
+        Attrs(boxed!(QualifiedAttrs)),
+    }
+}
+
+recursa::ast_node! {
+    /// The dotted attribute names of a [`QualifiedRef`] and what follows them.
+    #[derive(Debug)]
+    pub struct QualifiedAttrs {
+        pub attrs: one_or_many!(IndirectionField),
+        pub tail: Option<QualifiedTail>,
+    }
+}
+
+recursa::ast_node! {
+    /// What follows the dotted attribute names of a [`QualifiedRef`].
+    ///
+    /// Only the dotted names make a gram.y `func_name`, so only this position
+    /// takes a call or a typed literal.
+    #[derive(Debug)]
+    pub enum QualifiedTail {
+        /// `func_name '(' ...`: a call, or the typed literal
+        /// `func_name '(' func_arg_list ')' Sconst`.
+        Call(FunctionCallTail),
+        /// gram.y `AexprConst: func_name Sconst` (REL_17_11 gram.y 17223):
+        /// `pg_catalog.int4 '1'`.
+        TypedLiteral(literal::StringLit),
+        /// `t.a.*`, the last element of the chain.
+        Star(ParenthesizedDotStar),
+        /// `t.a[1]` and the elements after the subscript.
+        Subscripted(SubscriptedIndirection),
+    }
+}
+
+recursa::ast_node! {
+    /// A subscript and the indirection elements after it.
+    #[derive(Debug)]
+    pub struct SubscriptedIndirection {
+        pub subscript: BracketSubscript,
+        pub rest: Option<Indirection>,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `indirection` with the rule of `check_indirection`: a `.*` is
+    /// the last element only (REL_17_11 gram.y 18779).
+    #[derive(Debug)]
+    pub enum Indirection {
+        /// `.*` alone.
+        Star(ParenthesizedDotStar),
+        /// Fields and subscripts.
+        Elements(one_or_many!(IndirectionEl)),
+        /// Fields and subscripts, then `.*`.
+        ElementsStar(one_or_many!(IndirectionEl), ParenthesizedDotStar),
     }
 }
 
@@ -663,15 +715,121 @@ recursa::ast_node! {
     }
 }
 
+// The frame extent. gram.y `frame_extent` (REL_17_11 gram.y 16327-16383)
+// takes `frame_bound` or `BETWEEN frame_bound AND frame_bound`, and its
+// actions refuse five combinations with ereport (issue #55):
+//
+// - "frame start cannot be UNBOUNDED FOLLOWING" (16335, 16359);
+// - "frame starting from following row cannot end with current row", for a
+//   single `offset FOLLOWING` (16340);
+// - "frame end cannot be UNBOUNDED PRECEDING" (16364);
+// - "frame starting from current row cannot have preceding rows" (16370);
+// - "frame starting from following row cannot have preceding rows", for an
+//   end of `offset PRECEDING` or `CURRENT ROW` after `offset FOLLOWING`
+//   (16377).
+//
+// Each start bound is complete before `AND`, so the shapes below admit only
+// the combinations that the actions keep, the end bound of each start with its
+// own type, except two. A start of `UNBOUNDED FOLLOWING` and an end of
+// `UNBOUNDED PRECEDING` stay, because the keyword must shift there as in
+// gram.y (`%nonassoc UNBOUNDED`): without the arm, `unbounded` reduces as a
+// column name and the bound reads as an offset. Their checks need a declared
+// rejection of one variant, which recursa does not have.
+
 recursa::ast_node! {
     /// `unit BETWEEN start AND end [EXCLUDE ...]`
     #[derive(Debug)]
     pub struct WindowFrameBetween {
         #[tok(BETWEEN, this)]
-        pub start: WindowFrameBound,
-        #[tok(AND, this)]
-        pub end: WindowFrameBound,
+        pub extent: WindowFrameBetweenExtent,
         pub exclude: Option<WindowFrameExclude>,
+    }
+}
+
+recursa::ast_node! {
+    /// `start AND end` of a `BETWEEN` frame, one variant for each kind of
+    /// start bound. `UNBOUNDED FOLLOWING` is no start bound.
+    #[derive(Debug)]
+    pub enum WindowFrameBetweenExtent {
+        /// `UNBOUNDED FOLLOWING AND end`, which the gram.y action refuses:
+        /// "frame start cannot be UNBOUNDED FOLLOWING". The arm stays so that
+        /// the keyword shifts (see the note above).
+        FromUnboundedFollowing(#[tok(UNBOUNDED, FOLLOWING, AND, this)] WindowFrameEnd),
+        /// `UNBOUNDED PRECEDING AND end`.
+        FromUnboundedPreceding(#[tok(UNBOUNDED, PRECEDING, AND, this)] WindowFrameEnd),
+        /// `offset PRECEDING AND end`.
+        FromPreceding(WindowFrameFromPreceding),
+        /// `CURRENT ROW AND end`, where the end is no `offset PRECEDING`.
+        FromCurrentRow(#[tok(CURRENT, ROW, AND, this)] WindowFrameEndAfterCurrentRow),
+        /// `offset FOLLOWING AND end`, where the end follows too.
+        FromFollowing(WindowFrameFromFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// `offset PRECEDING AND end`.
+    #[derive(Debug)]
+    pub struct WindowFrameFromPreceding {
+        pub start: WindowFramePreceding,
+        #[tok(AND, this)]
+        pub end: WindowFrameEnd,
+    }
+}
+
+recursa::ast_node! {
+    /// `offset FOLLOWING AND end`.
+    #[derive(Debug)]
+    pub struct WindowFrameFromFollowing {
+        pub start: WindowFrameFollowing,
+        #[tok(AND, this)]
+        pub end: WindowFrameEndAfterFollowing,
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after an `UNBOUNDED PRECEDING` or an `offset PRECEDING`
+    /// start: each bound. The gram.y action refuses `UNBOUNDED PRECEDING`
+    /// ("frame end cannot be UNBOUNDED PRECEDING"); the arm stays so that the
+    /// keyword shifts (see the note above `WindowFrameBetween`).
+    ///
+    /// `UNBOUNDED` is an unreserved keyword, so `unbounded PRECEDING` is also
+    /// the spelling of an offset with a column named `unbounded`. gram.y
+    /// settles it with `%nonassoc UNBOUNDED` one level under `PRECEDING` and
+    /// `FOLLOWING` (gram.y:861-868, 886), which `crate::tokens` declares the
+    /// same way: the keyword shifts. A quoted `"unbounded" PRECEDING` is an
+    /// offset.
+    #[derive(Debug)]
+    pub enum WindowFrameEnd {
+        #[tok(CURRENT, ROW)]
+        CurrentRow,
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Preceding(WindowFramePreceding),
+        Following(WindowFrameFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after a `CURRENT ROW` start: no `offset PRECEDING`.
+    #[derive(Debug)]
+    pub enum WindowFrameEndAfterCurrentRow {
+        #[tok(CURRENT, ROW)]
+        CurrentRow,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Following(WindowFrameFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after an `offset FOLLOWING` start: a bound that follows.
+    #[derive(Debug)]
+    pub enum WindowFrameEndAfterFollowing {
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Following(WindowFrameFollowing),
     }
 }
 
@@ -679,46 +837,39 @@ recursa::ast_node! {
     /// `unit start [EXCLUDE ...]`
     #[derive(Debug)]
     pub struct WindowFrameSingle {
-        pub bound: WindowFrameBound,
+        pub bound: WindowFrameSingleBound,
         pub exclude: Option<WindowFrameExclude>,
     }
 }
 
 recursa::ast_node! {
-    /// A single frame bound: gram.y `frame_bound` (gram.y:16391-16427),
-    /// `UNBOUNDED PRECEDING | UNBOUNDED FOLLOWING | CURRENT ROW | a_expr
-    /// PRECEDING | a_expr FOLLOWING`.
-    ///
-    /// `UNBOUNDED` is an unreserved keyword, so `unbounded PRECEDING` is also
-    /// the spelling of `a_expr PRECEDING` with a column named `unbounded`.
-    /// gram.y settles it with `%nonassoc UNBOUNDED` one level under
-    /// `PRECEDING` and `FOLLOWING` (gram.y:861-868, 886), which `crate::tokens`
-    /// declares the same way: the keyword shifts, and the bound is always
-    /// `Unbounded`. A quoted `"unbounded" PRECEDING` is an `Offset`.
+    /// The bound of a frame without `BETWEEN`, which also ends the frame at
+    /// the current row: no bound that follows.
     #[derive(Debug)]
-    pub enum WindowFrameBound {
+    pub enum WindowFrameSingleBound {
         #[tok(CURRENT, ROW)]
         CurrentRow,
-        Unbounded(#[tok(UNBOUNDED, this)] WindowFrameDirection),
-        Offset(WindowFrameOffset),
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
+        Preceding(WindowFramePreceding),
     }
 }
 
 recursa::ast_node! {
+    /// gram.y `frame_bound: a_expr PRECEDING`.
     #[derive(Debug)]
-    pub struct WindowFrameOffset {
-        pub expr: boxed!(Expr),
-        pub direction: WindowFrameDirection,
+    pub struct WindowFramePreceding {
+        #[tok(this, PRECEDING)]
+        pub offset: boxed!(Expr),
     }
 }
 
 recursa::ast_node! {
+    /// gram.y `frame_bound: a_expr FOLLOWING`.
     #[derive(Debug)]
-    pub enum WindowFrameDirection {
-        #[tok(PRECEDING)]
-        Preceding,
-        #[tok(FOLLOWING)]
-        Following,
+    pub struct WindowFrameFollowing {
+        #[tok(this, FOLLOWING)]
+        pub offset: boxed!(Expr),
     }
 }
 
@@ -843,8 +994,8 @@ recursa::ast_node! {
     #[parse(lr_conflict(
     action = reduce,
     against = ast::shared::expr::FunctionArgumentList,
-    lookahead = { RPAREN, RPAREN_SELECT_LA },
-    expect = 2
+    lookahead = { RPAREN },
+    expect = 1
 ))]
     pub struct FunctionOrdinaryArguments {
         #[sep(COMMA)]
@@ -1016,25 +1167,22 @@ recursa::ast_node! {
     /// `RPAREN` is this rule's last token, so the rule itself says nothing
     /// about what follows it and the lookahead substitution, which reads
     /// `FIRST` of the rest of the rule only, cannot reach the position. The
-    /// grammar therefore names both merged kinds here, the way gram.y writes
+    /// grammar therefore names the merged kind here, the way gram.y writes
     /// `any_with: WITH | WITH_LA` by hand (REL_17_11 gram.y 11691-11692).
     ///
-    /// Both are pgtk-sql's own merged kinds and have no gram.y counterpart
-    /// (`crate::tokens`): `RPAREN_TYPED_LA` marks the `)` of
+    /// `RPAREN_TYPED_LA` is pgtk-sql's own merged kind and has no gram.y
+    /// counterpart (`crate::tokens`). It marks the `)` of
     /// [`FunctionTypedLiteralTail`], where a string payload follows and
     /// gram.y's `AexprConst: func_name '(' func_arg_list opt_sort_clause ')'
-    /// Sconst` parts from `func_application`; `RPAREN_SELECT_LA` marks a `)`
-    /// that a set operator follows, as in `SELECT f(x) UNION SELECT 1`. Each
-    /// arm renders `)`: a merged kind is the same record read differently, and
-    /// keeps the source token's spelling and span.
+    /// Sconst` parts from `func_application`. Each arm renders `)`: a merged
+    /// kind is the same record read differently, and keeps the source token's
+    /// spelling and span.
     #[derive(Debug)]
     pub enum FunctionCallClose {
         #[tok(RPAREN)]
         Value,
         #[tok(RPAREN_TYPED_LA)]
         MergedTyped,
-        #[tok(RPAREN_SELECT_LA)]
-        MergedSelect,
     }
 }
 
@@ -1145,23 +1293,34 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Content inside parentheses: a non-empty, comma-separated expression
-    /// list. It is gram.y `c_expr: '(' a_expr ')' opt_indirection` (gram.y
-    /// 15378) and `row: '(' expr_list ')'` (gram.y 16585) sharing their
-    /// delimiters.
+    /// gram.y `implicit_row: '(' expr_list ',' a_expr ')'` (REL_17_11 gram.y
+    /// 16466): a row of two or more values without `ROW`. It takes no
+    /// indirection: `(a, b).x` is a syntax error, because only `'(' a_expr ')'
+    /// opt_indirection` has one (gram.y 15378).
     ///
-    /// A parenthesized query is not a variant here. gram.y is "careful to use
-    /// `select_with_parens`, never `'(' SelectStmt ')'`, in the expression
-    /// grammar" (gram.y 12658-12661), and [`Expr::SubSelect`] mirrors that.
-    /// A query arm here shared one `(`-led production with
-    /// `select_with_parens` and left a decision on `)` that two scoped
-    /// resolutions had to answer; the factoring leaves no decision there.
-    ///
-    /// It stays an enum of one variant so a consumer that matches on it keeps
-    /// the shape it had.
+    /// The fields hold `a_expr ',' expr_list`, which is the same language as
+    /// gram.y's `expr_list ',' a_expr`, so that the row is the first value
+    /// and a non-empty list of the rest.
     #[derive(Debug)]
-    pub enum ParenContent {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+    pub struct ImplicitRow {
+        pub open: ParenthesizedOpen,
+        #[tok(this, COMMA)]
+        pub first: boxed!(Expr),
+        #[sep(COMMA)]
+        pub rest: one_or_many!(Expr),
+        pub close: ParenthesizedClose,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `row` (REL_17_11 gram.y 16457-16460), the operand of `a_expr:
+    /// row OVERLAPS row`: an explicit row (`ROW(...)`) or an implicit row
+    /// (`(a, b)`). A parenthesized value that is not a row, such as `(a)`,
+    /// is no operand of `OVERLAPS`.
+    #[derive(Debug)]
+    pub enum Row {
+        Explicit(RowExpr),
+        Implicit(ImplicitRow),
     }
 }
 
@@ -1175,35 +1334,34 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One non-star element in the indirection chain following parenthesized
-    /// content.
-    #[derive(Debug)]
-    pub enum ParenthesizedIndirection {
-        Field(IndirectionField),
-        Subscript(BracketSubscript),
-        Star(ParenthesizedDotStar),
-    }
-}
-
-recursa::ast_node! {
     /// gram.y:15403 `select_with_parens indirection`: a sub-select with a
     /// field, wildcard or subscript chain applied to its result.
     #[derive(Debug)]
     pub struct SubSelectIndirectionExpr {
         pub query: crate::ast::dml::values::SelectWithParens,
-        pub indirection: one_or_many!(ParenthesizedIndirection),
+        /// gram.y `indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #55).
+        pub indirection: Indirection,
     }
 }
 
 recursa::ast_node! {
-    /// Parenthesized scalar, row, or subquery content, optionally followed by an
-    /// arbitrary field, wildcard, or subscript indirection chain.
+    /// gram.y `c_expr: '(' a_expr ')' opt_indirection` (REL_17_11 gram.y
+    /// 15378): one parenthesized value, optionally followed by a field,
+    /// wildcard or subscript indirection chain. A row of two or more values
+    /// is an [`ImplicitRow`].
+    ///
+    /// A parenthesized query is not this form. gram.y is "careful to use
+    /// `select_with_parens`, never `'(' SelectStmt ')'`, in the expression
+    /// grammar" (gram.y 12658-12661), and [`Expr::SubSelect`] mirrors that.
     #[derive(Debug)]
     pub struct ParenthesizedExpr {
         pub open: ParenthesizedOpen,
-        pub content: ParenContent,
+        pub expr: boxed!(Expr),
         pub close: ParenthesizedClose,
-        pub indirection: zero_or_many!(ParenthesizedIndirection),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #55).
+        pub indirection: Option<Indirection>,
     }
 }
 
@@ -3599,12 +3757,34 @@ recursa::ast_node! {
 // (REL_17_11 gram.y 16014-16107, `func_expr_common_subexpr`).
 #[cfg(feature = "since-pg17")]
 recursa::ast_node! {
-    /// `{WITH [CONDITIONAL|UNCONDITIONAL] | WITHOUT} [ARRAY] WRAPPER` — the
-    /// `JSON_QUERY` array-wrapper clause.
+    /// `WITH [CONDITIONAL|UNCONDITIONAL] [ARRAY] WRAPPER` or `WITHOUT [ARRAY]
+    /// WRAPPER` — the `JSON_QUERY` array-wrapper clause, gram.y
+    /// `json_wrapper_behavior` (REL_17_11 gram.y 16854-16864). `CONDITIONAL`
+    /// and `UNCONDITIONAL` follow `WITH` only.
     #[derive(Debug)]
-    pub struct JsonWrapper {
-        pub with_or_without: WithOrWithout,
+    pub enum JsonWrapper {
+        With(#[tok(WITH, this)] JsonWrapperWith),
+        Without(#[tok(WITHOUT, this)] JsonWrapperArray),
+    }
+}
+
+// Added in 17: see `JsonWrapper`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `[CONDITIONAL|UNCONDITIONAL] [ARRAY] WRAPPER` after `WITH`.
+    #[derive(Debug)]
+    pub struct JsonWrapperWith {
         pub behavior: Option<WrapperBehavior>,
+        pub array: JsonWrapperArray,
+    }
+}
+
+// Added in 17: see `JsonWrapper`.
+#[cfg(feature = "since-pg17")]
+recursa::ast_node! {
+    /// `[ARRAY] WRAPPER`.
+    #[derive(Debug)]
+    pub struct JsonWrapperArray {
         #[tok(this, WRAPPER)]
         #[presence(ARRAY)]
         pub array: bool,
@@ -4201,8 +4381,9 @@ recursa::ast_node! {
         /// `expr ~~ pattern` — operator-form `LIKE` (gram.y 14860).
         LikeOp(boxed!(Self), #[tok(TILDETILDE, this)] boxed!(Self)),
         /// `(start, end) OVERLAPS (start, end)` — SQL time-period overlap test.
-        /// Each operand is an ordinary parenthesized expression to the parser.
-        Overlaps(boxed!(Self), #[tok(OVERLAPS, this)] boxed!(Self)),
+        /// gram.y `a_expr: row OVERLAPS row` (REL_17_11 gram.y 14997): each
+        /// operand is a [`Row`], not an expression.
+        Overlaps(boxed!(Row), #[tok(OVERLAPS, this)] boxed!(Row)),
         /// Record comparison operators: `expr *= expr`, `*<>`, `*<`, `*<=`,
         /// `*>`, `*>=` — compare ROW/composite values field by field.
         RecordLte(boxed!(Self), #[tok(STARLTE, this)] boxed!(Self)),
@@ -4421,6 +4602,8 @@ recursa::ast_node! {
         Array(ArrayExpr),
         /// ROW constructor: `ROW(...)`
         RowExpr(RowExpr),
+        /// gram.y `c_expr: implicit_row`: `(a, b)`.
+        ImplicitRow(ImplicitRow),
         /// `GROUPING(...)` grouping-set membership function. Declared before
         /// `ColumnRef`, which would otherwise claim the bare `GROUPING` keyword
         /// and leave the argument list unparsed.
@@ -4756,6 +4939,7 @@ recursa::ast_node! {
         Exists,
         Array,
         RowExpr,
+        ImplicitRow,
         Grouping,
         Coalesce,
         Greatest,
@@ -4852,6 +5036,7 @@ recursa::ast_node! {
         Exists,
         Array,
         RowExpr,
+        ImplicitRow,
         Grouping,
         Coalesce,
         Greatest,

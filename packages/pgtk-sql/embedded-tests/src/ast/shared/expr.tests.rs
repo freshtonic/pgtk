@@ -3,8 +3,8 @@ mod tests {
     use crate::ast::shared::expr::{
         CastType, CastTypeHead, ColumnRef, Expr,
         FunctionCallBody,
-        FunctionCallTail, ParenContent, ParenthesizedDotStar, ParenthesizedExpr,
-        ParenthesizedIndirection, StringLitSeq0, TypeName,
+        FunctionCallTail, ImplicitRow, ParenthesizedDotStar, ParenthesizedExpr,
+        Indirection, IndirectionEl, StringLitSeq0, TypeName,
     };
     // Added in 16: research, PostgreSQL 16, "Queries and expressions".
     #[cfg(feature = "since-pg16")]
@@ -2036,10 +2036,10 @@ mod tests {
         assert!(matches!(
             expr,
             Expr::Parenthesized(ParenthesizedExpr {
-                content: ParenContent::Exprs(expressions),
+                expr,
                 indirection,
                 ..
-            }) if expressions.len() == 1 && indirection.is_empty()
+            }) if matches!(**expr, Expr::IntegerLit(_)) && indirection.is_none()
         ));
         assert!(input.is_eof());
     }
@@ -2051,13 +2051,11 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
+        // gram.y `implicit_row: '(' expr_list ',' a_expr ')'`, which takes no
+        // indirection.
         assert!(matches!(
             expr,
-            Expr::Parenthesized(ParenthesizedExpr {
-                content: ParenContent::Exprs(expressions),
-                indirection,
-                ..
-            }) if expressions.len() == 2 && indirection.is_empty()
+            Expr::ImplicitRow(ImplicitRow { rest, .. }) if rest.len() == 1
         ));
         assert!(input.is_eof());
     }
@@ -2075,8 +2073,8 @@ mod tests {
                 indirection,
                 ..
             }) if matches!(
-                indirection.as_slice(),
-                [ParenthesizedIndirection::Star(ParenthesizedDotStar::Value)]
+                indirection,
+                Some(Indirection::Star(ParenthesizedDotStar::Value))
             )
         ));
         assert!(input.is_eof());
@@ -2095,8 +2093,9 @@ mod tests {
                 indirection,
                 ..
             }) if matches!(
-                indirection.as_slice(),
-                [ParenthesizedIndirection::Field(_)]
+                indirection,
+                Some(Indirection::Elements(elements))
+                    if matches!(elements.as_slice(), [IndirectionEl::Field(_)])
             )
         ));
         assert!(input.is_eof());
@@ -2116,12 +2115,12 @@ mod tests {
                 ..
             })
                 if matches!(
-                    indirection.as_slice(),
-                    [
-                        ParenthesizedIndirection::Field(_),
-                        ParenthesizedIndirection::Field(_),
-                        ParenthesizedIndirection::Star(ParenthesizedDotStar::Value),
-                    ]
+                    indirection,
+                    Some(Indirection::ElementsStar(elements, ParenthesizedDotStar::Value))
+                        if matches!(
+                            elements.as_slice(),
+                            [IndirectionEl::Field(_), IndirectionEl::Field(_)]
+                        )
                 )
         ));
         assert!(input.is_eof());
@@ -2140,14 +2139,17 @@ mod tests {
                 indirection,
                 ..
             }) if matches!(
-                indirection.as_slice(),
-                [
-                    ParenthesizedIndirection::Field(_),
-                    ParenthesizedIndirection::Subscript(_),
-                    ParenthesizedIndirection::Field(_),
-                    ParenthesizedIndirection::Subscript(_),
-                    ParenthesizedIndirection::Star(ParenthesizedDotStar::Value),
-                ]
+                indirection,
+                Some(Indirection::ElementsStar(elements, ParenthesizedDotStar::Value))
+                    if matches!(
+                        elements.as_slice(),
+                        [
+                            IndirectionEl::Field(_),
+                            IndirectionEl::Subscript(_),
+                            IndirectionEl::Field(_),
+                            IndirectionEl::Subscript(_),
+                        ]
+                    )
             )
         ));
         assert!(input.is_eof());
@@ -2177,8 +2179,9 @@ mod tests {
                 indirection,
                 ..
             }) if matches!(
-                indirection.as_slice(),
-                [ParenthesizedIndirection::Field(_)]
+                indirection,
+                Some(Indirection::Elements(elements))
+                    if matches!(elements.as_slice(), [IndirectionEl::Field(_)])
             )
         ));
         assert!(input.is_eof());
@@ -4102,7 +4105,7 @@ mod tests {
         let Expr::QualRef(qualified) = parsed.ast() else {
             panic!("expected QualRef, got {:?}", parsed.ast());
         };
-        assert!(qualified.call.is_some());
+        assert!(qualified.call().is_some());
     }
 
     /// gram.y:14844 `a_expr qual_Op a_expr %prec Op` with `qual_Op:
@@ -4333,7 +4336,7 @@ mod tests {
             let Expr::QualRef(qualified) = parsed.ast() else {
                 panic!("expected QualRef for {src:?}, got {:?}", parsed.ast());
             };
-            assert!(qualified.call.is_some(), "{src:?}");
+            assert!(qualified.call().is_some(), "{src:?}");
         }
     }
 
