@@ -1371,6 +1371,29 @@ mod tests {
     }
 
     #[test]
+    fn position_haystack_is_a_restricted_expression_too() {
+        // gram.y `position_list: b_expr IN_P b_expr`: the haystack refuses the
+        // a_expr-only forms as the needle does, and takes them in parentheses
+        // (issue #60).
+        for src in [
+            "POSITION(1 IN NOT TRUE)",
+            "POSITION(1 IN 2 NOTNULL)",
+            "POSITION(1 IN 2 IS TRUE)",
+        ] {
+            let lexed = crate::lex(src);
+            assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
+            let mut input = lexed.input();
+            let parsed = Expr::parse(&mut input);
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "unparenthesized a_expr-only haystack parsed: {src:?}",
+            );
+        }
+        parse_expr_classified("POSITION(1 IN (NOT TRUE))").ast();
+        parse_expr_classified("POSITION(1 IN 2 + 3)").ast();
+    }
+
+    #[test]
     fn parse_overlay_placing_from() {
         let lexed = crate::lex("OVERLAY('abcdef' PLACING '45' FROM 4)");
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
