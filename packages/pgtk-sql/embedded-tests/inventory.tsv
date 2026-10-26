@@ -927,6 +927,7 @@ embedded-tests/src/ast/shared/expr.tests.rs	parse_xmlforest	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_xmlpi_basic	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_xmlpi_with_content	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	position_needle_rejects_unparenthesized_a_expr_only_extensions	false	14-
+embedded-tests/src/ast/shared/expr.tests.rs	position_haystack_is_a_restricted_expression_too	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	position_needle_uses_postgres_restricted_expression_extensions	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	positional_param_preserves_digits	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	pratt_peek_classified_covers_identifier_atoms	false	14-
@@ -959,6 +960,7 @@ embedded-tests/src/ast/shared/with_clause.tests.rs	parse_with_multiple_ctes	fals
 embedded-tests/src/ast/shared/with_clause.tests.rs	parse_with_recursive	false	14-
 embedded-tests/src/ast/shared/with_clause.tests.rs	parse_with_recursive_cte_named_recursive	false	14-
 embedded-tests/src/ast/shared/with_clause.tests.rs	parse_with_search_depth_first	false	14-
+embedded-tests/src/ast/shared/with_clause.tests.rs	cycle_mark_values_are_constants	false	14-
 embedded-tests/src/ast/tcl/prepared.tests.rs	deallocate_all_is_modelled	false	14-
 embedded-tests/src/ast/tcl/prepared.tests.rs	deallocate_name_is_modelled	false	14-
 embedded-tests/src/ast/tcl/prepared.tests.rs	deallocate_prepare_name_keeps_prepare	false	14-

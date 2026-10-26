@@ -113,4 +113,29 @@ mod tests {
         assert!(stmt.with_clause.ctes.first().cycle.is_some());
         assert!(input.is_eof());
     }
+
+    #[test]
+    fn cycle_mark_values_are_constants() {
+        // gram.y `opt_cycle_clause: ... SET ColId TO AexprConst DEFAULT
+        // AexprConst USING ColId` (REL_17_11 12944).
+        let cycle = |values: &str| {
+            format!(
+                "WITH RECURSIVE t(a) AS (SELECT 1) CYCLE a SET m {values} USING p SELECT 1"
+            )
+        };
+        for values in ["TO 'Y' DEFAULT 'N'", "TO TRUE DEFAULT FALSE", "TO 1 DEFAULT 0"] {
+            let sql = cycle(values);
+            let lexed = crate::lex(&sql);
+            let mut input = lexed.input();
+            WithStatement::parse(&mut input).unwrap_or_else(|error| panic!("{sql}: {error}"));
+            assert!(input.is_eof(), "{sql}");
+        }
+        for values in ["TO XMLELEMENT(NAME x) DEFAULT 1", "TO 1 DEFAULT a + 1", "TO -1 DEFAULT 0"] {
+            let sql = cycle(values);
+            let lexed = crate::lex(&sql);
+            let mut input = lexed.input();
+            let parsed = WithStatement::parse(&mut input);
+            assert!(parsed.is_err() || !input.is_eof(), "a non-constant mark parsed: {sql}");
+        }
+    }
 }

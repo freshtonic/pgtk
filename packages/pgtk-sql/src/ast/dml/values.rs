@@ -59,6 +59,7 @@ recursa::ast_node! {
     /// `WithStatement`, because there the CTE list is also the prefix of
     /// `INSERT`, `UPDATE`, `DELETE` and `MERGE`.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::query_with, flat = crate::ast::validation::query_with_flat)]
     pub struct Subquery {
         pub with: Option<crate::ast::shared::with_clause::WithClause>,
         pub body: QueryBody,
@@ -72,6 +73,7 @@ recursa::ast_node! {
     /// chain and belong to no `simple_select` member, so
     /// `SELECT 1 UNION SELECT 2 ORDER BY 1` sorts the union.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::query_options, flat = crate::ast::validation::query_options_flat)]
     pub struct QueryBody {
         pub clause: SelectClause,
         #[pretty(break_before = soft)]

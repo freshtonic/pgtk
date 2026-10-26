@@ -915,16 +915,15 @@ mod tests {
     /// production for every argument shape, so an ordered, `DISTINCT` or
     /// `VARIADIC` argument list before `WITHIN GROUP` is grammatical and only
     /// parse analysis rejects it (`cannot use multiple ORDER BY clauses with
-    /// WITHIN GROUP`). A typed literal still admits a named argument, which
-    /// gram.y rejects in a rule action. Its semantically rejected inner
-    /// `ORDER BY` is excluded here because pgtk-sql has no rule-action phase.
+    /// WITHIN GROUP`). A typed literal refuses a named argument, as the gram.y
+    /// action does (`crate::ast::validation`), and its inner `ORDER BY` is
+    /// excluded by the grammar.
     #[test]
     fn accept_function_applications_gram_y_admits() {
         for src in [
             "f(1 ORDER BY 1) WITHIN GROUP (ORDER BY 1)",
             "f(DISTINCT 1) WITHIN GROUP (ORDER BY 1)",
             "f(VARIADIC xs) WITHIN GROUP (ORDER BY 1)",
-            "mytype(n => 1) 'x'",
         ] {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
@@ -1368,6 +1367,29 @@ mod tests {
                 "unparenthesized a_expr-only needle extension parsed: {src:?}",
             );
         }
+    }
+
+    #[test]
+    fn position_haystack_is_a_restricted_expression_too() {
+        // gram.y `position_list: b_expr IN_P b_expr`: the haystack refuses the
+        // a_expr-only forms as the needle does, and takes them in parentheses
+        // (issue #60).
+        for src in [
+            "POSITION(1 IN NOT TRUE)",
+            "POSITION(1 IN 2 NOTNULL)",
+            "POSITION(1 IN 2 IS TRUE)",
+        ] {
+            let lexed = crate::lex(src);
+            assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
+            let mut input = lexed.input();
+            let parsed = Expr::parse(&mut input);
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "unparenthesized a_expr-only haystack parsed: {src:?}",
+            );
+        }
+        parse_expr_classified("POSITION(1 IN (NOT TRUE))").ast();
+        parse_expr_classified("POSITION(1 IN 2 + 3)").ast();
     }
 
     #[test]
