@@ -73,12 +73,15 @@ Only the token changes, not the grammar rules that take it. The token is an
 `CREATE DATABASE d OID = 3000000000`, while 15 and later take a `NumericOnly`
 and accept it. `pgtk-oracle/tests/soft_errors.rs` holds these cases.
 
-pgtk-sql lexes every integer literal to one `IntegerLit` token, whatever its
-value, so it accepts an out-of-`int32` literal where `gram.y` takes only an
-`Iconst` — for example `CREATE ROLE r SYSID 3000000000`. No frozen corpus
-statement has that shape, so the differential check cannot see it and the
-version baselines record no gap for it. Making pgtk-sql agree needs a second
-integer token kind chosen by value, which is a grammar change, not a fix.
+pgtk-sql makes the same split (issue #88). Its `NumericLit` pattern for each
+target version also takes an integer above `INT32_MAX`, in each literal form
+of that version, and wins the tie with `IntegerLit`. So each `Iconst` and
+`SignedIconst` position rejects such a literal, for example
+`CREATE ROLE r SYSID 3000000000`, and each `NumericOnly`, `FCONST` or
+expression position accepts it. No frozen corpus statement has the rejected
+shape, so the differential check cannot see it. The `strict_statement` tests
+check each position against the oracle, at the edges of the `int32` range and
+in each literal form (issue #96).
 
 ## One baseline for each target version
 

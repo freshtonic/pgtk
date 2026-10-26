@@ -1745,3 +1745,132 @@ fn each_rule_that_takes_an_sconst_takes_each_spelling() {
         "ALTER EXTENSION e UPDATE TO $$2$$",
     ]);
 }
+
+/// gram.y `Iconst` and `SignedIconst` take only an `ICONST`. scan.l makes an
+/// `ICONST` only from an integer that fits in `int32`, and an `FCONST` from a
+/// larger one (`process_integer_literal`: REL_14_24 scan.l 1305 with
+/// `strtoint`, REL_17_11 scan.l 1370 with `pg_strtoint32_safe`). A rule that
+/// takes `NumericOnly`, `FCONST` or an expression takes both. The sign is a
+/// separate token, so `-2147483648` is `'-'` and an `FCONST` (issue #96).
+#[test]
+fn an_iconst_takes_only_an_integer_that_fits_in_int32() {
+    assert_accepts(&[
+        "CREATE ROLE r SYSID 2147483647",
+        "CREATE ROLE r SYSID 0002147483647",
+        "CREATE ROLE r CONNECTION LIMIT -2147483647",
+        "ALTER ROLE r CONNECTION LIMIT 2147483647",
+        "FETCH -2147483647 FROM c",
+        "FETCH ABSOLUTE 2147483647 FROM c",
+        "MOVE RELATIVE -2147483647 IN c",
+        "MOVE FORWARD 2147483647 FROM c",
+        "MOVE BACKWARD -2147483647 FROM c",
+        "ALTER TABLE t ALTER c SET STATISTICS 2147483647",
+        "ALTER STATISTICS s SET STATISTICS -2147483647",
+        "SELECT 1::int[2147483647]",
+        "SELECT 1::int ARRAY[2147483647]",
+        "SELECT CURRENT_TIME(2147483647)",
+        "SELECT 1::char(2147483647)",
+        "SELECT 1::timestamp(2147483647)",
+        "SELECT 1::interval second(2147483647)",
+        "SELECT INTERVAL(2147483647) '1'",
+        "SET TIME ZONE INTERVAL(2147483647) '1'",
+        "CREATE TABLE p PARTITION OF q FOR VALUES WITH (MODULUS 2147483647, REMAINDER 0)",
+        "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS OPERATOR 2147483647 <",
+        "ALTER OPERATOR FAMILY f USING btree DROP FUNCTION 2147483647 (int)",
+        // `AexprConst`, `NumericOnly`, `TriggerFuncArg`, an option value and
+        // an expression take an `FCONST` too.
+        "SELECT 2147483648",
+        "SELECT -2147483648",
+        "SELECT 1 LIMIT 2147483648",
+        "SET x = -2147483648",
+        "CREATE SEQUENCE s START -2147483648",
+        "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f(2147483648)",
+        "COPY t FROM STDIN WITH (x 2147483648)",
+        "EXPLAIN (x 2147483648) SELECT 1",
+    ]);
+    assert_rejects(
+        &[
+            "CREATE ROLE r SYSID 2147483648",
+            "CREATE ROLE r SYSID 0002147483648",
+            "CREATE ROLE r CONNECTION LIMIT -2147483648",
+            "ALTER ROLE r CONNECTION LIMIT 2147483648",
+            "FETCH 2147483648 FROM c",
+            "FETCH -2147483648 FROM c",
+            "FETCH ABSOLUTE 2147483648 FROM c",
+            "MOVE RELATIVE -2147483648 IN c",
+            "MOVE FORWARD 2147483648 FROM c",
+            "MOVE BACKWARD -2147483648 FROM c",
+            "ALTER TABLE t ALTER c SET STATISTICS 2147483648",
+            "ALTER TABLE t ALTER 2147483648 SET STATISTICS 1",
+            "ALTER STATISTICS s SET STATISTICS -2147483648",
+            "SELECT 1::int[2147483648]",
+            "SELECT 1::int ARRAY[2147483648]",
+            "SELECT CURRENT_TIMESTAMP(2147483648)",
+            "SELECT LOCALTIME(2147483648)",
+            "SELECT 1::char(2147483648)",
+            "SELECT 1::float(2147483648)",
+            "SELECT 1::timestamp(2147483648)",
+            "SELECT 1::interval second(2147483648)",
+            "SELECT INTERVAL(2147483648) '1'",
+            "SET TIME ZONE INTERVAL(2147483648) '1'",
+            "CREATE TABLE p PARTITION OF q FOR VALUES WITH (MODULUS 2147483648, REMAINDER 0)",
+            "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS OPERATOR 2147483648 <",
+            "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS FUNCTION 2147483648 f(int)",
+            "ALTER OPERATOR FAMILY f USING btree DROP OPERATOR 2147483648 (int, int)",
+        ],
+        "an Iconst takes only an integer that fits in int32",
+    );
+}
+
+/// From 16 an integer can have a `0x`, `0o` or `0b` prefix and `_`
+/// separators, and scan.l applies the same `int32` limit to each form
+/// (REL_16_15 scan.l 395-410 and `process_integer_literal`; issue #96).
+#[cfg(feature = "since-pg16")]
+#[test]
+fn an_iconst_takes_each_integer_form_that_fits_in_int32() {
+    assert_accepts(&[
+        "CREATE ROLE r SYSID 0x7FFFFFFF",
+        "CREATE ROLE r SYSID 0x0_7fff_ffff",
+        "CREATE ROLE r SYSID 0o17777777777",
+        "CREATE ROLE r SYSID 0b1111111111111111111111111111111",
+        "CREATE ROLE r SYSID 2_147_483_647",
+        "CREATE ROLE r SYSID 0_002_147_483_647",
+        "CREATE ROLE r CONNECTION LIMIT -0x7FFFFFFF",
+        "SELECT 0x80000000",
+        "SELECT -0o20000000000",
+        "SELECT 1 LIMIT 0b10000000000000000000000000000000",
+        "SET x = 2_147_483_648",
+    ]);
+    assert_rejects(
+        &[
+            "CREATE ROLE r SYSID 0x80000000",
+            "CREATE ROLE r SYSID 0X0000_8000_0000",
+            "CREATE ROLE r SYSID 0o20000000000",
+            "CREATE ROLE r SYSID 0b10000000000000000000000000000000",
+            "CREATE ROLE r SYSID 2_147_483_648",
+            "CREATE ROLE r CONNECTION LIMIT -0x80000000",
+            "FETCH 0o20000000000 FROM c",
+            "SELECT 1::int[0x8000_0000]",
+        ],
+        "an Iconst takes only an integer that fits in int32",
+    );
+}
+
+/// `createdb_opt_item` takes a `SignedIconst` at 14 (REL_14_24 gram.y 10203)
+/// and a `NumericOnly` from 15 (commit 34fa0ddae5c, back-patched to 15.1).
+#[test]
+fn a_createdb_option_number_takes_a_float_from_15() {
+    assert_accepts(&[
+        "CREATE DATABASE d OID = 2147483647",
+        "ALTER DATABASE d CONNECTION LIMIT -2147483647",
+    ]);
+    let wide = [
+        "CREATE DATABASE d OID = 2147483648",
+        "ALTER DATABASE d CONNECTION LIMIT -2147483648",
+    ];
+    if cfg!(feature = "since-pg15") {
+        assert_accepts(&wide);
+    } else {
+        assert_rejects(&wide, "a createdb option number is a SignedIconst at 14");
+    }
+}
