@@ -139,8 +139,8 @@ mod tests {
     #[test]
     fn parse_json_table() {
         for src in [
-            // empty COLUMNS, ordinality, typed, EXISTS, behaviors
-            "SELECT * FROM JSON_TABLE(NULL, '$' COLUMNS ())",
+            // ordinality, typed, EXISTS, behaviors. An empty COLUMNS list is
+            // a syntax error (issue #56).
             "SELECT * FROM JSON_TABLE('[]', 'strict $.a' COLUMNS (js2 int PATH '$') ERROR ON ERROR)",
             "SELECT * FROM JSON_TABLE(jsonb '1', '$' COLUMNS \
              (id FOR ORDINALITY, c int EXISTS PATH '$.a' UNKNOWN ON ERROR))",

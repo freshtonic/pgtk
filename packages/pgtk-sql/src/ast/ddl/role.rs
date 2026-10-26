@@ -98,23 +98,17 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Parenthesized values following an identifier-spelled def-arg name.
-    /// Integer-led values are type modifiers; type-led values are aggregate
-    /// support-function argument types.
-    #[derive(Debug)]
-    pub enum DefArgNamedParameterValues {
-        TypeModifiers(#[sep(COMMA)] one_or_many!(TypeModifierArg)),
-        FuncArgs(#[sep(COMMA)] one_or_many!(CastType)),
-    }
-}
-
-recursa::ast_node! {
-    /// A factored parenthesized def-arg suffix. Factoring the delimiters lets the
-    /// LR state distinguish the first value inside them (`10` versus `int8`).
+    /// The type modifiers of an identifier-spelled def-arg type: gram.y
+    /// `opt_type_modifiers: '(' expr_list ')'` (REL_17_11 14400). The
+    /// support functions of the old `CREATE AGGREGATE` form are spelled this
+    /// way, `sfunc = f(int8, int4)`: to gram.y, `int8` is a column reference
+    /// in the `expr_list`. So `f(bit(1))` and `f(int ARRAY)` are syntax
+    /// errors (issue #59).
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct DefArgNamedParameters {
-        pub values: DefArgNamedParameterValues,
+        #[sep(COMMA)]
+        pub values: one_or_many!(Expr),
     }
 }
 
@@ -127,8 +121,7 @@ recursa::ast_node! {
     pub struct DefArgNamedType {
         pub name: FunctionTypeName,
         pub parameters: Option<DefArgNamedParameters>,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
     }
 }
 

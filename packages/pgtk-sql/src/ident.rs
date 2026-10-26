@@ -149,6 +149,15 @@ pub fn fold_role_name(raw: &str) -> Option<&'static str> {
     })
 }
 
+/// Classify an identifier spelling for the `UESCAPE` rule of
+/// `parser.c`: `"unicode"` for a `U&"..."` identifier, `"plain"` for each
+/// other spelling.
+pub fn unicode_identifier_class(raw: &str) -> Option<&'static str> {
+    let bytes = raw.as_bytes();
+    let unicode = bytes.len() > 2 && bytes[0].eq_ignore_ascii_case(&b'u') && bytes[1] == b'&';
+    Some(if unicode { "unicode" } else { "plain" })
+}
+
 /// Fold a keyword that stands in an identifier position: its lowercase
 /// spelling, which is the text `ScanKeywordLookup` hands the grammar.
 ///

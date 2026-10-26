@@ -54,7 +54,7 @@ mod tests {
         let stmt = stmt_parsed.ast();
         assert!(stmt.if_exists.is_some());
         assert!(matches!(
-            stmt.targets.first().unwrap().args,
+            stmt.targets.first().args,
             AggregateArgs::Star
         ));
         assert!(input.is_eof());

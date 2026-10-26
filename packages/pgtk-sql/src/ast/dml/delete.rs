@@ -1,5 +1,5 @@
 /// DELETE FROM statement AST.
-use crate::ast::dml::select::WhereClause;
+use crate::ast::dml::select::WhereOrCurrentClause;
 use crate::ast::dml::update::ReturningClause;
 
 recursa::ast_node! {
@@ -79,7 +79,7 @@ recursa::ast_node! {
         #[pretty(break_before = soft)]
         pub using_clause: Option<boxed!(DeleteUsingClause)>,
         #[pretty(break_before = soft)]
-        pub where_clause: Option<boxed!(WhereClause)>,
+        pub where_clause: Option<boxed!(WhereOrCurrentClause)>,
         #[pretty(break_before = soft)]
         pub returning: Option<boxed!(ReturningClause)>,
     }

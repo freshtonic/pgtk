@@ -3,14 +3,14 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 353,
+    "skipped": 358,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 22,
+    "skipped_parse_failed": 27,
     "skipped_aborted_transaction": 206,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
     "agree": 41732,
-    "known_divergence": 817,
+    "known_divergence": 812,
     "disagree": 0
   },
   "files": {
@@ -520,14 +520,14 @@
     },
     "create_table.sql": {
       "items": 327,
-      "skipped": 0,
+      "skipped": 1,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 324,
-      "known_divergence": 3,
+      "known_divergence": 2,
       "disagree": 0
     },
     "create_table_like.sql": {
@@ -700,14 +700,14 @@
     },
     "errors.sql": {
       "items": 85,
-      "skipped": 40,
+      "skipped": 41,
       "skipped_not_a_statement": 37,
-      "skipped_parse_failed": 3,
+      "skipped_parse_failed": 4,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 44,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "euc_kr.sql": {
@@ -808,14 +808,14 @@
     },
     "foreign_data.sql": {
       "items": 529,
-      "skipped": 1,
+      "skipped": 3,
       "skipped_not_a_statement": 1,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 526,
-      "known_divergence": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "foreign_key.sql": {
@@ -2116,14 +2116,14 @@
     },
     "sqljson_jsontable.sql": {
       "items": 117,
-      "skipped": 1,
+      "skipped": 2,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 1,
+      "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 114,
-      "known_divergence": 2,
+      "known_divergence": 1,
       "disagree": 0
     },
     "sqljson_queryfuncs.sql": {

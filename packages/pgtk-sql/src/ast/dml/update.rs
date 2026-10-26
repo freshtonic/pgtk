@@ -1,7 +1,7 @@
 /// UPDATE statement AST.
 ///
 /// `UPDATE table SET col = expr [, ...] [FROM ...] [WHERE ...] [RETURNING ...]`
-use crate::ast::dml::select::{FromClause, WhereClause};
+use crate::ast::dml::select::{FromClause, WhereOrCurrentClause};
 use crate::ast::shared::expr::Expr;
 use crate::tokens::literal;
 
@@ -57,7 +57,7 @@ recursa::ast_node! {
     pub struct SetTargetList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(SetTarget),
+        pub one_or_many!(SetTarget),
     );
 }
 
@@ -151,7 +151,7 @@ recursa::ast_node! {
         #[sep(COMMA)]
         #[pretty(indent)]
         #[deref]
-        pub zero_or_many!(SetAssignment),
+        pub one_or_many!(SetAssignment),
     );
 }
 
@@ -199,7 +199,7 @@ recursa::ast_node! {
         #[pretty(break_before = soft)]
         pub from_clause: Option<boxed!(FromClause)>,
         #[pretty(break_before = soft)]
-        pub where_clause: Option<boxed!(WhereClause)>,
+        pub where_clause: Option<boxed!(WhereOrCurrentClause)>,
         #[pretty(break_before = soft)]
         pub returning: Option<boxed!(ReturningClause)>,
     }

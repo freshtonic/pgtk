@@ -28,7 +28,7 @@ use collate::SublinkInfo;
 use pgtk_catalog::Collation;
 use pgtk_sql::ast::shared::expr::FlatIsNormalizedTail;
 use pgtk_sql::ast::shared::expr::{
-    FlatArrayElement, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
+    FlatArrayElements, FlatArrayExpr, FlatCaseBody, FlatExtractField, FlatInContent,
     FlatSubstringTail, FlatTrimDir, FlatTrimTail, FlatTrimValuesRest,
 };
 use pgtk_sql::ast::shared::expr::{
@@ -41,7 +41,9 @@ use pgtk_sql::ast::shared::expr::{
     FlatTypeModifierSign,
 };
 #[cfg(feature = "since-pg16")]
-use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
+use pgtk_sql::ast::shared::expr::{
+    FlatCastType, FlatIntervalLitForm, FlatJsonEncoding, FlatTypeArray,
+};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
 use pgtk_sql::tokens::FlatColId;
@@ -85,6 +87,9 @@ use pgtk_sql::ast::dml::merge::{
     FlatNotMatchedAction, FlatUpdateAction, FlatWhenClause,
 };
 use pgtk_sql::ast::dml::select::{
+    FlatAsAliasName, FlatValuesRow, FlatWhereClause, FlatWhereOrCurrentClause,
+};
+use pgtk_sql::ast::dml::select::{
     FlatCubeItem, FlatFetchFirstBody, FlatFetchFirstClause, FlatFetchMode, FlatForUpdateWait,
     FlatGroupByModifier, FlatOnlyRelationName, FlatRollupItem, FlatSortOrder, FlatUsingClause,
     FlatUsingOp,
@@ -106,7 +111,6 @@ use pgtk_sql::ast::dml::select::{
     FlatTableAlias, FlatXmlNamespaceItem, FlatXmlTableColumnKind, FlatXmlTableColumnOption,
     FlatXmlTableRef,
 };
-use pgtk_sql::ast::dml::select::{FlatValuesRow, FlatWhereClause};
 use pgtk_sql::ast::dml::update::{
     FlatReturningClause, FlatSetAssignment, FlatUpdateStmt, FlatUpdateTableAlias,
 };
@@ -115,17 +119,11 @@ use pgtk_sql::ast::session::set_reset::{
     FlatGenericSetRest, FlatGenericSetValue, FlatVariableSetRest, FlatVariableSetStmt,
 };
 use pgtk_sql::ast::shared::expr::{
-    FlatBetweenModifier, FlatIndirectionEl, FlatXmlElement, FlatXmlExists, FlatXmlExistsDocument,
-    FlatXmlForest, FlatXmlNamedArg, FlatXmlParse, FlatXmlPi, FlatXmlRoot, FlatXmlRootVersion,
-    FlatXmlSerialize, FlatXmlVersionValue,
+    FlatBetweenModifier, FlatIndirectionEl, FlatXmlElement, FlatXmlElementTail, FlatXmlExists,
+    FlatXmlExistsDocument, FlatXmlForest, FlatXmlNamedArg, FlatXmlParse, FlatXmlPi, FlatXmlRoot,
+    FlatXmlRootVersion, FlatXmlSerialize, FlatXmlVersionValue,
 };
 use pgtk_sql::ast::shared::expr::{FlatBracketSubscript, FlatBracketSubscriptValue};
-#[cfg(feature = "since-pg17")]
-use pgtk_sql::ast::shared::expr::{
-    FlatEmptyOrError, FlatJsonBehavior, FlatJsonConstructor, FlatJsonExists, FlatJsonOnBehavior,
-    FlatJsonPassing, FlatJsonQuery, FlatJsonQuotes, FlatJsonScalar, FlatJsonSerialize,
-    FlatJsonValue, FlatJsonWrapper, FlatKeepOrOmit, FlatWrapperBehavior,
-};
 use pgtk_sql::ast::shared::expr::{FlatFuncCallName, FlatFunctionApplicationExpr};
 use pgtk_sql::ast::shared::expr::{
     FlatFunctionCallApplication, FlatInlineWindowSpec, FlatQuantifiedComparisonOperand,
@@ -135,8 +133,15 @@ use pgtk_sql::ast::shared::expr::{
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
-    FlatJsonArray, FlatJsonArrayAgg, FlatJsonArrayArgs, FlatJsonFormat, FlatJsonObject,
-    FlatJsonObjectAgg, FlatJsonObjectEntry, FlatJsonReturning, FlatNullOrAbsent, FlatWithOrWithout,
+    FlatJsonArray, FlatJsonArrayAgg, FlatJsonArrayArgs, FlatJsonFormat, FlatJsonKeyValue,
+    FlatJsonObject, FlatJsonObjectAgg, FlatJsonObjectLegacyArg, FlatJsonReturning,
+    FlatNullOrAbsent, FlatWithOrWithout,
+};
+#[cfg(feature = "since-pg17")]
+use pgtk_sql::ast::shared::expr::{
+    FlatJsonBehavior, FlatJsonBehaviorClause, FlatJsonConstructor, FlatJsonExists, FlatJsonPassing,
+    FlatJsonQuery, FlatJsonQuotes, FlatJsonScalar, FlatJsonSerialize, FlatJsonValue,
+    FlatJsonWrapper, FlatKeepOrOmit, FlatWrapperBehavior,
 };
 use pgtk_sql::ast::shared::names::{FlatAnyName, FlatQualifiedName};
 use pgtk_sql::ast::shared::names::{FlatOnlyRelation, FlatRelationExpr};
@@ -510,6 +515,13 @@ impl<'c> Analyzer<'c> {
 }
 
 /// The walk over one Statement.
+/// One element of an `ARRAY[...]` constructor or of one of its sub-lists.
+#[derive(Clone, Copy)]
+enum ArrayItem {
+    Expr(Handle<FlatExpr>),
+    Nested(Handle<pgtk_sql::ast::shared::expr::FlatNestedArrayElements>),
+}
+
 struct Walker<'a, 'input, 'c> {
     ast: &'a Statement<'input>,
     source: &'a str,
@@ -1274,7 +1286,10 @@ struct JsonFuncParts {
     returning: JsonReturningSpec,
     wrapper: Option<Handle<FlatJsonWrapper>>,
     quotes: Option<Handle<FlatJsonQuotes>>,
-    behaviors: Vec<Handle<FlatJsonOnBehavior>>,
+    /// The ON EMPTY behavior and the start of its clause.
+    on_empty: Option<(Handle<FlatJsonBehavior>, usize)>,
+    /// The ON ERROR behavior and the start of its clause.
+    on_error: Option<(Handle<FlatJsonBehavior>, usize)>,
     /// The JSON_TABLE column the call stands for, which changes the
     /// behavior diagnostics.
     column: Option<String>,
@@ -2188,7 +2203,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         self.expr_kind = ExprKind::Values;
         let mut columns: Vec<Vec<(Handle<FlatExpr>, Typed)>> = Vec::new();
         for row in self.list1(self.get(v).rows) {
-            let written = self.list(self.get(*row).values).to_vec();
+            let written = self.list1(self.get(*row).values).to_vec();
             // transformExpressionList: `t.*` expands to the columns.
             let mut exprs: Vec<(Handle<FlatExpr>, Option<TargetEntry>)> = Vec::new();
             for e in written {
@@ -3200,7 +3215,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let at = self.span(cc).start;
                 let cc = self.get(cc);
                 let mut seen: Vec<String> = Vec::new();
-                for c in self.list(cc.columns) {
+                for c in self.list1(cc.columns) {
                     let (colname, _) = self.alias_name(*c)?;
                     if !colnames.contains(&colname) {
                         return Err(Diagnostic::new(
@@ -4302,15 +4317,34 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let Some(where_clause) = clause else {
             return Ok(());
         };
+        let expr = self.get(where_clause).condition;
+        self.where_expr(scope, expr, kind)
+    }
+
+    /// `transformWhereClause` for the `WHERE` of UPDATE and DELETE, which
+    /// can be `CURRENT OF`.
+    fn where_or_current_clause(
+        &mut self,
+        scope: &Scope,
+        clause: Option<Handle<FlatWhereOrCurrentClause>>,
+    ) -> Result<()> {
+        let Some(where_clause) = clause else {
+            return Ok(());
+        };
         let clause = self.get(where_clause);
         // transformCurrentOfExpr: the cursor is looked up at execution.
         let FlatWhereCondition::Expr(expr) = self.get(clause.condition) else {
             return Ok(());
         };
+        self.where_expr(scope, *expr, ExprKind::Where)
+    }
+
+    /// The condition of a `WHERE`, coerced to boolean.
+    fn where_expr(&mut self, scope: &Scope, expr: Handle<FlatExpr>, kind: ExprKind) -> Result<()> {
         self.expr_kind = kind;
-        let typed = self.expr(scope, *expr)?;
+        let typed = self.expr(scope, expr)?;
         let (_, steps) = self.coercer().coerce_to_boolean(&typed, "WHERE")?;
-        self.record_coercions(*expr, steps);
+        self.record_coercions(expr, steps);
         Ok(())
     }
 
@@ -4336,7 +4370,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn relation_expr(&self, r: Handle<FlatRelationExpr>) -> (Handle<FlatQualifiedName>, bool) {
         match self.get(r) {
             FlatRelationExpr::Only(o) => match self.get(*o) {
-                FlatOnlyRelation::Parens(q) | FlatOnlyRelation::Plain(q) => (*q, false),
+                FlatOnlyRelation::Parens(p) => (self.get(*p).name, false),
+                FlatOnlyRelation::Plain(q) => (*q, false),
             },
             FlatRelationExpr::Named(n) => (self.get(*n).name, true),
         }
@@ -4783,7 +4818,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         };
                         let mut width: Option<usize> = None;
                         for row in value_rows {
-                            let exprs = self.list(self.get(row).values).to_vec();
+                            let exprs = self.list1(self.get(row).values).to_vec();
                             let mut vals = Vec::with_capacity(exprs.len());
                             for e in &exprs {
                                 if let FlatExpr::Default = self.get(*e) {
@@ -5093,10 +5128,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         scope.namespace[0].lateral_only = false;
         scope.namespace[0].lateral_ok = true;
-        self.where_clause(&scope, stmt.where_clause)?;
+        self.where_or_current_clause(&scope, stmt.where_clause)?;
         let returning = self.returning(&scope, stmt.returning, ExprKind::Returning)?;
         // transformUpdateTargetList: every value first, then each column.
-        let assignments = self.list(self.get(stmt.assignments).0).to_vec();
+        let assignments = self.list1(self.get(stmt.assignments).0).to_vec();
         let assigned = self.set_assignments(&scope, relation, &relname, &assignments)?;
         self.rewrite_target(
             relation,
@@ -5772,7 +5807,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     // transformMultiAssignRef: a ROW() or a sub-SELECT with
                     // one value per target.
                     let t = self.get(*t);
-                    let targets = self.list(self.get(t.columns).0).to_vec();
+                    let targets = self.list1(self.get(t.columns).0).to_vec();
                     let source = t.values;
                     let at = self.span(source).start;
                     let sources: Vec<InsertValue> = if let Some(elements) =
@@ -6159,7 +6194,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         scope.namespace[0].lateral_only = false;
         scope.namespace[0].lateral_ok = true;
-        self.where_clause(&scope, stmt.where_clause)?;
+        self.where_or_current_clause(&scope, stmt.where_clause)?;
         let returning = self.returning(&scope, stmt.returning, ExprKind::Returning)?;
         self.rewrite_target(
             relation,
@@ -6324,7 +6359,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             Some(head) => match self.get(head) {
                 FlatSelectHead::DistinctOn(d) => {
                     let d = self.get(*d);
-                    distinct_on = Some(self.list(self.get(d.qualifier).exprs).to_vec());
+                    distinct_on = Some(self.list1(self.get(d.qualifier).exprs).to_vec());
                     let list = self.get(d.targets);
                     if let Some(into) = list.into {
                         self.select_into(into)?;
@@ -7541,7 +7576,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 Ok(out)
             }
             FlatGroupByItem::GroupingSets(g) => {
-                let subs = self.list(self.get(*g).groups).to_vec();
+                let subs = self.list1(self.get(*g).groups).to_vec();
                 let mut out = Vec::new();
                 for sub in subs {
                     out.extend(self.grouping_set(
@@ -8157,7 +8192,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let cd = self.get(cd);
         let mut cols = Vec::new();
         let mut first = None;
-        for c in self.list(cd.columns) {
+        for c in self.list1(cd.columns) {
             if first.is_none() {
                 first = Some(self.span(*c).start);
             }
@@ -8739,7 +8774,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         list: Handle<FlatJsonTableColumnList>,
         names: &mut Vec<String>,
     ) -> Result<()> {
-        for col in self.list(self.get(list).list).to_vec() {
+        for col in self.list1(self.get(list).list).to_vec() {
             match self.get(col) {
                 FlatJsonTableColumn::Nested(n) => {
                     let n = self.get(*n);
@@ -8842,7 +8877,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         passing: Option<Handle<FlatJsonPassing>>,
         columns: &mut Vec<(String, TypeRef, Typmod)>,
     ) -> Result<()> {
-        let cols = self.list(self.get(list).list).to_vec();
+        let cols = self.list1(self.get(list).list).to_vec();
         let mut ordinality_found = false;
         for col in &cols {
             let FlatJsonTableColumn::Valued(v) = self.get(*col) else {
@@ -8887,7 +8922,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         returning: JsonReturningSpec::Column(tc.ty, tc.format),
                         wrapper: tc.wrapper,
                         quotes: tc.quotes,
-                        behaviors: self.json_behaviors(tc.on_behavior),
+                        on_empty: self.json_behaviors(tc.on_behavior).0,
+                        on_error: self.json_behaviors(tc.on_behavior).1,
                         column: Some(name.clone()),
                     };
                     let t = self.json_func(lscope, op, &parts, at)?;
@@ -9326,7 +9362,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 FlatSimpleTableRef::Only(only) => {
                     let only = self.get(*only);
                     let qn = match self.get(only.name) {
-                        FlatOnlyRelationName::Parens(q) | FlatOnlyRelationName::Plain(q) => *q,
+                        FlatOnlyRelationName::Parens(p) => self.get(*p).name,
+                        FlatOnlyRelationName::Plain(q) => *q,
                     };
                     let mut parts = self.qualified_name_parts(qn)?;
                     if parts.len() > 2 {
@@ -9630,13 +9667,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     Some(alias) => match self.get(alias) {
                         FlatAlias::WithAs(w) => {
                             let w = self.get(*w);
-                            match w.uescape {
-                                None => self.alias_name(w.name)?.0,
-                                Some(u) => {
-                                    let FlatAliasName::Text(t) = self.get(w.name);
+                            match self.get(w.name) {
+                                FlatAsAliasName::Plain(name) => self.alias_name(*name)?.0,
+                                FlatAsAliasName::Uescaped(u) => {
+                                    let u = self.get(*u);
+                                    let FlatAliasName::Text(t) = self.get(u.name);
                                     let raw = self.text(*t);
-                                    let escape =
-                                        string_literal_body(self.text(self.get(u).escape_char));
+                                    let escape = string_literal_body(
+                                        self.text(self.get(u.uescape).escape_char),
+                                    );
                                     match pgtk_sql::ident::fold_identifier_with_uescape(
                                         raw, &escape,
                                     ) {
@@ -10454,6 +10493,29 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let (entries, on_null, unique, output) = match self.get(o) {
             FlatJsonObject::Empty => (Vec::new(), None, None, None),
             FlatJsonObject::Returning(r) => (Vec::new(), None, None, Some(*r)),
+            FlatJsonObject::Legacy(l) => {
+                let mut handles = Vec::new();
+                for arg in self.list1(self.get(*l).args).to_vec() {
+                    match self.get(arg) {
+                        FlatJsonObjectLegacyArg::Positional(x) => handles.push(*x),
+                        FlatJsonObjectLegacyArg::Named(_) => {
+                            return Err(unsupported(
+                                "a named argument of json_object",
+                                Some(location..location),
+                            ));
+                        }
+                    }
+                }
+                let mut args = Vec::with_capacity(handles.len());
+                for &h in &handles {
+                    args.push(self.expr(scope, h)?);
+                }
+                let name = ObjectName {
+                    schema: Some("pg_catalog".to_owned()),
+                    name: "json_object".to_owned(),
+                };
+                return self.resolve_call(handle, name, &handles, &args, location, None);
+            }
             FlatJsonObject::Entries(a) => {
                 let a = self.get(*a);
                 (
@@ -10465,45 +10527,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
         };
         let _ = (on_null, unique);
-        let mut pairs = Vec::with_capacity(entries.len());
+        let mut args = Vec::with_capacity(entries.len() * 2);
         for e in entries {
-            match self.get(e) {
-                FlatJsonObjectEntry::Value(kv) => pairs.push(self.get(*kv)),
-                FlatJsonObjectEntry::Named(_) => {
-                    return Err(unsupported(
-                        "a named argument of json_object",
-                        Some(location..location),
-                    ));
-                }
-            }
-        }
-        if !pairs.is_empty() && pairs.iter().all(|e| e.value.is_none()) {
-            let handles: Vec<Handle<FlatExpr>> = pairs.iter().map(|e| e.key).collect();
-            let mut args = Vec::with_capacity(handles.len());
-            for &h in &handles {
-                args.push(self.expr(scope, h)?);
-            }
-            let name = ObjectName {
-                schema: Some("pg_catalog".to_owned()),
-                name: "json_object".to_owned(),
-            };
-            return self.resolve_call(handle, name, &handles, &args, location, None);
-        }
-        let mut args = Vec::with_capacity(pairs.len() * 2);
-        for e in pairs {
-            let Some(v) = e.value else {
-                return Err(unsupported(
-                    "JSON_OBJECT entry without a value",
-                    Some(location..location),
-                ));
-            };
-            let v = self.get(v);
-            args.push(self.expr(scope, e.key)?);
+            let (key, value, format) = self.json_key_value(e);
+            args.push(self.expr(scope, key)?);
             args.push(self.json_value_expr(
                 scope,
                 "JSON_OBJECT()",
-                v.value,
-                v.format,
+                value,
+                format,
                 JsonFormatKind::Default,
                 None,
                 false,
@@ -10653,7 +10685,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 .collect();
             self.outer_vars.truncate(outer_before);
             self.outer_vars.extend(kept);
-            self.aggregate_clauses(scope, arg_handles, args, order_by, filter, deco, location)?;
+            self.aggregate_clauses(scope, arg_handles, args, order_by, filter, deco)?;
         }
         let (ty, typmod) = self.coerce_json_func(typed.ty, returning)?;
         Ok(Typed {
@@ -10663,6 +10695,28 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             location,
             returns_set: false,
         })
+    }
+
+    /// The key, the value and the value's format of one `json_name_and_value`.
+    #[cfg(feature = "since-pg16")]
+    fn json_key_value(
+        &self,
+        entry: Handle<FlatJsonKeyValue>,
+    ) -> (
+        Handle<FlatExpr>,
+        Handle<FlatExpr>,
+        Option<Handle<FlatJsonFormat>>,
+    ) {
+        match self.get(entry) {
+            FlatJsonKeyValue::Value(v) => {
+                let v = self.get(*v);
+                (v.key, v.value, v.format)
+            }
+            FlatJsonKeyValue::Colon(c) => {
+                let c = self.get(*c);
+                (c.key, c.value, c.format)
+            }
+        }
     }
 
     /// `transformJsonObjectAgg`.
@@ -10676,15 +10730,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Typed> {
         let a: &FlatJsonObjectAgg = self.get(a);
         let inner = self.get(a.inner);
-        let entry = self.get(inner.entry);
-        let v = self.get(entry.value);
+        let (key_handle, value_handle, format) = self.json_key_value(inner.entry);
         let outer_before = self.outer_vars.len();
-        let key = self.expr(scope, entry.key)?;
+        let key = self.expr(scope, key_handle)?;
         let val = self.json_value_expr(
             scope,
             "JSON_OBJECTAGG()",
-            v.value,
-            v.format,
+            value_handle,
+            format,
             JsonFormatKind::Default,
             None,
             false,
@@ -10714,7 +10767,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             scope,
             handle,
             fname,
-            &[entry.key, v.value],
+            &[key_handle, value_handle],
             &[key, val],
             None,
             a.filter,
@@ -10943,19 +10996,35 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
-    /// The ON EMPTY / ON ERROR clauses in written order.
+    /// The ON EMPTY and the ON ERROR behaviors of a clause, each with the
+    /// start of its clause.
     #[cfg(feature = "since-pg17")]
+    #[allow(clippy::type_complexity)]
     fn json_behaviors(
         &self,
-        clause: Option<Handle<pgtk_sql::ast::shared::expr::FlatJsonBehaviorClause>>,
-    ) -> Vec<Handle<FlatJsonOnBehavior>> {
-        let Some(c) = clause else {
-            return Vec::new();
-        };
-        let c = self.get(c);
-        let mut out = vec![c.first];
-        out.extend(c.second);
-        out
+        clause: Option<Handle<FlatJsonBehaviorClause>>,
+    ) -> (
+        Option<(Handle<FlatJsonBehavior>, usize)>,
+        Option<(Handle<FlatJsonBehavior>, usize)>,
+    ) {
+        match clause.map(|c| self.get(c)) {
+            None => (None, None),
+            Some(FlatJsonBehaviorClause::Error(e)) => (None, Some(self.json_on_error(*e))),
+            Some(FlatJsonBehaviorClause::Empty(c)) => {
+                let c = self.get(*c);
+                let on_empty = (self.get(c.on_empty).behavior, self.span(c.on_empty).start);
+                (Some(on_empty), c.on_error.map(|e| self.json_on_error(e)))
+            }
+        }
+    }
+
+    /// The behavior of an ON ERROR clause, with the start of the clause.
+    #[cfg(feature = "since-pg17")]
+    fn json_on_error(
+        &self,
+        e: Handle<pgtk_sql::ast::shared::expr::FlatJsonOnError>,
+    ) -> (Handle<FlatJsonBehavior>, usize) {
+        (self.get(e).behavior, self.span(e).start)
     }
 
     /// `transformJsonFuncExpr`: JSON_EXISTS, JSON_QUERY and JSON_VALUE.
@@ -11007,21 +11076,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
         }
         // The behaviors each function accepts.
-        let on_empty = parts
-            .behaviors
-            .iter()
-            .copied()
-            .find(|b| matches!(self.get(self.get(*b).trigger), FlatEmptyOrError::Empty));
-        let on_error = parts
-            .behaviors
-            .iter()
-            .copied()
-            .find(|b| matches!(self.get(self.get(*b).trigger), FlatEmptyOrError::Error));
-        let check = |w: &Self, b: Option<Handle<FlatJsonOnBehavior>>, which: &str| -> Result<()> {
-            let Some(b) = b else {
+        let (on_empty, on_error) = (parts.on_empty, parts.on_error);
+        let check = |w: &Self,
+                     b: Option<(Handle<FlatJsonBehavior>, usize)>,
+                     which: &str|
+         -> Result<()> {
+            let Some((b, start)) = b else {
                 return Ok(());
             };
-            let behavior = w.get(w.get(b).behavior);
+            let behavior = w.get(b);
             let allowed = match op {
                 JsonOp::Query => matches!(
                     behavior,
@@ -11077,7 +11140,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             };
             Err(Diagnostic::new("42601", message)
                 .detail(detail)
-                .at(w.span(b).start)
+                .at(start)
                 .into())
         };
         match op {
@@ -11154,8 +11217,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         let ret_ty = returning.ty.expect("a result type");
         // transformJsonBehavior for DEFAULT expressions.
-        for b in &parts.behaviors {
-            let FlatJsonBehavior::Default(d) = self.get(self.get(*b).behavior) else {
+        for (b, _) in parts.on_empty.into_iter().chain(parts.on_error) {
+            let FlatJsonBehavior::Default(d) = self.get(b) else {
                 continue;
             };
             let e = self.get(*d).value;
@@ -12359,12 +12422,23 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<TypeName> {
         let ct = self.get(cast_type);
         let location = self.span(cast_type).start;
-        let mut array_dims = self.list(ct.array_suffixes).len();
-        if let Some(kw) = ct.array_kw_suffix {
-            let _ = self.get(kw);
-            array_dims += 1;
-        }
-        let (schema, name, typmods) = match self.get(ct.head) {
+        let array_dims = match ct.array.map(|array| self.get(array)) {
+            None => 0,
+            Some(FlatTypeArray::Bounds(bounds)) => self.list1(*bounds).len(),
+            Some(FlatTypeArray::Keyword(_)) => 1,
+        };
+        self.simple_type_name(ct.head, array_dims, location)
+    }
+
+    /// The `TypeName` of a `SimpleTypename`, with `array_dims` array
+    /// dimensions.
+    fn simple_type_name(
+        &self,
+        head: Handle<FlatCastTypeHead>,
+        array_dims: usize,
+        location: usize,
+    ) -> Result<TypeName> {
+        let (schema, name, typmods) = match self.get(head) {
             FlatCastTypeHead::Numeric(n) => {
                 let (name, typmods) = self.numeric_type(*n)?;
                 (Some("pg_catalog"), name.to_owned(), typmods)
@@ -12691,7 +12765,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Vec<TypmodArg>> {
         let p = self.get(p);
         let mut out = Vec::new();
-        for arg in self.list(p.args) {
+        for arg in self.list1(p.args) {
             let arg = self.get(*arg);
             let negative = matches!(
                 arg.sign.map(|s| self.get(s)),
@@ -13252,16 +13326,25 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // [FULL_RANGE, precision]; INTERVAL Sconst opt_interval carries
                 // the qualifier's [fields] or [fields, precision].
                 let mut typmods = Vec::new();
-                if let Some(p) = i.precision {
-                    typmods.push(TypmodArg::Integer(0x7fff));
-                    typmods.push(TypmodArg::Integer(self.iconst_precision(p)));
-                } else if let Some(q) = i.qualifier {
-                    let (fields, precision) = self.interval_qualifier(q);
-                    typmods.push(TypmodArg::Integer(i64::from(fields)));
-                    if let Some(p) = precision {
-                        typmods.push(TypmodArg::Integer(p));
+                let value = match self.get(i.form) {
+                    FlatIntervalLitForm::Precision(p) => {
+                        let p = self.get(*p);
+                        typmods.push(TypmodArg::Integer(0x7fff));
+                        typmods.push(TypmodArg::Integer(self.iconst_precision(p.precision)));
+                        p.value
                     }
-                }
+                    FlatIntervalLitForm::Qualified(q) => {
+                        let q = self.get(*q);
+                        if let Some(qualifier) = q.qualifier {
+                            let (fields, precision) = self.interval_qualifier(qualifier);
+                            typmods.push(TypmodArg::Integer(i64::from(fields)));
+                            if let Some(p) = precision {
+                                typmods.push(TypmodArg::Integer(p));
+                            }
+                        }
+                        q.value
+                    }
+                };
                 let tn = TypeName {
                     schema: Some("pg_catalog".to_owned()),
                     name: "interval".to_owned(),
@@ -13269,7 +13352,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     array_dims: 0,
                     location,
                 };
-                self.string_const_cast(handle, tn, i.value, location)
+                self.string_const_cast(handle, tn, value, location)
             }
             FlatExpr::Array(a) if matches!(self.get(*a), FlatArrayExpr::Subquery(_)) => {
                 let FlatArrayExpr::Subquery(sub) = self.get(*a) else {
@@ -13314,7 +13397,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     Err(unsupported("ARRAY(subquery)", Some(location..location)))
                 }
                 FlatArrayExpr::Bracket(b) => {
-                    let elements = self.list(self.get(*b).elements).to_vec();
+                    let elements = self.array_items(self.get(*b).elements);
                     self.array_expr(scope, &elements, location, None)
                 }
             },
@@ -13638,7 +13721,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     returning: JsonReturningSpec::None,
                     wrapper: None,
                     quotes: None,
-                    behaviors: i.on_error.into_iter().collect(),
+                    on_empty: None,
+                    on_error: i.on_error.map(|e| self.json_on_error(e)),
                     column: None,
                 };
                 self.json_func(scope, JsonOp::Exists, &parts, location)
@@ -13656,7 +13740,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .map_or(JsonReturningSpec::None, JsonReturningSpec::Clause),
                     wrapper: i.wrapper,
                     quotes: i.quotes,
-                    behaviors: self.json_behaviors(i.on_behavior),
+                    on_empty: self.json_behaviors(i.on_behavior).0,
+                    on_error: self.json_behaviors(i.on_behavior).1,
                     column: None,
                 };
                 self.json_func(scope, JsonOp::Query, &parts, location)
@@ -13674,7 +13759,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .map_or(JsonReturningSpec::None, JsonReturningSpec::Clause),
                     wrapper: None,
                     quotes: None,
-                    behaviors: self.json_behaviors(i.on_behavior),
+                    on_empty: self.json_behaviors(i.on_behavior).0,
+                    on_error: self.json_behaviors(i.on_behavior).1,
                     column: None,
                 };
                 self.json_func(scope, JsonOp::Value, &parts, location)
@@ -13715,37 +13801,38 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::XmlElement(x) => {
                 let x: &FlatXmlElement = self.get(*x);
                 let inner = self.get(x.inner);
-                let exprs = inner
-                    .tail
-                    .map(|t| self.list1(self.get(t).exprs).to_vec())
-                    .unwrap_or_default();
-                let mut names: Vec<String> = Vec::new();
-                for e in exprs {
-                    if let FlatExpr::XmlAttributes(a) = self.get(e) {
-                        let args = self.list1(self.get(*a).args).to_vec();
-                        for arg in args {
-                            let name = self.xml_named_arg(scope, arg, true)?;
-                            if names.contains(&name) {
-                                return Err(Diagnostic::new(
-                                    "42601",
-                                    format!("XML attribute name \"{name}\" appears more than once"),
-                                )
-                                .at(self.span(arg).start)
-                                .into());
-                            }
-                            names.push(name);
-                        }
-                        continue;
+                let (attrs, content) = match inner.tail.map(|t| self.get(t)) {
+                    None => (None, None),
+                    Some(FlatXmlElementTail::Attrs(t)) => {
+                        let t = self.get(*t);
+                        (Some(t.attrs), t.content)
                     }
+                    Some(FlatXmlElementTail::Content(c)) => (None, Some(*c)),
+                };
+                let mut names: Vec<String> = Vec::new();
+                if let Some(attrs) = attrs {
+                    for arg in self.list1(self.get(attrs).args).to_vec() {
+                        let name = self.xml_named_arg(scope, arg, true)?;
+                        if names.contains(&name) {
+                            return Err(Diagnostic::new(
+                                "42601",
+                                format!("XML attribute name \"{name}\" appears more than once"),
+                            )
+                            .at(self.span(arg).start)
+                            .into());
+                        }
+                        names.push(name);
+                    }
+                }
+                let exprs = content
+                    .map(|c| self.list1(self.get(c).exprs).to_vec())
+                    .unwrap_or_default();
+                for e in exprs {
                     // Content is converted at execution, whatever its type.
                     self.expr(scope, e)?;
                 }
                 Ok(self.xml_result(location))
             }
-            FlatExpr::XmlAttributes(_) => Err(unsupported(
-                "XMLATTRIBUTES outside XMLELEMENT",
-                Some(location..location),
-            )),
             FlatExpr::XmlForest(x) => {
                 let x: &FlatXmlForest = self.get(*x);
                 for arg in self.list1(x.args).to_vec() {
@@ -13779,7 +13866,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let t = self.expr(scope, inner.value)?;
                 let xml = self.types().builtin(Builtin::Xml);
                 self.coerce_to_specific_type(inner.value, &t, xml, "XMLSERIALIZE")?;
-                let tn = self.type_name(inner.ty)?;
+                let tn = self.simple_type_name(inner.ty, 0, self.span(inner.ty).start)?;
                 let (target, target_typmod) = self.typenames.resolve(&tn)?;
                 let text_value = Typed {
                     ty: self.types().builtin(Builtin::Text),
@@ -15251,15 +15338,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             .is_some_and(|f| self.catalog()[f.function].aggregate.is_some())
         {
             let level = self.level();
-            let (order_exprs, filter_expr) = self.aggregate_clauses(
-                scope,
-                &arg_handles,
-                &args,
-                order_by,
-                filter,
-                deco,
-                location,
-            )?;
+            let (order_exprs, filter_expr) =
+                self.aggregate_clauses(scope, &arg_handles, &args, order_by, filter, deco)?;
             // check_agg_arguments: the direct arguments of an ordered-set
             // aggregate do not set its level.
             let direct: Vec<Handle<FlatExpr>> = if within_group.is_some() {
@@ -15319,18 +15399,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<()> {
         let _ = (arg_handles, order_by, deco);
         if is_aggregate && let Some(f) = filter {
-            let clause = self.get(self.get(f).body);
-            let FlatWhereCondition::Expr(expr) = self.get(clause.condition) else {
-                return Err(unsupported(
-                    "FILTER (WHERE CURRENT OF)",
-                    Some(location..location),
-                ));
-            };
+            let expr = self.get(self.get(f).body).condition;
             let saved = self.expr_kind;
             self.expr_kind = ExprKind::Filter;
-            let t = self.expr(scope, *expr)?;
+            let t = self.expr(scope, expr)?;
             let (_, steps) = self.coercer().coerce_to_boolean(&t, "FILTER")?;
-            self.record_coercions(*expr, steps);
+            self.record_coercions(expr, steps);
             self.expr_kind = saved;
         }
         if let Some(message) = self.expr_kind.window_refusal() {
@@ -15889,7 +15963,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         order_by: Option<Handle<FlatOrderByClause>>,
         filter: Option<Handle<pgtk_sql::ast::shared::expr::FlatFilterClause>>,
         deco: Decoration,
-        location: usize,
     ) -> Result<AggregateClauses> {
         // Argument ORDER BY: SQL99 rules; a new expression is a junk entry.
         let mut order_exprs: Vec<Handle<FlatExpr>> = Vec::new();
@@ -15966,20 +16039,14 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         let mut filter_expr = None;
         if let Some(f) = filter {
-            let clause = self.get(self.get(f).body);
-            let FlatWhereCondition::Expr(expr) = self.get(clause.condition) else {
-                return Err(unsupported(
-                    "FILTER (WHERE CURRENT OF)",
-                    Some(location..location),
-                ));
-            };
+            let expr = self.get(self.get(f).body).condition;
             let saved = self.expr_kind;
             self.expr_kind = ExprKind::Filter;
-            let t = self.expr(scope, *expr)?;
+            let t = self.expr(scope, expr)?;
             let (_, steps) = self.coercer().coerce_to_boolean(&t, "FILTER")?;
-            self.record_coercions(*expr, steps);
+            self.record_coercions(expr, steps);
             self.expr_kind = saved;
-            filter_expr = Some(*expr);
+            filter_expr = Some(expr);
         }
         Ok((order_exprs, filter_expr))
     }
@@ -16564,7 +16631,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let (target, target_typmod) = self.typenames.resolve(&tn)?;
             let (base, base_typmod) = self.types().base_type_and_typmod(target, target_typmod);
             if let Some(element) = self.types().element_type(base) {
-                let elements = self.list(self.get(*b).elements).to_vec();
+                let elements = self.array_items(self.get(*b).elements);
                 let location = self.span(inner).start;
                 let typed = self.array_expr(
                     scope,
@@ -16744,27 +16811,45 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
+    /// The elements of an `ARRAY[...]` or of one of its sub-lists.
+    fn array_items(&self, elements: Option<Handle<FlatArrayElements>>) -> Vec<ArrayItem> {
+        match elements.map(|e| self.get(e)) {
+            None => Vec::new(),
+            Some(FlatArrayElements::Nested(n)) => self
+                .list1(*n)
+                .iter()
+                .copied()
+                .map(ArrayItem::Nested)
+                .collect(),
+            Some(FlatArrayElements::Exprs(x)) => self
+                .list1(*x)
+                .iter()
+                .copied()
+                .map(ArrayItem::Expr)
+                .collect(),
+        }
+    }
+
     /// `transformArrayExpr` without a target type: the elements share a
     /// common type and the result is its array type.
     fn array_expr(
         &mut self,
         scope: &Scope,
-        elements: &[Handle<FlatArrayElement>],
+        elements: &[ArrayItem],
         location: usize,
         target: Option<(TypeRef, TypeRef, crate::types::Typmod)>,
     ) -> Result<Typed> {
         let mut multidims = false;
         let mut typed: Vec<(Option<Handle<FlatExpr>>, Typed)> = Vec::new();
         for &e in elements {
-            match self.get(e) {
-                FlatArrayElement::Nested(n) => {
-                    let inner = self.list(self.get(*n).elements).to_vec();
+            match e {
+                ArrayItem::Nested(n) => {
+                    let inner = self.array_items(self.get(n).elements);
                     let t = self.array_expr(scope, &inner, location, target)?;
                     multidims = true;
                     typed.push((None, t));
                 }
-                FlatArrayElement::Expr(x) => {
-                    let x = *x;
+                ArrayItem::Expr(x) => {
                     let t = self.expr(scope, x)?;
                     if !multidims
                         && !self.types().is(t.ty, Builtin::Int2vector)
