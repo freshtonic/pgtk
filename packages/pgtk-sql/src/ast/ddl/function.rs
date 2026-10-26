@@ -475,15 +475,10 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// gram.y `opt_routine_body`, the SQL-standard body that follows the option
     /// list of `CREATE FUNCTION` / `CREATE PROCEDURE`: `RETURN a_expr` or
-    /// `BEGIN ATOMIC ... END`. It comes after every option, so the `RETURN`
-    /// expression is never followed by an option such as `NOT LEAKPROOF`.
-    ///
-    /// Only the empty `BEGIN ATOMIC END` shape is modeled; populating the body
-    /// would require a peek-time predicate on the inner statement list to stop
-    /// before the closing `END` keyword. The corpus only exercises the empty
-    /// form (`CREATE PROCEDURE ptest8(x text) BEGIN ATOMIC END`); non-empty
-    /// bodies remain outside the issue-9 strict-statement grammar and surface
-    /// as a structured parse error.
+    /// `BEGIN ATOMIC routine_body_stmt_list END`. It comes after every option,
+    /// so the `RETURN` expression is never followed by an option such as
+    /// `NOT LEAKPROOF`. The rules are the same from 14 (where they were added)
+    /// to 19 (REL_14_24 gram.y 7942-7981, REL_17_11 gram.y 8731-8770).
     #[derive(Debug)]
     #[allow(
         clippy::large_enum_variant,
@@ -492,18 +487,228 @@ recursa::ast_node! {
     pub enum RoutineBody {
         /// `RETURN expr` — SQL-standard single-expression function body.
         Return(ReturnOption),
-        /// `BEGIN ATOMIC END`.
-        BeginAtomicEmpty(BeginAtomicEmpty),
+        /// `BEGIN ATOMIC ... END`.
+        BeginAtomic(BeginAtomicBody),
     }
 }
 
 recursa::ast_node! {
-    /// Empty `BEGIN ATOMIC END` body. Non-empty bodies are not yet modelled —
-    /// see `FuncOption::BeginAtomicEmpty` for the rationale.
+    /// `BEGIN_P ATOMIC routine_body_stmt_list END_P`. The list can be empty
+    /// (`BEGIN ATOMIC END`), and each statement in it ends with a `;`.
     #[derive(Debug)]
-    pub enum BeginAtomicEmpty {
-        #[tok(BEGIN, ATOMIC, END)]
-        Value,
+    #[tok(BEGIN, ATOMIC, this, END)]
+    pub struct BeginAtomicBody {
+        pub statements: zero_or_many!(RoutineBodyItem),
+    }
+}
+
+recursa::ast_node! {
+    /// One element of gram.y `routine_body_stmt_list: routine_body_stmt_list
+    /// routine_body_stmt ';'`. `stmt` can be empty, so a `;` alone is an
+    /// element too; the action discards it, as `stmtmulti` does.
+    #[derive(Debug)]
+    pub enum RoutineBodyItem {
+        #[tok(SEMI)]
+        Empty,
+        Statement(RoutineBodyStatementItem),
+    }
+}
+
+recursa::ast_node! {
+    /// A `routine_body_stmt` and the `;` after it.
+    #[derive(Debug)]
+    pub struct RoutineBodyStatementItem {
+        #[tok(this, SEMI)]
+        pub statement: RoutineBodyStmt,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `routine_body_stmt: stmt | ReturnStmt`.
+    #[derive(Debug)]
+    pub enum RoutineBodyStmt {
+        /// `RETURN a_expr` (gram.y `ReturnStmt`).
+        Return(ReturnOption),
+        /// A gram.y `stmt`.
+        Statement(boxed!(RoutineBodyStatement)),
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `stmt`: each [`Statement`](crate::ast::Statement) except
+    /// `TransactionStmtLegacy` (`BEGIN ...` and `END ...`), which only
+    /// `toplevel_stmt` takes (REL_17_11 gram.y 991-998). So an `END` after a
+    /// `;` in a routine body always closes the body. Like
+    /// [`crate::ast::shared::expr::CExpr`], it is not an AST type: a field
+    /// typed `RoutineBodyStatement` holds a `Statement`.
+    #[restricts(crate::ast::Statement)]
+    pub enum RoutineBodyStatement {
+        Explain,
+        CreateFunction,
+        CreateProcedure,
+        CreateTablespace,
+        ImportForeignSchema,
+        CreateConstraintTrigger,
+        CreateTrigger,
+        CreateEventTrigger,
+        CreateAccessMethod,
+        CreateMaterializedView,
+        CreateTextSearch,
+        CreateForeign,
+        CreateIndex,
+        CreateView,
+        CreateRule,
+        CreateGroup,
+        CreateRole,
+        CreateUserMapping,
+        CreateUser,
+        CreateSchema,
+        CreateSequence,
+        CreateType,
+        CreateDomain,
+        CreateAggregate,
+        CreateOperatorClass,
+        CreateOperatorFamily,
+        CreateOperator,
+        CreateCast,
+        CreateTransform,
+        CreateCollation,
+        CreateExtension,
+        CreatePolicy,
+        CreateStatistics,
+        CreatePublication,
+        CreateSubscription,
+        CreateConversion,
+        CreateServer,
+        CreateLanguage,
+        CreateDatabase,
+        CreateTable,
+        DropFunction,
+        DropProcedure,
+        DropRoutine,
+        DropTablespace,
+        DropTrigger,
+        DropEventTrigger,
+        DropAccessMethod,
+        DropMaterializedView,
+        DropTextSearch,
+        DropForeign,
+        DropOwned,
+        DropIndex,
+        DropView,
+        DropRule,
+        DropGroup,
+        DropRole,
+        DropUserMapping,
+        DropUser,
+        DropSchema,
+        DropSequence,
+        DropType,
+        DropDomain,
+        DropAggregate,
+        DropOperatorClass,
+        DropOperatorFamily,
+        DropOperator,
+        DropCast,
+        DropTransform,
+        DropCollation,
+        DropExtension,
+        DropPolicy,
+        DropStatistics,
+        DropPublication,
+        DropSubscription,
+        DropConversion,
+        DropServer,
+        DropLanguage,
+        DropDatabase,
+        DropTable,
+        AlterDefaultPrivileges,
+        AlterForeign,
+        AlterEventTrigger,
+        AlterTrigger,
+        AlterMaterializedView,
+        AlterTextSearch,
+        AlterLargeObject,
+        AlterTablespace,
+        AlterTable,
+        AlterSystem,
+        AlterRule,
+        AlterGroup,
+        AlterRole,
+        AlterUserMapping,
+        AlterUser,
+        AlterSchema,
+        AlterSequence,
+        AlterType,
+        AlterDomain,
+        AlterAggregate,
+        AlterOperatorClass,
+        AlterOperatorFamily,
+        AlterOperator,
+        AlterCollation,
+        AlterExtension,
+        AlterPolicy,
+        AlterStatistics,
+        AlterPublication,
+        AlterSubscription,
+        AlterConversion,
+        AlterServer,
+        AlterLanguage,
+        AlterDatabase,
+        AlterIndex,
+        AlterView,
+        AlterFunction,
+        AlterProcedure,
+        AlterRoutine,
+        Call,
+        Insert,
+        Update,
+        #[config(since = pg15)]
+        Merge,
+        Delete,
+        Rollback,
+        Savepoint,
+        Release,
+        StartTransaction,
+        Commit,
+        Abort,
+        Deallocate,
+        Prepare,
+        Execute,
+        Grant,
+        Revoke,
+        SecurityLabel,
+        Comment,
+        Copy,
+        Truncate,
+        Reindex,
+        Refresh,
+        Cluster,
+        Checkpoint,
+        #[config(since = pg19)]
+        Repack,
+        #[config(since = pg19)]
+        Wait,
+        Vacuum,
+        Lock,
+        Notify,
+        Listen,
+        Unlisten,
+        Discard,
+        Reassign,
+        Do,
+        Declare,
+        Fetch,
+        Close,
+        Move,
+        SetConstraints,
+        Set,
+        Reset,
+        Show,
+        Load,
+        Analyze,
+        Query,
+        With,
     }
 }
 
