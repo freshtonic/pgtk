@@ -4415,6 +4415,7 @@ mod tests {
             ("x COLLATE \"C\"", 1),
             ("x COLLATE pg_catalog.\"C\"", 2),
             ("x COLLATE a.b.\"C\"", 3),
+            ("x COLLATE a.b.c.\"C\"", 4),
             ("x COLLATE pg_catalog.default", 2),
             ("x COLLATE value", 1),
         ] {
@@ -4423,7 +4424,7 @@ mod tests {
                 panic!("expected Collate for {src:?}, got {:?}", parsed.ast());
             };
             assert!(matches!(&**operand, Expr::ColumnRef(_)), "{src:?}");
-            assert_eq!(1 + name.rest.len(), parts, "{src:?}");
+            assert_eq!(name.len(), parts, "{src:?}");
         }
         // `COLLATE` binds tighter than `||` and looser than `::`.
         let parsed = parse_expr_classified("x::text COLLATE pg_catalog.\"C\" || y");

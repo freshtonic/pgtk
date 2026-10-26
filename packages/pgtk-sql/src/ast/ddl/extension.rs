@@ -72,7 +72,7 @@ recursa::ast_node! {
     #[tok(DROP, EXTENSION, this)]
     pub struct DropExtensionStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -177,7 +177,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterExtensionAnyNameMember {
         pub object_type: ExtensionObjectTypeAnyName,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 

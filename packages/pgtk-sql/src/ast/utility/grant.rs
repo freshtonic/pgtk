@@ -200,7 +200,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ForeignDataWrapperTarget {
         #[tok(FOREIGN, DATA, WRAPPER, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -209,7 +209,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ForeignServerTarget {
         #[tok(FOREIGN, SERVER, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -248,7 +248,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DatabaseTarget {
         #[tok(DATABASE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -266,7 +266,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LanguageTarget {
         #[tok(LANGUAGE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -287,7 +287,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SchemaTarget {
         #[tok(SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -296,7 +296,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct TablespaceTarget {
         #[tok(TABLESPACE, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -347,7 +347,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllTablesInSchemaTarget {
         #[tok(ALL, TABLES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -356,7 +356,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllSequencesInSchemaTarget {
         #[tok(ALL, SEQUENCES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -365,7 +365,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllFunctionsInSchemaTarget {
         #[tok(ALL, FUNCTIONS, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -374,7 +374,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllProceduresInSchemaTarget {
         #[tok(ALL, PROCEDURES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -383,7 +383,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AllRoutinesInSchemaTarget {
         #[tok(ALL, ROUTINES, IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 
@@ -581,9 +581,11 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `ON target TO grantees …` — the privilege-grant body of GRANT.
+    /// `privileges ON target TO grantees …` — the privilege-grant body of
+    /// GRANT, gram.y `GrantStmt` after `GRANT`.
     #[derive(Debug)]
     pub struct GrantPrivilegeBody {
+        pub privileges: Privileges,
         #[tok(ON, this)]
         pub target: PrivilegeTarget,
         #[tok(TO, this)]
@@ -594,9 +596,15 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `TO roles [WITH …] [GRANTED BY …]` — the role-membership body of GRANT.
+    /// `roles TO roles [WITH …] [GRANTED BY …]` — the role-membership body of
+    /// GRANT, gram.y `GrantRoleStmt: GRANT privilege_list TO role_list …`
+    /// (REL_17_11 gram.y 7910).
+    ///
+    /// The granted roles are a `privilege_list`, not `privileges`, so `ALL`
+    /// is not a role list: `GRANT ALL TO r` is a syntax error (issue #53).
     #[derive(Debug)]
     pub struct GrantRoleBody {
+        pub granted: PrivilegeList,
         #[tok(TO, this)]
         pub roles: RoleList,
         // A widening, not an addition (ADR 0010, `docs/minimum-version.md`):
@@ -608,12 +616,11 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The body of a `GRANT` after the leading privilege/role list — either the
-    /// privilege-grant `ON … TO …` or the role-membership `TO …`.
+    /// The body of a `GRANT` — either the privilege-grant `privileges ON …
+    /// TO …` or the role-membership `privilege_list TO …`.
     ///
-    /// Variant ordering: `Privilege` first because its leading `ON` is a single
-    /// keyword that the `Role` variant's leading `TO` can't shadow; both have
-    /// disjoint first sets, so ordering is mostly cosmetic.
+    /// Variant ordering: the two bodies share a leading privilege list and
+    /// part on the `ON` or `TO` after it.
     #[derive(Debug)]
     pub enum GrantBody {
         Privilege(GrantPrivilegeBody),
@@ -622,13 +629,24 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `GRANT privileges (ON target TO …) | (TO roles …)` — Postgres'
-    /// `GrantStmt`/`GrantRoleStmt` unified.
+    /// `GRANT privileges ON target TO … | GRANT privilege_list TO roles …` —
+    /// Postgres' `GrantStmt`/`GrantRoleStmt` unified.
     #[derive(Debug)]
     pub struct GrantStmt {
         #[tok(GRANT, this)]
-        pub privileges: Privileges,
         pub body: GrantBody,
+    }
+}
+
+recursa::ast_node! {
+    /// `GRANT privileges ON target TO …` — gram.y `GrantStmt` alone, the
+    /// GRANT that a `CREATE SCHEMA` element can be (REL_17_11 gram.y 1598
+    /// `schema_stmt`). A role grant is `GrantRoleStmt`, which is no schema
+    /// element (issue #53).
+    #[derive(Debug)]
+    pub struct GrantPrivilegeStmt {
+        #[tok(GRANT, this)]
+        pub body: GrantPrivilegeBody,
     }
 }
 
@@ -653,15 +671,6 @@ recursa::ast_node! {
         pub roles: RoleList,
         pub granted_by: Option<GrantedBy>,
         pub behavior: Option<DropBehavior>,
-    }
-}
-
-recursa::ast_node! {
-    /// The body of a `REVOKE` after the leading privilege/role list.
-    #[derive(Debug)]
-    pub enum RevokeBody {
-        Privilege(RevokePrivilegeBody),
-        Role(RevokeRoleBody),
     }
 }
 
@@ -730,18 +739,31 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct RevokeRoleOptionForm {
         pub option_for: RevokeRoleOptionFor,
-        pub privileges: Privileges,
+        /// gram.y `privilege_list`: the revoked roles, never `ALL`.
+        pub privileges: PrivilegeList,
         pub body: RevokeRoleBody,
     }
 }
 
 recursa::ast_node! {
-    /// `REVOKE privileges (ON target FROM …) | (FROM roles …)` — the first arm
-    /// of gram.y `RevokeStmt` and of `RevokeRoleStmt`.
+    /// `REVOKE privileges ON target FROM …` — the first arm of gram.y
+    /// `RevokeStmt`.
     #[derive(Debug)]
-    pub struct RevokePlainForm {
+    pub struct RevokePrivilegeForm {
         pub privileges: Privileges,
-        pub body: RevokeBody,
+        pub body: RevokePrivilegeBody,
+    }
+}
+
+recursa::ast_node! {
+    /// `REVOKE privilege_list FROM roles …` — the first arm of gram.y
+    /// `RevokeRoleStmt` (REL_17_11 gram.y 7935). The revoked roles are a
+    /// `privilege_list`, so `REVOKE ALL FROM r` is a syntax error (issue
+    /// #53).
+    #[derive(Debug)]
+    pub struct RevokeRoleForm {
+        pub privileges: PrivilegeList,
+        pub body: RevokeRoleBody,
     }
 }
 
@@ -751,13 +773,15 @@ recursa::ast_node! {
     /// target`, and `ColId OPTION FOR` belongs to `RevokeRoleStmt`, which has
     /// no `ON` (REL_17_11 gram.y `RevokeStmt` 7556, `RevokeRoleStmt` 7935).
     ///
-    /// Variant ordering: the two prefixed forms first; `Plain` is the
-    /// catch-all, and its privileges can begin with the same `ColId`.
+    /// Variant ordering: the two prefixed forms first; `Privilege` and
+    /// `Role` can begin with the same `ColId`, and they share a leading
+    /// privilege list and part on the `ON` or `FROM` after it.
     #[derive(Debug)]
     pub enum RevokeForm {
         GrantOption(RevokeGrantOptionForm),
         RoleOption(RevokeRoleOptionForm),
-        Plain(RevokePlainForm),
+        Privilege(RevokePrivilegeForm),
+        Role(RevokeRoleForm),
     }
 }
 
@@ -873,7 +897,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DefAclInSchemaOption {
         #[tok(IN, SCHEMA, this)]
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
     }
 }
 

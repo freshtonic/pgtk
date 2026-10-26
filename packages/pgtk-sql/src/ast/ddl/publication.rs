@@ -327,7 +327,7 @@ recursa::ast_node! {
     #[tok(DROP, PUBLICATION, this)]
     pub struct DropPublicationStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }

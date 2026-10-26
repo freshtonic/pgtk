@@ -255,7 +255,7 @@ embedded-tests/src/ast/ddl/role.tests.rs	parse_create_group_user_members	false	1
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_group_with_users	false	14-
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_admin	false	14-
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_connection_limit	false	14-
-embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_encrypted_password_null	false	14-
+embedded-tests/src/ast/ddl/role.tests.rs	encrypted_password_takes_no_null	false	14-
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_in_role	false	14-
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_negated_attributes	false	14-
 embedded-tests/src/ast/ddl/role.tests.rs	parse_create_role_password	false	14-
@@ -657,7 +657,7 @@ embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_local_role	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_local_scope_session_authorization	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_multi_value	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_numeric_value	false	14-
-embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_role_default	false	14-
+embedded-tests/src/ast/session/set_reset.tests.rs	set_role_default_needs_to_or_equals	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_role_name	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_role_none	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_set_session_authorization_default	false	14-

@@ -26,7 +26,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CollationFromClause {
         #[tok(FROM, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -35,7 +35,7 @@ recursa::ast_node! {
     #[tok(CREATE, COLLATION, this)]
     pub struct CreateCollationStmt {
         pub if_not_exists: Option<IfNotExists>,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub body: CreateCollationBody,
     }
 }
@@ -83,7 +83,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterCollationStmt {
         #[tok(ALTER, COLLATION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterCollationAction,
     }
 }

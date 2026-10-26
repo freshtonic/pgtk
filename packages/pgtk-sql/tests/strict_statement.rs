@@ -70,7 +70,7 @@ fn variable_set_stmt_keeps_scope_prefixes_and_special_rests() {
         "SET SESSION SESSION AUTHORIZATION DEFAULT",
         "SET LOCAL TIME ZONE 'UTC'",
         "SET XML OPTION DOCUMENT",
-        "SET ROLE DEFAULT",
+        "SET ROLE TO DEFAULT",
     ] {
         let lexed = lex(source);
         assert!(
@@ -562,4 +562,266 @@ fn function_calls_keep_variadic_and_typed_literal_boundaries() {
             "typed literal form {source:?} must be rejected"
         );
     }
+}
+
+/// Asserts that each of `sources` lexes and that the strict parse rejects it.
+fn assert_rejects(sources: &[&str], why: &str) {
+    for source in sources {
+        let lexed = lex(source);
+        assert!(
+            lexed.errors().next().is_none(),
+            "lexical errors in {source:?}"
+        );
+        let mut input = lexed.input();
+        let parsed = Statement::parse(&mut input);
+        assert!(
+            parsed.is_err() || !input.is_eof(),
+            "{why}, but {source:?} parsed"
+        );
+        // The raw parser of the target version must agree.
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
+    }
+}
+
+/// Asserts that each of `sources` parses as one complete statement.
+fn assert_accepts(sources: &[&str]) {
+    for source in sources {
+        let lexed = lex(source);
+        assert!(
+            lexed.errors().next().is_none(),
+            "lexical errors in {source:?}"
+        );
+        let mut input = lexed.input();
+        Statement::parse(&mut input)
+            .unwrap_or_else(|error| panic!("strict statement {source:?}: {error}"));
+        assert!(input.is_eof(), "strict parse left input for {source:?}");
+        // The raw parser of the target version must agree.
+        #[cfg(feature = "postgres-oracle")]
+        if let Some(error) = pgtk_oracle::parse_error(source) {
+            panic!("PostgreSQL rejects {source:?}: {error}");
+        }
+    }
+}
+
+/// gram.y `Sconst` is `SCONST` only: a bit string or a hex string is no
+/// `Sconst` (issue #52).
+#[test]
+fn a_bit_or_hex_string_is_no_sconst() {
+    assert_rejects(
+        &[
+            "CREATE DATABASE id A X''",
+            "ALTER USER A PASSWORD B''",
+            "CREATE ROLE A PASSWORD B''",
+            "CREATE ROLE A VALID UNTIL X''",
+            "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (host B'')",
+            "CREATE SUBSCRIPTION s CONNECTION X'' PUBLICATION p",
+            "COPY t FROM STDIN WITH DELIMITER B'1'",
+        ],
+        "a bit or hex string is no Sconst",
+    );
+    assert_accepts(&[
+        "CREATE ROLE A PASSWORD 'secret'",
+        "CREATE ROLE A PASSWORD E'secret'",
+        "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (host U&'h')",
+    ]);
+}
+
+/// The language of a transform is gram.y `name`, never a string (issue #52).
+#[test]
+fn the_language_of_a_transform_is_a_name() {
+    assert_rejects(
+        &[
+            "DROP TRANSFORM FOR A LANGUAGE ''",
+            "CREATE TRANSFORM FOR A LANGUAGE ''(TO SQL WITH FUNCTION A)",
+            "CREATE OR REPLACE TRANSFORM FOR A LANGUAGE ''(TO SQL WITH FUNCTION A)",
+        ],
+        "the language of a transform is a name",
+    );
+    assert_accepts(&[
+        "DROP TRANSFORM FOR A LANGUAGE plpgsql",
+        "CREATE TRANSFORM FOR A LANGUAGE plpgsql (TO SQL WITH FUNCTION A)",
+    ]);
+}
+
+/// The role statements that gram.y rejects as a syntax error (issue #53).
+#[test]
+fn role_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `ALTER ROLE ALL` takes only SET or RESET.
+            "ALTER ROLE ALL WITH",
+            "ALTER USER ALL WITH",
+            "ALTER ROLE ALL RENAME TO r",
+            "ALTER GROUP ALL ADD USER r",
+            // A role grant names a `privilege_list`, never `ALL`.
+            "GRANT ALL TO A",
+            "REVOKE ALL FROM A",
+            "GRANT ALL(users) TO A",
+            "GRANT ALL PRIVILEGES TO A",
+            "REVOKE ADMIN OPTION FOR ALL FROM A",
+            // `SET ROLE` takes no `DEFAULT` without `TO` or `=`.
+            "SET ROLE DEFAULT",
+            "SET LOCAL ROLE DEFAULT",
+            "SET SESSION ROLE DEFAULT",
+            // Only a plain `PASSWORD` takes `NULL`.
+            "ALTER ROLE A ENCRYPTED PASSWORD NULL",
+            "CREATE ROLE A ENCRYPTED PASSWORD NULL",
+            "CREATE USER A ENCRYPTED PASSWORD NULL",
+            // A role grant is no CREATE SCHEMA element.
+            "CREATE SCHEMA AUTHORIZATION A GRANT r TO A",
+        ],
+        "gram.y has no such role statement",
+    );
+    assert_accepts(&[
+        "ALTER ROLE ALL SET work_mem = '1MB'",
+        "ALTER USER ALL IN DATABASE d RESET ALL",
+        "ALTER ROLE r WITH LOGIN",
+        "ALTER ROLE CURRENT_USER SET work_mem = '1MB'",
+        "ALTER GROUP CURRENT_ROLE ADD USER r",
+        "ALTER ROLE r RENAME TO s",
+        "ALTER GROUP g RENAME TO h",
+        "GRANT r TO A",
+        "GRANT ALL ON t TO A",
+        "REVOKE r FROM A",
+        "REVOKE ALL ON t FROM A",
+        "SET ROLE TO DEFAULT",
+        "SET ROLE = DEFAULT",
+        "SET ROLE NONE",
+        "ALTER ROLE A PASSWORD NULL",
+        "ALTER ROLE A ENCRYPTED PASSWORD 'x'",
+        "CREATE SCHEMA AUTHORIZATION A GRANT SELECT ON t TO A",
+    ]);
+}
+
+/// The function and operator signatures that gram.y rejects (issue #54).
+#[test]
+fn signatures_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // An event trigger function takes no arguments.
+            "CREATE EVENT TRIGGER id ON title EXECUTE FUNCTION A(0)",
+            "CREATE EVENT TRIGGER id ON title EXECUTE PROCEDURE A('x')",
+            // `oper_argtypes` has no `(NONE, NONE)`.
+            "DROP OPERATOR !(NONE, NONE)",
+            "DROP OPERATOR % (NONE, NONE)",
+            "ALTER OPERATOR & (NONE, NONE) OWNER TO r",
+            "COMMENT ON OPERATOR # (NONE, NONE) IS ''",
+            // `aggr_args` has no default, and the old form takes no
+            // definition list after it.
+            "CREATE AGGREGATE A(A = A)(id)",
+            "ALTER AGGREGATE A(A = .0) OWNER TO A",
+            "CREATE OR REPLACE AGGREGATE A(A = <= )(city)",
+            // `func_args` has no default.
+            "DROP ROUTINE A(JSON = NOT FALSE)",
+            "DROP FUNCTION A(IN A DECIMAL = 1)",
+            "ALTER ROUTINE A(A JSON[] = NULL) OWNER TO A",
+            "DROP PROCEDURE p(int DEFAULT 1)",
+            "COMMENT ON FUNCTION f(int = 1) IS ''",
+            "GRANT EXECUTE ON FUNCTION f(int = 1) TO r",
+        ],
+        "gram.y has no such signature",
+    );
+    assert_accepts(&[
+        "CREATE EVENT TRIGGER id ON ddl_command_start EXECUTE FUNCTION A()",
+        "DROP OPERATOR !(NONE, int)",
+        "DROP OPERATOR !(int, NONE)",
+        "CREATE AGGREGATE A(BASETYPE = int, SFUNC = f, STYPE = int)",
+        "CREATE AGGREGATE A(int)(SFUNC = f, STYPE = int)",
+        "ALTER AGGREGATE A(int) OWNER TO A",
+        "DROP FUNCTION A(IN A DECIMAL)",
+        "CREATE FUNCTION f(a int = 1) RETURNS int LANGUAGE sql AS 'SELECT a'",
+        "CREATE PROCEDURE p(a int DEFAULT 1) LANGUAGE sql AS ''",
+    ]);
+}
+
+/// gram.y `qualified_name` has at most three parts: its action rejects a
+/// longer name (issue #50). `any_name` takes every length.
+#[test]
+fn a_qualified_name_has_at_most_three_parts() {
+    assert_rejects(
+        &[
+            "LOCK tags.uuid .rating .priority",
+            "REINDEX INDEX tags.id .id .email",
+            "ANALYZE count.tags .priority .uuid",
+            "SELECT * FROM a.b.c.d",
+            "DELETE FROM t USING a.b.c.d",
+            "CREATE STATISTICS s ON a, b FROM a.b.c.d",
+            "INSERT INTO a.b.c.d VALUES (1)",
+            "CREATE TABLE a.b.c.d (x int)",
+            "ALTER TABLE a.b.c.d RENAME TO e",
+            "CREATE TRIGGER t AFTER INSERT ON a.b.c.d EXECUTE FUNCTION f()",
+            "SET CONSTRAINTS a.b.c.d IMMEDIATE",
+            "GRANT SELECT ON TABLE a.b.c.d TO r",
+            // The actions that read an `any_name` with
+            // `makeRangeVarFromAnyName`.
+            "CREATE TYPE a.b.c.d AS (x int)",
+            "ALTER TYPE a.b.c.d ADD ATTRIBUTE x int",
+            "ALTER TYPE a.b.c.d RENAME ATTRIBUTE x TO y",
+        ],
+        "a qualified_name has at most three parts",
+    );
+    assert_accepts(&[
+        "LOCK a.b.c",
+        "SELECT * FROM a.b.c",
+        "SELECT * FROM a.b.c.d()",
+        "DROP TABLE a.b.c.d",
+        "DROP RULE r ON a.b.c.d",
+        "COMMENT ON TABLE a.b.c.d IS ''",
+        "SELECT x COLLATE a.b.c.d",
+        "CREATE TYPE a.b.c AS (x int)",
+        "CREATE TYPE a.b.c.d AS ENUM ('x')",
+        "CREATE TYPE a.b.c.d",
+        "ALTER TYPE a.b.c ADD ATTRIBUTE x int",
+        "ALTER TYPE a.b.c.d RENAME TO e",
+        "ALTER TYPE a.b.c.d ADD VALUE 'x'",
+        "CREATE DOMAIN a.b.c.d AS int",
+        "SET a.b.c.d = 1",
+    ]);
+}
+
+/// gram.y `name_list` holds plain names (`ColId`), which take no dot (issue
+/// #50).
+#[test]
+fn a_name_list_holds_plain_names() {
+    assert_rejects(
+        &[
+            "DROP SERVER code.id",
+            "DROP SCHEMA city.url",
+            "DROP LANGUAGE url.tag",
+            "DROP PROCEDURAL LANGUAGE url.tag",
+            "DROP ACCESS METHOD a.b",
+            "DROP EVENT TRIGGER IF EXISTS a.b",
+            "DROP EXTENSION a.b CASCADE",
+            "DROP FOREIGN DATA WRAPPER a.b",
+            "DROP PUBLICATION a.b",
+            "GRANT USAGE ON SCHEMA a.b TO r",
+            "GRANT ALL ON DATABASE a.b TO r",
+            "GRANT ALL ON FOREIGN DATA WRAPPER a.b TO r",
+            "GRANT ALL ON FOREIGN SERVER a.b TO r",
+            "GRANT ALL ON LANGUAGE a.b TO r",
+            "GRANT ALL ON TABLESPACE a.b TO r",
+            "GRANT ALL ON ALL TABLES IN SCHEMA a.b TO r",
+            "ALTER DEFAULT PRIVILEGES IN SCHEMA a.b GRANT SELECT ON TABLES TO r",
+            "CREATE SCHEMA AUTHORIZATION r GRANT ALL ON TABLESPACE a.b TO r",
+            // `opt_definition` takes `definition`, a list of plain names.
+            "CREATE TABLE t (a int UNIQUE WITH (a.b))",
+            "CREATE TABLE t (a int, PRIMARY KEY (a) WITH (a.b = 1))",
+            "CREATE DOMAIN d AS int PRIMARY KEY WITH (a.b)",
+        ],
+        "a name_list holds plain names",
+    );
+    assert_accepts(&[
+        "DROP SCHEMA a, b CASCADE",
+        "DROP FOREIGN DATA WRAPPER a",
+        "DROP FOREIGN TABLE a.b.c.d",
+        "GRANT USAGE ON SCHEMA a, b TO r",
+        "GRANT USAGE ON TYPE a.b.c.d TO r",
+        "ALTER DEFAULT PRIVILEGES IN SCHEMA a GRANT SELECT ON TABLES TO r",
+        "CREATE TABLE t (a int UNIQUE WITH (fillfactor = 70))",
+        "CREATE INDEX i ON t (a) WITH (a.b = 1)",
+    ]);
 }

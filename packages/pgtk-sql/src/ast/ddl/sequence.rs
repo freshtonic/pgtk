@@ -70,7 +70,7 @@ recursa::ast_node! {
     /// twice and create two LR derivations for the same input.
     #[derive(Debug)]
     pub enum OwnedByTarget {
-        Name(QualifiedName),
+        Name(crate::ast::shared::names::AnyName),
     }
 }
 
@@ -100,7 +100,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SeqSequenceNameOption {
         #[tok(SEQUENCE, NAME, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 

@@ -101,14 +101,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_create_role_encrypted_password_null() {
-        let lexed = crate::lex("CREATE ROLE alice ENCRYPTED PASSWORD NULL");
+    fn encrypted_password_takes_no_null() {
+        // gram.y `AlterOptRoleElem` takes `NULL` only after a plain
+        // `PASSWORD` (issue #53).
+        let lexed = crate::lex("CREATE ROLE alice PASSWORD NULL");
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
         let stmt_parsed = CreateRoleStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
         assert_eq!(stmt.options.len(), 1);
         assert!(input.is_eof());
+
+        let lexed = crate::lex("CREATE ROLE alice ENCRYPTED PASSWORD NULL");
+        let mut input = lexed.input();
+        assert!(
+            CreateRoleStmt::parse(&mut input).is_err(),
+            "ENCRYPTED PASSWORD NULL must be rejected"
+        );
     }
 
     #[test]

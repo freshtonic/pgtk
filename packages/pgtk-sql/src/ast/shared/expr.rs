@@ -3915,7 +3915,7 @@ recursa::ast_node! {
         /// schema-qualified (`x COLLATE pg_catalog."C"`). `any_name` is `ColId
         /// attrs`, which is `QualifiedName`. It binds tighter than comparisons
         /// and looser than the `::` cast.
-        Collate(boxed!(Self), #[tok(COLLATE, this)] crate::ast::shared::names::QualifiedName),
+        Collate(boxed!(Self), #[tok(COLLATE, this)] crate::ast::shared::names::AnyName),
         /// `lhs operator {ANY|SOME|ALL} (expr-or-query)`: gram.y `a_expr
         /// subquery_Op sub_type '(' a_expr ')' %prec Op` and its
         /// `select_with_parens` twin. gram.y decides the shift before the

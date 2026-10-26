@@ -15,7 +15,7 @@ recursa::ast_node! {
     pub struct CreateTextSearchStmt {
         #[tok(CREATE, TEXT, SEARCH, this)]
         pub kind: TextSearchObjectKind,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub definition: DefList,
     }
 }
@@ -97,10 +97,10 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct TSConfigReplaceClause {
         #[tok(REPLACE, this)]
-        pub old_dict: QualifiedName,
+        pub old_dict: crate::ast::shared::names::AnyName,
         /// gram.y `any_with` (`WITH | WITH_LA`).
         pub with: crate::ast::shared::flags::AnyWith,
-        pub new_dict: QualifiedName,
+        pub new_dict: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -192,7 +192,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTSConfigurationBody {
         #[tok(CONFIGURATION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterTSConfigurationAction,
     }
 }
@@ -220,7 +220,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTSDictionaryBody {
         #[tok(DICTIONARY, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterTSDictionaryAction,
     }
 }
@@ -245,7 +245,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTSParserBody {
         #[tok(PARSER, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterTSRenameSchemaAction,
     }
 }
@@ -255,7 +255,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTSTemplateBody {
         #[tok(TEMPLATE, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         pub action: AlterTSRenameSchemaAction,
     }
 }

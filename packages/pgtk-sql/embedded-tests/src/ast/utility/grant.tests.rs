@@ -7,7 +7,7 @@ mod tests {
     fn grant_single_privilege_on_bare_table_to_role() {
         let stmt = parse_stmt::<GrantStmt>("GRANT SELECT ON tbl1 TO u1");
         let stmt = stmt.ast();
-        assert!(matches!(stmt.privileges, Privileges::List(_)));
+        assert!(matches!(&stmt.body, GrantBody::Privilege(body) if matches!(body.privileges, Privileges::List(_))));
         assert!(matches!(stmt.body, GrantBody::Privilege(_)));
         reparse_stable::<GrantStmt>("GRANT SELECT ON tbl1 TO u1");
     }
@@ -21,7 +21,7 @@ mod tests {
     fn grant_all_on_table_to_role() {
         let stmt = parse_stmt::<GrantStmt>("GRANT ALL ON tbl1 TO u1");
         let stmt = stmt.ast();
-        assert!(matches!(stmt.privileges, Privileges::All(_)));
+        assert!(matches!(&stmt.body, GrantBody::Privilege(body) if matches!(body.privileges, Privileges::All(_))));
         reparse_stable::<GrantStmt>("GRANT ALL ON tbl1 TO u1");
     }
 
@@ -29,7 +29,7 @@ mod tests {
     fn grant_all_privileges_on_table_to_role() {
         let stmt = parse_stmt::<GrantStmt>("GRANT ALL PRIVILEGES ON tbl1 TO u1");
         let stmt = stmt.ast();
-        assert!(matches!(stmt.privileges, Privileges::AllPrivileges(_)));
+        assert!(matches!(&stmt.body, GrantBody::Privilege(body) if matches!(body.privileges, Privileges::AllPrivileges(_))));
         reparse_stable::<GrantStmt>("GRANT ALL PRIVILEGES ON tbl1 TO u1");
     }
 
@@ -37,7 +37,7 @@ mod tests {
     fn grant_all_with_column_list() {
         let stmt = parse_stmt::<GrantStmt>("GRANT ALL (a) ON tbl1 TO u1");
         let stmt = stmt.ast();
-        assert!(matches!(stmt.privileges, Privileges::AllCols(_)));
+        assert!(matches!(&stmt.body, GrantBody::Privilege(body) if matches!(body.privileges, Privileges::AllCols(_))));
         reparse_stable::<GrantStmt>("GRANT ALL (a) ON tbl1 TO u1");
     }
 
@@ -45,7 +45,7 @@ mod tests {
     fn grant_all_privileges_with_column_list() {
         let stmt = parse_stmt::<GrantStmt>("GRANT ALL PRIVILEGES (a, b) ON tbl1 TO u1");
         let stmt = stmt.ast();
-        assert!(matches!(stmt.privileges, Privileges::AllPrivilegesCols(_)));
+        assert!(matches!(&stmt.body, GrantBody::Privilege(body) if matches!(body.privileges, Privileges::AllPrivilegesCols(_))));
         reparse_stable::<GrantStmt>("GRANT ALL PRIVILEGES (a, b) ON tbl1 TO u1");
     }
 
@@ -137,10 +137,7 @@ mod tests {
     fn revoke_simple_privilege() {
         let stmt = parse_stmt::<RevokeStmt>("REVOKE SELECT ON tbl1 FROM u1");
         let stmt = stmt.ast();
-        let RevokeForm::Plain(form) = &stmt.form else {
-            panic!("expected a plain REVOKE, got {:?}", stmt.form);
-        };
-        assert!(matches!(form.body, RevokeBody::Privilege(_)));
+        assert!(matches!(stmt.form, RevokeForm::Privilege(_)), "{:?}", stmt.form);
         reparse_stable::<RevokeStmt>("REVOKE SELECT ON tbl1 FROM u1");
     }
 
@@ -156,10 +153,7 @@ mod tests {
     fn revoke_role_membership_cascade() {
         let stmt = parse_stmt::<RevokeStmt>("REVOKE role1 FROM u1 CASCADE");
         let stmt = stmt.ast();
-        let RevokeForm::Plain(form) = &stmt.form else {
-            panic!("expected a plain REVOKE, got {:?}", stmt.form);
-        };
-        assert!(matches!(form.body, RevokeBody::Role(_)));
+        assert!(matches!(stmt.form, RevokeForm::Role(_)), "{:?}", stmt.form);
         reparse_stable::<RevokeStmt>("REVOKE role1 FROM u1 CASCADE");
     }
 

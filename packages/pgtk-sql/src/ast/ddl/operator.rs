@@ -66,7 +66,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct OpclassPurposeOrderBy {
         #[tok(FOR, ORDER, BY, this)]
-        pub family_name: QualifiedName,
+        pub family_name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -224,7 +224,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateOpClassFamilyClause {
         #[tok(FAMILY, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -235,7 +235,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateOperatorClassStmt {
         #[tok(CREATE, OPERATOR, CLASS, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(this, FOR, TYPE)]
         #[presence(DEFAULT)]
         pub default: bool,
@@ -253,7 +253,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreateOperatorFamilyStmt {
         #[tok(CREATE, OPERATOR, FAMILY, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(USING, this)]
         pub access_method: crate::tokens::ColId,
     }
@@ -303,7 +303,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterOperatorFamilyStmt {
         #[tok(ALTER, OPERATOR, FAMILY, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(USING, this)]
         pub access_method: crate::tokens::ColId,
         pub action: AlterOperatorFamilyAction,
@@ -335,7 +335,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterOperatorClassStmt {
         #[tok(ALTER, OPERATOR, CLASS, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(USING, this)]
         pub access_method: crate::tokens::ColId,
         pub action: AlterOperatorClassAction,
@@ -349,7 +349,7 @@ recursa::ast_node! {
     #[tok(DROP, OPERATOR, CLASS, this)]
     pub struct DropOperatorClassStmt {
         pub if_exists: Option<IfExists>,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(USING, this)]
         pub access_method: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
@@ -363,7 +363,7 @@ recursa::ast_node! {
     #[tok(DROP, OPERATOR, FAMILY, this)]
     pub struct DropOperatorFamilyStmt {
         pub if_exists: Option<IfExists>,
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
         #[tok(USING, this)]
         pub access_method: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,

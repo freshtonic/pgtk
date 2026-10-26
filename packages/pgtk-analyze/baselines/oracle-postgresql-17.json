@@ -3,14 +3,14 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 352,
+    "skipped": 353,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 21,
+    "skipped_parse_failed": 22,
     "skipped_aborted_transaction": 206,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
     "agree": 41732,
-    "known_divergence": 818,
+    "known_divergence": 817,
     "disagree": 0
   },
   "files": {
@@ -724,14 +724,14 @@
     },
     "event_trigger.sql": {
       "items": 230,
-      "skipped": 0,
+      "skipped": 1,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 229,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "event_trigger_login.sql": {

@@ -122,7 +122,7 @@ recursa::ast_node! {
     #[tok(DROP, SERVER, this)]
     pub struct DropServerStmt {
         pub if_exists: Option<IfExists>,
-        pub names: NameList,
+        pub names: crate::ast::shared::names::ColIdList,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -432,7 +432,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FdwConnectionOption {
         #[tok(CONNECTION, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -441,7 +441,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FdwHandlerOption {
         #[tok(HANDLER, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -450,7 +450,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FdwValidatorOption {
         #[tok(VALIDATOR, this)]
-        pub name: QualifiedName,
+        pub name: crate::ast::shared::names::AnyName,
     }
 }
 
@@ -585,13 +585,32 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The object kind after `DROP FOREIGN`: `DATA WRAPPER` or `TABLE`.
+    /// The object kind after `DROP FOREIGN`, with its names: `DATA WRAPPER`
+    /// takes a `name_list` (`drop_type_name`), and `TABLE` an
+    /// `any_name_list` (`object_type_any_name`), so a foreign-data wrapper
+    /// name takes no dot (issue #50).
     #[derive(Debug)]
     pub enum ForeignObjectKind {
-        #[tok(DATA, WRAPPER)]
-        DataWrapper,
-        #[tok(TABLE)]
-        Table,
+        DataWrapper(#[tok(DATA, WRAPPER, this)] DropForeignDataWrapperNames),
+        Table(#[tok(TABLE, this)] DropForeignTableNames),
+    }
+}
+
+recursa::ast_node! {
+    /// `[IF EXISTS] name [, ...]` after `DROP FOREIGN DATA WRAPPER`.
+    #[derive(Debug)]
+    pub struct DropForeignDataWrapperNames {
+        pub if_exists: Option<IfExists>,
+        pub names: crate::ast::shared::names::ColIdList,
+    }
+}
+
+recursa::ast_node! {
+    /// `[IF EXISTS] name [, ...]` after `DROP FOREIGN TABLE`.
+    #[derive(Debug)]
+    pub struct DropForeignTableNames {
+        pub if_exists: Option<IfExists>,
+        pub names: NameList,
     }
 }
 
@@ -602,8 +621,6 @@ recursa::ast_node! {
     pub struct DropForeignStmt {
         #[tok(DROP, FOREIGN, this)]
         pub kind: ForeignObjectKind,
-        pub if_exists: Option<IfExists>,
-        pub names: NameList,
         pub behavior: Option<DropBehavior>,
     }
 }

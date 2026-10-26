@@ -211,3 +211,54 @@ fn a_float_precision_out_of_range_is_refused_at_the_iconst() {
         "54",
     );
 }
+
+/// The `RoleId` action rejects every `RoleSpec` that is no plain name, each
+/// with its own message, and `RoleSpec` itself rejects `none` (REL_17_11
+/// gram.y 17315-17336 and 17361; issue #53).
+#[test]
+fn a_role_id_is_a_plain_role_name() {
+    for (source, message, span) in [
+        (
+            "ALTER ROLE CURRENT_ROLE RENAME TO id",
+            "CURRENT_ROLE cannot be used as a role name here",
+            "CURRENT_ROLE",
+        ),
+        (
+            "ALTER USER CURRENT_ROLE RENAME TO id",
+            "CURRENT_ROLE cannot be used as a role name here",
+            "CURRENT_ROLE",
+        ),
+        (
+            "ALTER GROUP CURRENT_ROLE RENAME TO id",
+            "CURRENT_ROLE cannot be used as a role name here",
+            "CURRENT_ROLE",
+        ),
+        (
+            "ALTER ROLE r RENAME TO current_user",
+            "CURRENT_USER cannot be used as a role name here",
+            "current_user",
+        ),
+        (
+            "CREATE ROLE SESSION_USER",
+            "SESSION_USER cannot be used as a role name here",
+            "SESSION_USER",
+        ),
+        (
+            "CREATE USER public",
+            "role name \"public\" is reserved",
+            "public",
+        ),
+        (
+            "CREATE GROUP \"none\"",
+            "role name \"none\" is reserved",
+            "\"none\"",
+        ),
+        (
+            "ALTER TABLE t OWNER TO none",
+            "role name \"none\" is reserved",
+            "none",
+        ),
+    ] {
+        assert_declared_rejection(source, "42939", message, span);
+    }
+}
