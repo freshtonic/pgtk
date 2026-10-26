@@ -1024,9 +1024,8 @@ fn narrow_places_keep_the_forms_of_gram_y() {
     ]);
 }
 
-/// A `)` before a set operator is the merged kind `RPAREN_SELECT_LA`, so
-/// each closing rule that can end a `select_clause` must take it (issue
-/// #60).
+/// A `)` before a set operator closes each form that can end a
+/// `select_clause` (issues #60 and #74).
 #[test]
 fn a_close_before_a_set_operator_parses() {
     assert_accepts(&[
@@ -1042,6 +1041,76 @@ fn a_close_before_a_set_operator_parses() {
         "TABLE ONLY (t) ORDER BY 1",
         "SELECT 1 GROUP BY () ORDER BY 1",
     ]);
+}
+
+/// A `)` before a set operator is a plain `)`, as in parser.c, which has no
+/// lookahead token for it. Each closing rule of the grammar takes it, so each
+/// construct that ends in `)` can end the left operand of a set operation
+/// (issue #74). One statement for each construct.
+#[test]
+fn each_construct_that_ends_in_a_close_can_end_a_set_operand() {
+    assert_accepts(&[
+        "SELECT 1 FROM t WHERE a IN (1) UNION SELECT 2",
+        "SELECT 1 FROM t WHERE a IN (SELECT 1) UNION SELECT 2",
+        "SELECT 1 FROM t WHERE a = ANY (ARRAY[1]) UNION SELECT 2",
+        "SELECT 1 FROM t WHERE a = ANY (SELECT 1) INTERSECT SELECT 2",
+        "SELECT 1 FROM t WHERE EXISTS (SELECT 1) EXCEPT SELECT 2",
+        "SELECT ROW(1, 2) UNION SELECT ROW(3, 4)",
+        "SELECT CAST(1 AS int) UNION SELECT 2",
+        "SELECT COALESCE(1, 2) UNION SELECT 2",
+        "SELECT EXTRACT(year FROM now()) UNION SELECT 2",
+        "SELECT TREAT(a AS int) FROM t UNION SELECT 2",
+        "SELECT count(*) OVER (PARTITION BY a) FROM t UNION SELECT 2",
+        "SELECT count(*) FILTER (WHERE a > 1) FROM t UNION SELECT 2",
+        "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY a) FROM t UNION SELECT 2",
+        "SELECT count(*) OVER w FROM t WINDOW w AS (PARTITION BY a) UNION SELECT 2",
+        "SELECT 1 FROM t TABLESAMPLE system (10) UNION SELECT 2",
+        "SELECT 1 FROM t TABLESAMPLE system (10) REPEATABLE (1) UNION SELECT 2",
+        "SELECT 1 FROM t JOIN u USING (a) UNION SELECT 2",
+        "SELECT 1 FROM ROWS FROM (f(1)) UNION SELECT 2",
+        "SELECT 1 FROM XMLTABLE('/a' PASSING x COLUMNS a int) UNION SELECT 2",
+        "SELECT XMLELEMENT(NAME a) UNION SELECT 2",
+        "SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2",
+        "SELECT JSON_OBJECT() UNION SELECT 2",
+        // The forms that a parenthesized query takes, which gram.y reads
+        // through `select_with_parens` (REL_17_11 gram.y 12652-12686).
+        "(SELECT 1) UNION SELECT 2",
+        "((SELECT 1)) UNION SELECT 2",
+        "SELECT (((SELECT 2)) UNION SELECT 2)",
+        "SELECT 1 WHERE 1 IN ((SELECT 1) UNION SELECT 2)",
+        "SELECT * FROM ((SELECT 1) UNION SELECT 2) s",
+        "INSERT INTO t (a) (SELECT 1) UNION SELECT 2",
+    ]);
+}
+
+/// gram.y `Sconst` is `SCONST`, which scan.l gives for a dollar-quoted
+/// string and a continued string too (issue #74).
+#[test]
+fn an_sconst_takes_each_string_spelling() {
+    assert_accepts(&[
+        "CREATE ROLE r PASSWORD $$secret$$",
+        "CREATE ROLE r PASSWORD $p$secret$p$",
+        "CREATE ROLE r PASSWORD 'se'\n'cret'",
+        "COPY t FROM STDIN WITH DELIMITER $$,$$",
+        "CREATE DATABASE d LOCALE $$C$$",
+    ]);
+}
+
+/// gram.y `set_rest_more: ROLE NonReservedWord_or_Sconst` (REL_17_11 gram.y
+/// 1752): a `type_func_name_keyword` is a role name here, and the string is
+/// any `Sconst` (issue #74).
+#[test]
+fn set_role_takes_a_non_reserved_word_or_an_sconst() {
+    assert_accepts(&[
+        "SET ROLE authorization",
+        "SET ROLE left",
+        "SET ROLE none",
+        "SET ROLE 'r'",
+        "SET ROLE E'r'",
+        "SET ROLE $$r$$",
+        "SET ROLE 'r'\n'x'",
+    ]);
+    assert_rejects(&["SET ROLE DEFAULT"], "DEFAULT is a reserved keyword");
 }
 
 /// Statements that a `gram.y` action always rejects with `ereport`, which

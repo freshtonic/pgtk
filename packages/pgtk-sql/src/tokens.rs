@@ -1153,32 +1153,17 @@ recursa::tokens! {
         // the closing delimiter followed by its string payload so the LR
         // table reduces ordinary arguments on `)` and shifts the typed-literal
         // close on this distinct lookahead.
-        // Typed literals and parenthesized set queries need different merged
-        // kinds: their trigger sets are disjoint, and combining them would
-        // make a function close before `)` look like a typed-literal close.
         RPAREN_TYPED_LA = RPAREN before { StringLit },
-        // A `)` that a set operator follows, which is how a completed
-        // parenthesized form parts from a grouped set query on one token:
-        // `(SELECT 1) UNION SELECT 2` continues the query, `(SELECT 1)` alone
-        // does not. Every closing rule that can end a `select_clause` names
-        // the merged kind, because lookahead substitution reads `FIRST` of
-        // the rest of the rule only and a closing `)` is rule-final: see
-        // `crate::ast::shared::expr::ParenthesizedClose`, `FunctionCallClose`
-        // and `TypeModifierClose`, and `crate::ast::dml::select::ValuesRow`
-        // and `TableAliasColumnList`.
-        //
-        // `RPAREN` is deliberately not a trigger. It was one, so that the
-        // inner `)` of `((SELECT 2))` shifted into
-        // `select_with_parens: '(' select_with_parens ')'` instead of closing
-        // an expression paren. As a trigger it merges the inner `)` of every
-        // `))` in the language, so each of the hundred-odd closing rules of
-        // the grammar would have to name the merged kind: 25 of them fail the
-        // embedded suite with the trigger in place, and nothing diagnoses the
-        // next one added. gram.y needs no lookahead there at all, because
-        // `select_with_parens` is its own nonterminal (REL_17_11 gram.y
-        // 12658-12663, second production at 12685), which pgtk-sql cannot
-        // mirror while every grammar type is also a parsing entry point.
-        RPAREN_SELECT_LA = RPAREN before { UNION, INTERSECT, EXCEPT },
+        // There is no filter for a `)` before a set operator. parser.c has
+        // none: gram.y makes `select_with_parens` its own nonterminal
+        // (REL_17_11 gram.y 12658-12663, second production at 12685), so the
+        // `)` of `(SELECT 1)` shifts in each context, and the set operator
+        // after it is the lookahead that decides if the query continues.
+        // pgtk-sql has the same factoring (`SelectWithParens`), so it needs no
+        // lookahead there either. Such a filter (`RPAREN_SELECT_LA`) was here
+        // before, and each closing rule that did not name it rejected a valid
+        // statement, for example `SELECT 1 WHERE a IN (1) UNION SELECT 2`
+        // (issue #74).
     }
 
     // PostgreSQL's precedence declarations (`gram.y:829-908`, "Precedence:

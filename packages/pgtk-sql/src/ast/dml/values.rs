@@ -192,22 +192,16 @@ recursa::ast_node! {
         /// reduction wins, and an expression keeps the parens only where no
         /// query can.
         ///
-        /// Three cells carry that one verdict, and the end marker carries it
-        /// by declaration order. `)` and the merged `)` are cells in every
-        /// build. `RETURNING` is a cell only from 16, so its declaration
-        /// carries the version gate.
+        /// Two cells carry that one verdict, and the end marker carries it
+        /// by declaration order. `)` is a cell in every build. `RETURNING`
+        /// is a cell only from 16, so its declaration carries the version
+        /// gate.
         ///
         /// [`Expr::SubSelect`]: crate::ast::shared::expr::Expr::SubSelect
         #[parse(lr_conflict(
         action = reduce,
         against = ast::shared::expr::Expr,
         lookahead = { RPAREN },
-        expect = 1
-    ))]
-        #[parse(lr_conflict(
-        action = reduce,
-        against = ast::shared::expr::Expr,
-        lookahead = { RPAREN_SELECT_LA },
         expect = 1
     ))]
         // The `RETURNING` cell exists from 16, where the SQL/JSON
