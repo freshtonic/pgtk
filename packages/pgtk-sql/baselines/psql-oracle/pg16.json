@@ -2,7 +2,7 @@
   "schema_version": 1,
   "corpus": { "name": "postgresql-17.9", "commit": "6d396980fc5aed4f1a525e0bd75cb16b25ed40ca" },
   "oracle": { "feature": "pg16", "ref": "REL_16_15", "commit": "7d3e000c5961a544302072058a1184e9a588837b" },
-  "totals": { "documents": 364, "agree": 356, "gaps": 8 },
+  "totals": { "documents": 368, "agree": 360, "gaps": 8 },
   "gap_classes": { "unknown-command": 8 },
   "gaps": [
     { "document": "copyselect.sql", "class": "unknown-command", "reasons": ["text"] },

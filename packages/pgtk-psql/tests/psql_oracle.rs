@@ -157,6 +157,17 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
             "SELECT 1 /* /* :v */ */".into(),
         ),
         ("shell/escaped-newline", "SELECT E'a\\\nb' :v".into()),
+        // psqlscan.l `xqs`: a continued `E'...'` string keeps the rules of
+        // `xe`, so the `\'` of its second part is an escaped quote.
+        (
+            "shell/escape-string-continuation",
+            "SELECT E'a'\n'\\'' :v".into(),
+        ),
+        (
+            "shell/escape-string-continuation-comment",
+            "SELECT E'a' -- c\n'b'\n'\\'' :v".into(),
+        ),
+        ("shell/bit-string-continuation", "SELECT B'1'\n'0:1'".into()),
         // Operators that begin with a colon.
         ("colon/cast", "SELECT a::v".into()),
         ("colon/assignment", "SELECT a :=v".into()),
@@ -331,6 +342,7 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         ("open/quoted-identifier", "SELECT \"a".into()),
         ("open/dollar-quote", "SELECT $$a".into()),
         ("open/block-comment", "SELECT /* a".into()),
+        ("open/escape-string-continuation", "SELECT E'a'\n'\\'".into()),
         ("open/parenthesis", "SELECT (1".into()),
         (
             "open/begin",

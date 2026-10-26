@@ -685,7 +685,26 @@ recursa::ast_node! {
         /// The escape is `[\s\S]` rather than `.`: psqlscan.l:213 spells it
         /// `xeescape [\\][^0-7]`, a negated class that matches a newline, while
         /// `.` here does not.
-        EscapeString(#[lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'")] EscapeStringText),
+        ///
+        /// psqlscan.l `<xb,xh,xq,xe,xus>{quote}` enters `xqs`, and a
+        /// `quotecontinue` there goes back to `xe`. So `E'a'` newline `'\''`
+        /// is one escape string, and the `\'` of its second part is an escaped
+        /// quote. The token takes each continued part, with the gaps of
+        /// psqlscan.l `whitespace_with_newline`; a vertical tab is white space
+        /// from 17 (docs/research/psql-14-19-syntax-changes.md, item A4). The
+        /// other string kinds need no continuation here: their continued parts
+        /// have the extent of a plain string, which has no escape.
+        EscapeString(
+            #[cfg_attr(
+                feature = "since-pg17",
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f\x0b]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\x0b]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            #[cfg_attr(
+                not(feature = "since-pg17"),
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            EscapeStringText,
+        ),
         /// `U&'...'` — psqlscan.l `xus`.
         UnicodeString(#[lex(pattern = r"(?i:U)&'[^']*(?:''[^']*)*'")] UnicodeStringText),
         /// `B'...'` — psqlscan.l `xb`.
@@ -707,10 +726,20 @@ recursa::ast_node! {
         /// Where that quote follows, the closed form is one character longer
         /// and wins; only at end of input does this one win. The `xe`
         /// alternative also takes a final lone backslash, which has nothing
-        /// left to escape.
+        /// left to escape, and the continued parts of `EscapeString` before
+        /// its open part.
         OpenQuoted(
-            #[lex(
-                pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+            #[cfg_attr(
+                feature = "since-pg17",
+                lex(
+                    pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*(?:'(?:[ \t\f\x0b]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\x0b]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*)*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+                )
+            )]
+            #[cfg_attr(
+                not(feature = "since-pg17"),
+                lex(
+                    pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*(?:'(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*)*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+                )
             )]
             OpenQuotedText,
         ),
