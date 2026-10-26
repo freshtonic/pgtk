@@ -36,8 +36,8 @@ use pgtk_sql::ast::shared::expr::{
     FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFloatPrecision, FlatFuncArg,
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
     FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType,
-    FlatParenthesizedIndirection, FlatPrecisionSqlValueFuncName, FlatSqlValueFunction,
-    FlatStringLitSeq0, FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign,
+    FlatPrecisionSqlValueFuncName, FlatSqlValueFunction, FlatStringLitSeq0, FlatTimeZoneQualifier,
+    FlatTypeCastFunc, FlatTypeModifierSign,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -138,7 +138,7 @@ use pgtk_sql::ast::shared::expr::{
 use pgtk_sql::ast::shared::expr::{
     FlatJsonBehavior, FlatJsonBehaviorClause, FlatJsonConstructor, FlatJsonExists, FlatJsonPassing,
     FlatJsonQuery, FlatJsonQuotes, FlatJsonScalar, FlatJsonSerialize, FlatJsonValue,
-    FlatJsonWrapper, FlatKeepOrOmit, FlatWrapperBehavior,
+    FlatJsonWrapper, FlatKeepOrOmit,
 };
 use pgtk_sql::ast::shared::names::{FlatAnyName, FlatQualifiedName};
 use pgtk_sql::ast::shared::names::{FlatOnlyRelation, FlatRelationExpr};
@@ -7021,7 +7021,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         if let FlatExpr::Parenthesized(p) = self.get(expr) {
             let p = self.get(*p);
-            if self.list(p.indirection).is_empty() {
+            if p.indirection.is_none() {
                 return self.plain_var(p.expr);
             }
         }
@@ -7171,7 +7171,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 return e;
             };
             let p = self.get(*p);
-            if !self.list(p.indirection).is_empty() {
+            if !p.indirection.is_none() {
                 return e;
             }
             e = p.expr;
@@ -9617,8 +9617,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // `(SELECT ...).*`: ExpandRowReference of a sublink.
                 if e.alias.is_none()
                     && let FlatExpr::SubSelectIndirection(q) = self.get(e.expr)
-                    && let Some(last) = self.list1(self.get(*q).indirection).last()
-                    && matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
+                    && matches!(
+                        self.indirection_parts(self.get(*q).indirection).last(),
+                        Some(IndirPart::Star)
+                    )
                 {
                     let at = self.span(e.expr).start;
                     return Err(unsupported("row expansion of a subquery", Some(at..at)));
@@ -9628,10 +9630,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     && let FlatExpr::Parenthesized(p) = self.get(e.expr)
                 {
                     let p = self.get(*p);
-                    let parts = self.list(p.indirection).to_vec();
-                    if let Some(last) = parts.last()
-                        && matches!(self.get(*last), FlatParenthesizedIndirection::Star(_))
-                    {
+                    let parts = self.opt_indirection_parts(p.indirection);
+                    if let Some(IndirPart::Star) = parts.last() {
                         let mut entries = self.expand_row_reference(
                             scope,
                             e.expr,
@@ -9754,7 +9754,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                if !self.list(p.indirection).is_empty() {
+                if !p.indirection.is_none() {
                     return None;
                 }
                 self.var_origin(scope, p.expr)
@@ -11037,16 +11037,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let omit = parts.quotes.is_some_and(|q| {
                 matches!(self.get(self.get(q).keep_or_omit), FlatKeepOrOmit::Omit)
             });
-            let wrapped = parts.wrapper.is_some_and(|w| {
-                let w = self.get(w);
-                matches!(self.get(w.with_or_without), FlatWithOrWithout::With)
-                    && w.behavior.is_none_or(|b| {
-                        matches!(
-                            self.get(b),
-                            FlatWrapperBehavior::Conditional | FlatWrapperBehavior::Unconditional
-                        )
-                    })
-            });
+            let wrapped = parts
+                .wrapper
+                .is_some_and(|w| matches!(self.get(w), FlatJsonWrapper::With(_)));
             if omit && wrapped {
                 return Err(Diagnostic::new(
                     "42601",
@@ -11347,7 +11340,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
         if let FlatExpr::Parenthesized(p) = self.get(h) {
             let p = self.get(*p);
-            if self.list(p.indirection).is_empty() {
+            if p.indirection.is_none() {
                 return self.record_shape(scope, p.expr);
             }
         }
@@ -11387,7 +11380,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         scope: &Scope,
         handle: Handle<FlatExpr>,
         inner: Handle<FlatExpr>,
-        parts: &[Handle<FlatParenthesizedIndirection>],
+        parts: &[IndirPart],
     ) -> Result<Vec<TargetEntry>> {
         let location = self.span(handle).start;
         let (base, base_handle) = (self.expr(scope, inner)?, Some(inner));
@@ -11395,14 +11388,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             (base, base_handle)
         } else {
             (
-                self.indirection(
-                    scope,
-                    handle,
-                    base,
-                    base_handle,
-                    &self.paren_parts(parts),
-                    location,
-                )?,
+                self.indirection(scope, handle, base, base_handle, parts, location)?,
                 None,
             )
         };
@@ -12071,16 +12057,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
-    /// The parts of an indirection chain of parenthesized content.
-    fn paren_parts(&self, parts: &[Handle<FlatParenthesizedIndirection>]) -> Vec<IndirPart> {
-        parts
-            .iter()
-            .map(|part| match self.get(*part) {
-                FlatParenthesizedIndirection::Subscript(b) => IndirPart::Subscript(*b),
-                FlatParenthesizedIndirection::Field(f) => IndirPart::Field(*f),
-                FlatParenthesizedIndirection::Star(_) => IndirPart::Star,
-            })
-            .collect()
+    /// The parts of an optional indirection chain; none when it is absent.
+    fn opt_indirection_parts(
+        &self,
+        i: Option<Handle<pgtk_sql::ast::shared::expr::FlatIndirection>>,
+    ) -> Vec<IndirPart> {
+        i.map_or_else(Vec::new, |i| self.indirection_parts(i))
     }
 
     /// `FigureColnameInternal`.
@@ -12385,7 +12367,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
                 // A_Indirection: the last field name, if any.
-                let name = self.last_field_name(self.list(p.indirection));
+                let name = self.last_field_name(&self.opt_indirection_parts(p.indirection));
                 if name.is_some() {
                     return Colname { name, strength: 2 };
                 }
@@ -12414,7 +12396,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::SubSelectIndirection(q) => {
                 // A_Indirection: the last field name, else the sublink's.
                 let name = self
-                    .last_field_name(self.list1(self.get(*q).indirection))
+                    .last_field_name(&self.indirection_parts(self.get(*q).indirection))
                     .or_else(|| self.sublink_names.get(&handle).cloned());
                 if name.is_some() {
                     Colname { name, strength: 2 }
@@ -12428,11 +12410,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     /// The last field name of an `A_Indirection`, if any.
-    fn last_field_name(&self, parts: &[Handle<FlatParenthesizedIndirection>]) -> Option<String> {
-        parts.iter().rev().find_map(|ind| match self.get(*ind) {
-            FlatParenthesizedIndirection::Field(f) => {
-                self.alias_name(self.get(*f).name).ok().map(|(n, _)| n)
-            }
+    fn last_field_name(&self, parts: &[IndirPart]) -> Option<String> {
+        parts.iter().rev().find_map(|ind| match *ind {
+            IndirPart::Field(f) => self.alias_name(self.get(f).name).ok().map(|(n, _)| n),
             _ => None,
         })
     }
@@ -13196,12 +13176,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                let parts = self.list(p.indirection).to_vec();
+                let parts = self.opt_indirection_parts(p.indirection);
                 if !parts.is_empty() {
                     let base = self.expr(scope, p.expr)?;
                     // transformIndirection locates its errors at the base.
                     let at = base.location;
-                    let parts = self.paren_parts(&parts);
                     return self.indirection(scope, handle, base, Some(p.expr), &parts, at);
                 }
                 self.expr(scope, p.expr)
@@ -13222,11 +13201,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::SubSelectIndirection(q) => {
                 let q = self.get(*q);
                 let sub = self.get(q.query).inner;
-                let parts = self.list1(q.indirection).to_vec();
+                let parts = self.indirection_parts(q.indirection);
                 let base = self.expr_sublink(scope, handle, sub, location)?;
                 // transformIndirection locates its errors at the base.
                 let at = base.location;
-                let parts = self.paren_parts(&parts);
                 self.indirection(scope, handle, base, None, &parts, at)
             }
             FlatExpr::RowExpr(r) => {
@@ -14656,7 +14634,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::NumericLit(t) => Some((LiteralKind::Float, self.text(*t).to_owned())),
             FlatExpr::Parenthesized(p) => {
                 let p = self.get(*p);
-                if !self.list(p.indirection).is_empty() {
+                if !p.indirection.is_none() {
                     return None;
                 }
                 self.negatable_literal(p.expr)
