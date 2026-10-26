@@ -1207,14 +1207,10 @@ recursa::tokens! {
         // `<>` and `!=` as one `NOT_EQUALS`; pgtk-sql keeps a token per
         // spelling so the formatter can reproduce the one it read.
         //
-        // `OVERLAPS` joins them, which gram.y does not do. gram.y needs no
-        // level for it because `a_expr: row OVERLAPS row` demands a row on
-        // the left, so `OVERLAPS` can never follow a bare column reference
-        // and the reduce is the only action there. pgtk-sql's `Expr::Overlaps`
-        // takes any operand, so `RANGE BETWEEN OVERLAPS ...` needs a level
-        // to settle `ColId: BETWEEN` against it; at this level it reduces,
-        // which is the answer gram.y arrives at without one.
-        nonassoc(bp = 70) { LT, GT, EQ, LTE, GTE, NEQ, BANGEQ, OVERLAPS },
+        // `OVERLAPS` has no level, as in gram.y: `a_expr: row OVERLAPS row`
+        // takes a row on each side (`Expr::Overlaps`), so `OVERLAPS` never
+        // follows an expression and the reduce is the only action there.
+        nonassoc(bp = 70) { LT, GT, EQ, LTE, GTE, NEQ, BANGEQ },
         // gram.y:837 `%nonassoc BETWEEN IN_P LIKE ILIKE SIMILAR NOT_LA` --
         // `Expr::BetweenExpr`, `Expr::InExpr` and the LIKE family. `NOT_LA`
         // is the lookahead filter declared above, and a level may name a
@@ -1381,7 +1377,7 @@ recursa::tokens! {
         //
         // `)` is deliberately left without a level. pgtk-sql still shares one
         // `(`-led production between a parenthesized expression and a
-        // parenthesized query (`ParenContent`), which gram.y does not do:
+        // parenthesized query (`ParenthesizedExpr`), which gram.y does not do:
         // gram.y factors `select_with_parens` as its own nonterminal. Where
         // pgtk-sql's factoring leaves a decision on `)`, the answer is authored
         // as a scoped LR resolution on the variant, and a level for `)` would

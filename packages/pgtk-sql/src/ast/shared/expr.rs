@@ -509,30 +509,100 @@ recursa::ast_node! {
     /// admitted every keyword would put `UNION`, `EXCEPT`, `INTERSECT` and every
     /// other reserved word into that selector and make a targetless `SELECT`
     /// unusable as a set-operation operand (issue #55).
+    ///
+    /// The forms after the first `.` follow gram.y and the checks of its
+    /// actions (issues #55 and #59):
+    ///
+    /// - `check_indirection` refuses a `.*` that is not the last element
+    ///   ("improper use of *", REL_17_11 gram.y 18779), so a star ends the
+    ///   chain ([`QualifiedPath::Star`], [`QualifiedTail::Star`] and
+    ///   [`Indirection`]).
+    /// - `check_func_name` refuses a function name with a `.*` or a subscript
+    ///   (a syntax error, REL_17_11 gram.y 18759), so a call or a typed
+    ///   literal follows the dotted attribute names only
+    ///   ([`QualifiedTail::Call`] and [`QualifiedTail::TypedLiteral`]).
     #[derive(Debug)]
     pub struct QualifiedRef {
         pub table: crate::tokens::ColId,
-        /// Requiring the first indirection here keeps this branch disjoint from
-        /// [`ColumnRef`], while putting fields, wildcards, and subscripts in one
-        /// chain mirrors gram.y's `columnref: ColId indirection` for references
-        /// of any supported qualification depth.
-        pub first: QualifiedRefFirstIndirection,
-        pub rest: zero_or_many!(ParenthesizedIndirection),
-        /// A dotted function name and a dotted column reference share the same
-        /// unbounded prefix. Owning the optional call tail here lets the parser
-        /// decide at the first non-indirection token instead of trying to peek
-        /// past an arbitrary number of name parts.
-        pub call: Option<FunctionCallTail>,
+        pub path: QualifiedPath,
+    }
+}
+
+impl<'input> QualifiedRef<'input> {
+    /// The call or the typed literal of a dotted function name: `s.f(x)`,
+    /// `s.t(10) 'v'`. `None` for a column reference.
+    pub fn call(&self) -> Option<&FunctionCallTail<'input>> {
+        match &self.path {
+            QualifiedPath::Attrs(attrs) => match &attrs.tail {
+                Some(QualifiedTail::Call(call)) => Some(call),
+                _ => None,
+            },
+            QualifiedPath::Star(_) => None,
+        }
     }
 }
 
 recursa::ast_node! {
-    /// The first indirection of a qualified reference must start with a dot.
-    /// Later elements may also be subscripts.
+    /// What follows the `ColId` of a [`QualifiedRef`]: `.*`, or one or more
+    /// `.attr_name` and an optional tail.
     #[derive(Debug)]
-    pub enum QualifiedRefFirstIndirection {
-        Field(IndirectionField),
+    pub enum QualifiedPath {
+        /// `t.*`.
         Star(ParenthesizedDotStar),
+        /// `t.a`, `s.t.a[1]`, `s.f(x)`.
+        Attrs(QualifiedAttrs),
+    }
+}
+
+recursa::ast_node! {
+    /// The dotted attribute names of a [`QualifiedRef`] and what follows them.
+    #[derive(Debug)]
+    pub struct QualifiedAttrs {
+        pub attrs: one_or_many!(IndirectionField),
+        pub tail: Option<QualifiedTail>,
+    }
+}
+
+recursa::ast_node! {
+    /// What follows the dotted attribute names of a [`QualifiedRef`].
+    ///
+    /// Only the dotted names make a gram.y `func_name`, so only this position
+    /// takes a call or a typed literal.
+    #[derive(Debug)]
+    pub enum QualifiedTail {
+        /// `func_name '(' ...`: a call, or the typed literal
+        /// `func_name '(' func_arg_list ')' Sconst`.
+        Call(FunctionCallTail),
+        /// gram.y `AexprConst: func_name Sconst` (REL_17_11 gram.y 17223):
+        /// `pg_catalog.int4 '1'`.
+        TypedLiteral(literal::StringLit),
+        /// `t.a.*`, the last element of the chain.
+        Star(ParenthesizedDotStar),
+        /// `t.a[1]` and the elements after the subscript.
+        Subscripted(SubscriptedIndirection),
+    }
+}
+
+recursa::ast_node! {
+    /// A subscript and the indirection elements after it.
+    #[derive(Debug)]
+    pub struct SubscriptedIndirection {
+        pub subscript: BracketSubscript,
+        pub rest: Option<Indirection>,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `indirection` with the rule of `check_indirection`: a `.*` is
+    /// the last element only (REL_17_11 gram.y 18779).
+    #[derive(Debug)]
+    pub enum Indirection {
+        /// `.*` alone.
+        Star(ParenthesizedDotStar),
+        /// Fields and subscripts.
+        Elements(one_or_many!(IndirectionEl)),
+        /// Fields and subscripts, then `.*`.
+        ElementsStar(one_or_many!(IndirectionEl), ParenthesizedDotStar),
     }
 }
 
@@ -1124,23 +1194,34 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Content inside parentheses: a non-empty, comma-separated expression
-    /// list. It is gram.y `c_expr: '(' a_expr ')' opt_indirection` (gram.y
-    /// 15378) and `row: '(' expr_list ')'` (gram.y 16585) sharing their
-    /// delimiters.
+    /// gram.y `implicit_row: '(' expr_list ',' a_expr ')'` (REL_17_11 gram.y
+    /// 16466): a row of two or more values without `ROW`. It takes no
+    /// indirection: `(a, b).x` is a syntax error, because only `'(' a_expr ')'
+    /// opt_indirection` has one (gram.y 15378).
     ///
-    /// A parenthesized query is not a variant here. gram.y is "careful to use
-    /// `select_with_parens`, never `'(' SelectStmt ')'`, in the expression
-    /// grammar" (gram.y 12658-12661), and [`Expr::SubSelect`] mirrors that.
-    /// A query arm here shared one `(`-led production with
-    /// `select_with_parens` and left a decision on `)` that two scoped
-    /// resolutions had to answer; the factoring leaves no decision there.
-    ///
-    /// It stays an enum of one variant so a consumer that matches on it keeps
-    /// the shape it had.
+    /// The fields hold `a_expr ',' expr_list`, which is the same language as
+    /// gram.y's `expr_list ',' a_expr`, so that the row is the first value
+    /// and a non-empty list of the rest.
     #[derive(Debug)]
-    pub enum ParenContent {
-        Exprs(#[sep(COMMA)] one_or_many!(Expr)),
+    pub struct ImplicitRow {
+        pub open: ParenthesizedOpen,
+        #[tok(this, COMMA)]
+        pub first: boxed!(Expr),
+        #[sep(COMMA)]
+        pub rest: one_or_many!(Expr),
+        pub close: ParenthesizedClose,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `row` (REL_17_11 gram.y 16457-16460), the operand of `a_expr:
+    /// row OVERLAPS row`: an explicit row (`ROW(...)`) or an implicit row
+    /// (`(a, b)`). A parenthesized value that is not a row, such as `(a)`,
+    /// is no operand of `OVERLAPS`.
+    #[derive(Debug)]
+    pub enum Row {
+        Explicit(RowExpr),
+        Implicit(ImplicitRow),
     }
 }
 
@@ -1175,12 +1256,18 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Parenthesized scalar, row, or subquery content, optionally followed by an
-    /// arbitrary field, wildcard, or subscript indirection chain.
+    /// gram.y `c_expr: '(' a_expr ')' opt_indirection` (REL_17_11 gram.y
+    /// 15378): one parenthesized value, optionally followed by a field,
+    /// wildcard or subscript indirection chain. A row of two or more values
+    /// is an [`ImplicitRow`].
+    ///
+    /// A parenthesized query is not this form. gram.y is "careful to use
+    /// `select_with_parens`, never `'(' SelectStmt ')'`, in the expression
+    /// grammar" (gram.y 12658-12661), and [`Expr::SubSelect`] mirrors that.
     #[derive(Debug)]
     pub struct ParenthesizedExpr {
         pub open: ParenthesizedOpen,
-        pub content: ParenContent,
+        pub expr: boxed!(Expr),
         pub close: ParenthesizedClose,
         pub indirection: zero_or_many!(ParenthesizedIndirection),
     }
@@ -4180,8 +4267,9 @@ recursa::ast_node! {
         /// `expr ~~ pattern` — operator-form `LIKE` (gram.y 14860).
         LikeOp(boxed!(Self), #[tok(TILDETILDE, this)] boxed!(Self)),
         /// `(start, end) OVERLAPS (start, end)` — SQL time-period overlap test.
-        /// Each operand is an ordinary parenthesized expression to the parser.
-        Overlaps(boxed!(Self), #[tok(OVERLAPS, this)] boxed!(Self)),
+        /// gram.y `a_expr: row OVERLAPS row` (REL_17_11 gram.y 14997): each
+        /// operand is a [`Row`], not an expression.
+        Overlaps(boxed!(Row), #[tok(OVERLAPS, this)] boxed!(Row)),
         /// Record comparison operators: `expr *= expr`, `*<>`, `*<`, `*<=`,
         /// `*>`, `*>=` — compare ROW/composite values field by field.
         RecordLte(boxed!(Self), #[tok(STARLTE, this)] boxed!(Self)),
@@ -4400,6 +4488,8 @@ recursa::ast_node! {
         Array(ArrayExpr),
         /// ROW constructor: `ROW(...)`
         RowExpr(RowExpr),
+        /// gram.y `c_expr: implicit_row`: `(a, b)`.
+        ImplicitRow(ImplicitRow),
         /// `GROUPING(...)` grouping-set membership function. Declared before
         /// `ColumnRef`, which would otherwise claim the bare `GROUPING` keyword
         /// and leave the argument list unparsed.
@@ -4735,6 +4825,7 @@ recursa::ast_node! {
         Exists,
         Array,
         RowExpr,
+        ImplicitRow,
         Grouping,
         Coalesce,
         Greatest,
@@ -4831,6 +4922,7 @@ recursa::ast_node! {
         Exists,
         Array,
         RowExpr,
+        ImplicitRow,
         Grouping,
         Coalesce,
         Greatest,
