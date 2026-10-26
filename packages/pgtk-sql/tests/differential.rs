@@ -10,10 +10,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use pgtk_oracle::parse_ok;
 use support::baseline::{
-    Baseline, BaselineOutcome, FrozenStatements, GapOutcome, OutcomeCounts, VersionBaseline,
-    VersionGap, render_version_baseline,
+    Baseline, BaselineOutcome, FrozenStatements, GapOutcome, OutcomeCounts, PendingOverAcceptances,
+    VersionBaseline, VersionGap, render_version_baseline,
 };
-use support::diff_check::{Outcome, check_statement};
+use support::diff_check::{OVER_ACCEPTANCE, Outcome, check_statement};
 
 fn fixture_name(name: &str) -> &str {
     name.strip_prefix("r#").unwrap_or(name)
@@ -87,6 +87,8 @@ fn run_corpus_file(name: &str) {
     );
     let recorded_accepts = version.oracle_accepts(&baseline_name);
     let listed_gaps = version.gaps_in(&baseline_name);
+    let pending = PendingOverAcceptances::pinned();
+    let pending_here = pending.entries_in(&baseline_name);
 
     let results = check_corpus_file(&baseline_name);
     assert_eq!(
@@ -108,6 +110,7 @@ fn run_corpus_file(name: &str) {
     let mut identity_mismatches = Vec::new();
     let mut unlisted_gaps = Vec::new();
     let mut stale_gaps = Vec::new();
+    let mut stale_pending = Vec::new();
 
     for (i, result) in results.iter().enumerate() {
         if result.oracle_accepts != recorded_accepts[i] {
@@ -119,6 +122,26 @@ fn run_corpus_file(name: &str) {
                     "rejects"
                 }
             ));
+        }
+        // A known over-acceptance (#95) applies only where this version's
+        // oracle rejects the statement.
+        if let Some(entry) = pending_here.get(&i)
+            && !result.oracle_accepts
+        {
+            assert!(
+                !listed_gaps.contains_key(&i),
+                "{name}: stmt {i} is both a pending over-acceptance and a version gap"
+            );
+            match &result.outcome {
+                Outcome::Fail(reason) if reason.starts_with(OVER_ACCEPTANCE) => {
+                    match result.expected {
+                        BaselineOutcome::Pass => expected_outside_gaps.pass -= 1,
+                        BaselineOutcome::Skip => expected_outside_gaps.skip -= 1,
+                    }
+                }
+                other => stale_pending.push(format!("  stmt {i} ({}): now {other:?}", entry.cause)),
+            }
+            continue;
         }
         let gap = result.gap_outcome();
         match (listed_gaps.get(&i), gap) {
@@ -202,6 +225,13 @@ fn run_corpus_file(name: &str) {
         oracle_changes.join("\n")
     );
     assert!(
+        stale_pending.is_empty(),
+        "{name}: pending over-acceptances (baselines/pending-over-acceptance.json) \
+         changed; remove the entry of each fixed statement \
+         (docs/differential-baseline.md):\n{}",
+        stale_pending.join("\n")
+    );
+    assert!(
         stale_gaps.is_empty() && unlisted_gaps.is_empty(),
         "{name}: the expected version gaps of {} are stale; regenerate the version \
          baseline and review the change (docs/differential-baseline.md)\n\
@@ -274,7 +304,18 @@ fn regenerate_version_baseline() {
     let mut gaps = Vec::new();
     for (file, results) in per_file {
         let ranges = FrozenStatements::pinned().file(file).ranges();
+        let pending = PendingOverAcceptances::pinned().entries_in(file);
         for (index, result) in results.iter().enumerate() {
+            if !result.oracle_accepts
+                && let Some(entry) = pending.get(&index)
+            {
+                // A pending over-acceptance is in its own list, not a gap.
+                eprintln!(
+                    "pending over-acceptance {file}:{index} ({}): {:?}",
+                    entry.cause, result.outcome
+                );
+                continue;
+            }
             if let Some(pg_sql) = result.gap_outcome() {
                 // The reason is not in the baseline; print it for the review.
                 eprintln!(
