@@ -4,10 +4,10 @@
 
 Important information for the use of these crates:
 
-- pgtk-sql, pgtk-catalog and pgtk-analyze are configured for crates.io (`publish = true`, version 0.1.0). pgtk-psql is not on crates.io yet (issue #42). The docs.rs pages are available only after the first release.
+- The four crates are configured for crates.io (`publish = true`, version 0.1.0). pgtk-psql is not on crates.io yet (issue #42). The docs.rs pages are available only after the first release.
 - A Cargo feature selects the PostgreSQL grammar version of pgtk-sql, pgtk-analyze and pgtk-psql: `pg14`, `pg15`, `pg16`, `pg17` (the default), `pg18` or `pg19-beta`. Use exactly one. The build stops with zero or with two or more. A crate between your crate and pgtk-sql must use `default-features = false` and forward the version feature.
 - The `spans` feature of pgtk-sql keeps the source span of each node, and adds the `pgtk_sql::document` module (`parse_sql`, `SqlDocument`). pgtk-analyze always turns on `spans`.
-- pgtk-catalog has one build for all server versions. Its features are `postgres`, `tokio-postgres`, `async`, `serde` and `fixture` (a built-in PostgreSQL 17 catalog, for tests and offline tools).
+- pgtk-catalog has one build for all server versions, PostgreSQL 14 to 18. Its features are `postgres`, `tokio-postgres`, `async`, `serde`, `fixture` (a built-in catalog of each version, for tests and offline tools) and `pg19-beta` (accept a PostgreSQL 19 beta server, and add its built-in catalog; it changes no other version). Its enums are `#[non_exhaustive]`, so a `match` needs a `_` arm.
 - In pgtk-analyze, the Grammar Version is the version feature of the build (`pgtk_analyze::GRAMMAR_VERSION`). The Target Version is the server that the SQL will run on. You give it at run time in `Settings`. It must not be newer than the Grammar Version.
 - The build script of pgtk-sql generates the parser with recursa. Set `opt-level = 3` in `[profile.dev.build-override]` and `[profile.release.build-override]` of your workspace, to make the first build approximately 8 times faster.
 - The minimum Rust version is 1.88.
@@ -15,9 +15,9 @@ Important information for the use of these crates:
 Main entry points:
 
 - pgtk-sql: `pgtk_sql::lex`, then `pgtk_sql::ast::Statement::parse` (also `parse_without_spans`, `parse_flat` and `parse_flat_without_spans`). `pgtk_sql::document::parse_sql` parses a document of statements (needs `spans`). The `MinimumVersion` trait (`minimum_version_above`) and `pgtk_sql::minimum_version::minimum_version` give the oldest PostgreSQL version that accepts a statement. `pgtk_sql::TARGET_VERSION` gives the version of the build. Each AST type derives `Visit` and `VisitMut`. The `arbitrary` feature derives `arbitrary::Arbitrary`.
-- pgtk-catalog: `pgtk_catalog::load` (with an `Executor`) and `pgtk_catalog::load_async` (with an `AsyncExecutor`, feature `async`) give a `Loaded` value with `catalog` and `diagnostics`. `pgtk_catalog::fixture::pg17` gives the built-in catalog. `Catalog::type_named` with a `QualifiedName`, and `Catalog::type_visible` with a `SearchPath`, find a type. `Handle<T>` is a typed handle; `catalog[handle]` gives the entity.
+- pgtk-catalog: `pgtk_catalog::load` (with an `Executor`) and `pgtk_catalog::load_async` (with an `AsyncExecutor`, feature `async`) give a `Loaded` value with `catalog` and `diagnostics`. `pgtk_catalog::fixture::pg14` to `pg18` give the built-in catalog of each version, and `fixture::pg19_beta` gives the 19 beta catalog (feature `pg19-beta`). `Catalog::type_named` with a `QualifiedName`, and `Catalog::type_visible` with a `SearchPath`, find a type. `Handle<T>` is a typed handle; `catalog[handle]` gives the entity.
 - pgtk-analyze: `Settings::new(&catalog, TargetVersion::Pg17, ["public"])`, then `Analyzer::new(&catalog, settings)`. `Analyzer::analyze_sql` parses and analyses text; `Analyzer::analyze` analyses a parsed `Statement`. Both take the declared parameter types and a `Session` (`Session::new` for an empty one). The result is an `Analysis` (`result` is the `ResultDescriptor`, `session_effect` is an optional `SessionEffect`), or an `AnalyzeError`: `Diagnostic` (the error that PostgreSQL gives, with SQLSTATE, message and position) or `Unsupported`.
-- pgtk-psql: `pgtk_psql::render(source, &variables)` with `Variables` gives a `Rendered` value. `Rendered::sql` gives the server SQL, and `Rendered::parse_sql` parses it with pgtk-sql. `pgtk_psql::parse` gives a `PsqlDocument`.
+- pgtk-psql: `pgtk_psql::render(source, &variables)` with `Variables` gives a `Rendered` value. `Rendered::sql` gives the server SQL, and `Rendered::parse_sql` parses it with pgtk-sql. `pgtk_psql::parse` gives a `PsqlDocument`. Its `items` are in source order: a meta-command is a `PsqlItem::Command`, or a `PsqlItem::Terminator` when it ends the query buffer, as `\g` does. `command()` gives a `Command` with `name()`, `arguments()` (each `Argument` has `text()` and `value(&variables)`) and `separator()`. `PsqlDocument::conditionals` gives the `\if` blocks, with no evaluation. pgtk-psql runs no command.
 
 ## Crates
 
@@ -25,8 +25,21 @@ Main entry points:
 - [pgtk-sql README](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/README.md): the parser. The AST design, the features, the target versions, the minimum version of a statement, the flat AST and the build time.
 - [pgtk-catalog README](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/README.md): the catalog. How to load it, the built-in catalog, name lookup and other drivers.
 - [pgtk-analyze README](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-analyze/README.md): parse analysis. The `Analyzer`, the `Session`, what the crate analyses and the Oracle harness.
-- [pgtk-psql README](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-psql/README.md): the psql client language. Variable interpolation, send commands and the source map. To be published (issue #42).
-- [pgtk-catalog inspect example](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/examples/inspect.rs): finds each catalog entity with a given name (`cargo run -p pgtk-catalog --features fixture --example inspect -- int4`).
+- [pgtk-psql README](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-psql/README.md): the psql client language. Variable interpolation, meta-commands such as `\set`, `\d` and `\copy`, send commands such as `\g` and `\gset`, `\if` blocks and the source map. To be published (issue #42).
+
+## Examples
+
+Each example has its run command in its first lines. The examples that connect to a server take a connection string.
+
+- [pgtk-sql parse](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/examples/parse.rs): parses a file of statements, and prints the kind and the location of each statement, or the error (`cargo run -p pgtk-sql --features spans --example parse -- file.sql`).
+- [pgtk-sql version_check](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/examples/version_check.rs): finds the oldest PostgreSQL version that accepts each statement, and the clause that needs it (`cargo run -p pgtk-sql --features spans --example version_check -- --server 15 migrations/*.sql`).
+- [pgtk-sql migration_lint](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/examples/migration_lint.rs): a linter for migrations, written as a visitor over the typed AST (`cargo run -p pgtk-sql --features spans --example migration_lint -- migrations/*.sql`).
+- [pgtk-catalog inspect](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/examples/inspect.rs): finds each entity with a given name in the built-in PostgreSQL 17 catalog (`cargo run -p pgtk-catalog --features fixture --example inspect -- int4`).
+- [pgtk-catalog describe_schema](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/examples/describe_schema.rs): loads the catalog of a live server and describes the tables of one schema, like `\d` in psql (feature `postgres`).
+- [pgtk-catalog snapshot](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/examples/snapshot.rs): saves the catalog of a live server to a JSON file, for a CI job with no server (features `postgres,serde`).
+- [pgtk-analyze describe](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-analyze/examples/describe.rs): describes a query with no server: the name, type and source column of each result column, and the type of each parameter, as `\gdesc` does.
+- [pgtk-analyze check_queries](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-analyze/examples/check_queries.rs): a CI check that analyses each query of an application against a saved catalog, and prints each error as PostgreSQL does.
+- [pgtk-analyze target_version](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-analyze/examples/target_version.rs): analyses the same queries for each PostgreSQL version from 14 to the version of the build (`cargo run -p pgtk-analyze --example target_version`).
 
 ## API reference
 
@@ -47,6 +60,7 @@ Main entry points:
 - [pgtk-sql ADR 0009: one target version for each build](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/docs/adr/0009-select-one-target-version-per-build.md): why the version is a Cargo feature.
 - [pgtk-sql ADR 0010: the version gate is a declaration](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/docs/adr/0010-make-the-version-gate-a-declaration.md): how the minimum version comes from the AST.
 - [pgtk-sql ADR 0007: psql has its own grammar and crate](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/docs/adr/0007-give-psql-its-own-grammar-and-crate.md): why pgtk-psql is a separate crate.
+- [pgtk-sql ADR 0013: most meta-command arguments stay text](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-sql/docs/adr/0013-keep-most-meta-command-arguments-as-text.md): which psql meta-commands pgtk-psql divides, and why most arguments stay text.
 - [pgtk-catalog ADR 0001: a semantic model, not a copy of the catalog](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/docs/adr/0001-semantic-model-not-catalog-mirror.md)
 - [pgtk-catalog ADR 0003: a loader for any driver](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/docs/adr/0003-driver-agnostic-loader.md)
 - [pgtk-catalog ADR 0004: arena handles for entity identity](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-catalog/docs/adr/0004-arena-handles-for-entity-identity.md)
