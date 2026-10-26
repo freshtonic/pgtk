@@ -2117,7 +2117,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         self.expr_kind = ExprKind::Values;
         let mut columns: Vec<Vec<(Handle<FlatExpr>, Typed)>> = Vec::new();
         for row in self.list1(self.get(v).rows) {
-            let written = self.list(self.get(*row).values).to_vec();
+            let written = self.list1(self.get(*row).values).to_vec();
             // transformExpressionList: `t.*` expands to the columns.
             let mut exprs: Vec<(Handle<FlatExpr>, Option<TargetEntry>)> = Vec::new();
             for e in written {
@@ -3129,7 +3129,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let at = self.span(cc).start;
                 let cc = self.get(cc);
                 let mut seen: Vec<String> = Vec::new();
-                for c in self.list(cc.columns) {
+                for c in self.list1(cc.columns) {
                     let (colname, _) = self.alias_name(*c)?;
                     if !colnames.contains(&colname) {
                         return Err(Diagnostic::new(
@@ -4712,7 +4712,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         };
                         let mut width: Option<usize> = None;
                         for row in value_rows {
-                            let exprs = self.list(self.get(row).values).to_vec();
+                            let exprs = self.list1(self.get(row).values).to_vec();
                             let mut vals = Vec::with_capacity(exprs.len());
                             for e in &exprs {
                                 if let FlatExpr::Default = self.get(*e) {
@@ -5025,7 +5025,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         self.where_clause(&scope, stmt.where_clause)?;
         let returning = self.returning(&scope, stmt.returning, ExprKind::Returning)?;
         // transformUpdateTargetList: every value first, then each column.
-        let assignments = self.list(self.get(stmt.assignments).0).to_vec();
+        let assignments = self.list1(self.get(stmt.assignments).0).to_vec();
         let assigned = self.set_assignments(&scope, relation, &relname, &assignments)?;
         self.rewrite_target(
             relation,
@@ -5701,7 +5701,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     // transformMultiAssignRef: a ROW() or a sub-SELECT with
                     // one value per target.
                     let t = self.get(*t);
-                    let targets = self.list(self.get(t.columns).0).to_vec();
+                    let targets = self.list1(self.get(t.columns).0).to_vec();
                     let source = t.values;
                     let at = self.span(source).start;
                     let sources: Vec<InsertValue> = if let Some(elements) =
@@ -6253,7 +6253,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             Some(head) => match self.get(head) {
                 FlatSelectHead::DistinctOn(d) => {
                     let d = self.get(*d);
-                    distinct_on = Some(self.list(self.get(d.qualifier).exprs).to_vec());
+                    distinct_on = Some(self.list1(self.get(d.qualifier).exprs).to_vec());
                     let list = self.get(d.targets);
                     if let Some(into) = list.into {
                         self.select_into(into)?;
@@ -7469,7 +7469,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 Ok(out)
             }
             FlatGroupByItem::GroupingSets(g) => {
-                let subs = self.list(self.get(*g).groups).to_vec();
+                let subs = self.list1(self.get(*g).groups).to_vec();
                 let mut out = Vec::new();
                 for sub in subs {
                     out.extend(self.grouping_set(
@@ -8085,7 +8085,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let cd = self.get(cd);
         let mut cols = Vec::new();
         let mut first = None;
-        for c in self.list(cd.columns) {
+        for c in self.list1(cd.columns) {
             if first.is_none() {
                 first = Some(self.span(*c).start);
             }

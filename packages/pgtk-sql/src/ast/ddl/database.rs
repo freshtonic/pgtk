@@ -105,17 +105,12 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `[WITH] (option [, ...])` option list on `DROP DATABASE`.
     #[derive(Debug)]
+    #[tok(optional(WITH), LPAREN, this, RPAREN)]
     pub struct DropDatabaseOptions {
-        /// gram.y `drop_option_list`: one or more options.
-        ///
-        /// `this_each` states the element-wise attachment this site already
-        /// lowers to: the delimiters wrap every option, so `(FORCE), (FORCE)`
-        /// is accepted where gram.y `DROP DATABASE ... opt_with '('
-        /// drop_option_list ')'` (REL_17_11 gram.y 11429, `drop_option_list`
-        /// 11440) reads them once. PostgreSQL defines one drop option, so no
-        /// multi-element list can be written and the site is latent; #59
-        /// section C records that and leaves the container repair open.
-        #[tok(optional(WITH), LPAREN, this_each, RPAREN)]
+        /// gram.y `drop_option_list`: one or more options, in one pair of
+        /// parentheses (`DROP DATABASE ... opt_with '(' drop_option_list
+        /// ')'`, REL_17_11 gram.y 11429, `drop_option_list` 11440). So
+        /// `(FORCE), (FORCE)` is a syntax error (issue #56).
         #[sep(COMMA)]
         pub options: one_or_many!(DropDatabaseOption),
     }

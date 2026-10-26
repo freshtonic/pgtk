@@ -975,7 +975,7 @@ recursa::ast_node! {
     #[tok(AS, LPAREN, this, RPAREN)]
     pub struct RowsFromColDef {
         #[sep(COMMA)]
-        pub columns: zero_or_many!(FuncTableColumnDef),
+        pub columns: one_or_many!(FuncTableColumnDef),
     }
 }
 
@@ -2056,7 +2056,7 @@ recursa::ast_node! {
     #[tok(GROUPING, SETS, LPAREN, this, RPAREN)]
     pub struct GroupingSetsItem {
         #[sep(COMMA)]
-        pub groups: zero_or_many!(boxed!(GroupByItem)),
+        pub groups: one_or_many!(boxed!(GroupByItem)),
     }
 }
 
@@ -2197,7 +2197,7 @@ recursa::ast_node! {
     #[tok(DISTINCT, ON, LPAREN, this, RPAREN)]
     pub struct SelectDistinctOn {
         #[sep(COMMA)]
-        pub exprs: zero_or_many!(crate::ast::shared::expr::Expr),
+        pub exprs: one_or_many!(crate::ast::shared::expr::Expr),
     }
 }
 
@@ -2422,7 +2422,7 @@ recursa::ast_node! {
     pub struct ValuesRow {
         pub open: ParenthesizedOpen,
         #[sep(COMMA)]
-        pub values: zero_or_many!(Expr),
+        pub values: one_or_many!(Expr),
         pub close: ParenthesizedClose,
     }
 }

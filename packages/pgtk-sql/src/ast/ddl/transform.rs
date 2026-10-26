@@ -8,15 +8,14 @@ use crate::ast::shared::numbers::*;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
-    /// One element of `CREATE TRANSFORM (..., ...)`. Per gram.y
-    /// `transform_element_list`: either `FROM SQL WITH FUNCTION fn` or
-    /// `TO SQL WITH FUNCTION fn`. Up to one of each is allowed, in either order
-    /// (modelled here as a `Seq1` of these elements separated by commas).
-    ///
-    /// Variant ordering: disjoint first tokens (`FROM` vs `TO`), so order doesn't
-    /// matter for disambiguation.
+    /// gram.y `transform_element_list` (REL_17_11 9149-9164): one `FROM SQL
+    /// WITH FUNCTION fn` and one `TO SQL WITH FUNCTION fn`, in either order,
+    /// or one of them. So a second `TO SQL` element is a syntax error (issue
+    /// #56). The rule is the same in each target version.
     #[derive(Debug)]
-    pub enum TransformElement {
+    pub enum TransformElements {
+        FromTo(TransformFromElement, #[tok(COMMA, this)] TransformToElement),
+        ToFrom(TransformToElement, #[tok(COMMA, this)] TransformFromElement),
         From(TransformFromElement),
         To(TransformToElement),
     }
@@ -42,11 +41,7 @@ recursa::ast_node! {
     /// Parenthesized `CREATE TRANSFORM` element list.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
-    pub struct TransformElementList(
-        #[sep(COMMA)]
-        #[deref]
-        pub one_or_many!(TransformElement),
-    );
+    pub struct TransformElementList(#[deref] pub TransformElements);
 }
 
 recursa::ast_node! {
