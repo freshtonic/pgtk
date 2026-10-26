@@ -173,7 +173,7 @@ recursa::ast_node! {
         pub open: TypeModifierOpen,
         #[sep(COMMA)]
         #[deref]
-        pub args: zero_or_many!(TypeModifierArg),
+        pub args: one_or_many!(TypeModifierArg),
         pub close: TypeModifierClose,
     }
 }
@@ -1931,20 +1931,44 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Cast type with a base-specific modifier and zero-or-more array suffixes:
+    /// gram.y `Typename` without `SETOF` (REL_17_11 14294-14327): a
+    /// `SimpleTypename` with an optional array decoration. Examples:
     /// `numeric(10,0)`, `timestamp with time zone`, `interval day to minute`,
-    /// `integer[]`, `int4[][][]`, `varchar(4)[2][3]`.
+    /// `integer[]`, `int4[][][]`, `varchar(4)[2][3]`, `text ARRAY[4]`.
     #[derive(Debug, PartialEq, Eq)]
     pub struct CastType {
         pub head: CastTypeHead,
-        pub array_suffixes: zero_or_many!(ArraySuffix),
-        /// PG gram.y also accepts `SimpleTypename ARRAY` and
-        /// `SimpleTypename ARRAY '[' Iconst ']'` — the keyword form for
-        /// declaring an array type (e.g. `integer ARRAY[4]`, `text ARRAY`).
-        /// In practice this is mutually exclusive with `array_suffixes`, but the
-        /// grammar admits the suffix appearing AFTER the keyword form, so the
-        /// field is parsed last.
-        pub array_kw_suffix: Option<ArrayKwSuffix>,
+        pub array: Option<TypeArray>,
+    }
+}
+
+recursa::ast_node! {
+    /// The array decoration of gram.y `Typename` (REL_17_11 14294-14327):
+    /// `opt_array_bounds` (one or more `[]` or `[n]`) or the SQL-standard
+    /// `ARRAY` or `ARRAY[n]`, never both. So `int[0] ARRAY` is a syntax error
+    /// (issue #51).
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum TypeArray {
+        Bounds(one_or_many!(ArraySuffix)),
+        Keyword(ArrayKwSuffix),
+    }
+}
+
+impl<'input> TypeArray<'input> {
+    /// The `[]` and `[n]` bounds. The `ARRAY` form has none.
+    pub fn bounds(&self) -> &[ArraySuffix<'input>] {
+        match self {
+            TypeArray::Bounds(bounds) => bounds,
+            TypeArray::Keyword(_) => &[],
+        }
+    }
+
+    /// The `ARRAY` or `ARRAY[n]` form, if it is this form.
+    pub fn keyword(&self) -> Option<&ArrayKwSuffix<'input>> {
+        match self {
+            TypeArray::Bounds(_) => None,
+            TypeArray::Keyword(keyword) => Some(keyword),
+        }
     }
 }
 
@@ -2229,14 +2253,43 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `INTERVAL 'str' [qualifier]`.
+    /// gram.y `AexprConst: ConstInterval Sconst opt_interval | ConstInterval
+    /// '(' Iconst ')' Sconst` (REL_17_11 17267 and 17274): `INTERVAL 'str'
+    /// [qualifier]` or `INTERVAL(p) 'str'`. The form with a precision takes
+    /// no qualifier, so `INTERVAL(0) '' YEAR` is a syntax error (issue #51).
     #[derive(Debug)]
     pub struct IntervalLit {
         pub interval: IntervalKeyword,
-        /// Optional precision, e.g. `interval(2)` or `interval(0)`.
-        pub precision: Option<IconstPrecision>,
+        pub form: IntervalLitForm,
+    }
+}
+
+recursa::ast_node! {
+    /// The two forms of an [`IntervalLit`] after `INTERVAL`.
+    #[derive(Debug)]
+    pub enum IntervalLitForm {
+        /// `'str' [qualifier]`.
+        Qualified(IntervalLitQualified),
+        /// `(p) 'str'`, e.g. `interval(2) '1 s'`.
+        Precision(IntervalLitPrecision),
+    }
+}
+
+recursa::ast_node! {
+    /// `'str' [qualifier]` after `INTERVAL`.
+    #[derive(Debug)]
+    pub struct IntervalLitQualified {
         pub value: literal::StringLit,
         pub qualifier: Option<IntervalQualifier>,
+    }
+}
+
+recursa::ast_node! {
+    /// `(p) 'str'` after `INTERVAL`.
+    #[derive(Debug)]
+    pub struct IntervalLitPrecision {
+        pub precision: IconstPrecision,
+        pub value: literal::StringLit,
     }
 }
 
@@ -2410,8 +2463,10 @@ recursa::ast_node! {
     pub struct XmlSerializeInner {
         pub which: XmlDocOrContent,
         pub value: boxed!(Expr),
+        /// gram.y `AS SimpleTypename`, with no array decoration (REL_17_11
+        /// 15930; issue #51).
         #[tok(AS, this)]
-        pub ty: CastType,
+        pub ty: CastTypeHead,
         // Added in 16: see `XmlIndentOption`.
         #[config(since = pg16)]
         pub indent: Option<XmlIndentOption>,

@@ -41,7 +41,7 @@ use pgtk_sql::ast::shared::expr::{
     FlatTypeModifierSign,
 };
 #[cfg(feature = "since-pg16")]
-use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
+use pgtk_sql::ast::shared::expr::{FlatCastType, FlatIntervalLitForm, FlatJsonEncoding, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
 use pgtk_sql::tokens::FlatColId;
@@ -12287,12 +12287,23 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<TypeName> {
         let ct = self.get(cast_type);
         let location = self.span(cast_type).start;
-        let mut array_dims = self.list(ct.array_suffixes).len();
-        if let Some(kw) = ct.array_kw_suffix {
-            let _ = self.get(kw);
-            array_dims += 1;
-        }
-        let (schema, name, typmods) = match self.get(ct.head) {
+        let array_dims = match ct.array.map(|array| self.get(array)) {
+            None => 0,
+            Some(FlatTypeArray::Bounds(bounds)) => self.list1(*bounds).len(),
+            Some(FlatTypeArray::Keyword(_)) => 1,
+        };
+        self.simple_type_name(ct.head, array_dims, location)
+    }
+
+    /// The `TypeName` of a `SimpleTypename`, with `array_dims` array
+    /// dimensions.
+    fn simple_type_name(
+        &self,
+        head: Handle<FlatCastTypeHead>,
+        array_dims: usize,
+        location: usize,
+    ) -> Result<TypeName> {
+        let (schema, name, typmods) = match self.get(head) {
             FlatCastTypeHead::Numeric(n) => {
                 let (name, typmods) = self.numeric_type(*n)?;
                 (Some("pg_catalog"), name.to_owned(), typmods)
@@ -12619,7 +12630,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Vec<TypmodArg>> {
         let p = self.get(p);
         let mut out = Vec::new();
-        for arg in self.list(p.args) {
+        for arg in self.list1(p.args) {
             let arg = self.get(*arg);
             let negative = matches!(
                 arg.sign.map(|s| self.get(s)),
@@ -13180,16 +13191,25 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // [FULL_RANGE, precision]; INTERVAL Sconst opt_interval carries
                 // the qualifier's [fields] or [fields, precision].
                 let mut typmods = Vec::new();
-                if let Some(p) = i.precision {
-                    typmods.push(TypmodArg::Integer(0x7fff));
-                    typmods.push(TypmodArg::Integer(self.iconst_precision(p)));
-                } else if let Some(q) = i.qualifier {
-                    let (fields, precision) = self.interval_qualifier(q);
-                    typmods.push(TypmodArg::Integer(i64::from(fields)));
-                    if let Some(p) = precision {
-                        typmods.push(TypmodArg::Integer(p));
+                let value = match self.get(i.form) {
+                    FlatIntervalLitForm::Precision(p) => {
+                        let p = self.get(*p);
+                        typmods.push(TypmodArg::Integer(0x7fff));
+                        typmods.push(TypmodArg::Integer(self.iconst_precision(p.precision)));
+                        p.value
                     }
-                }
+                    FlatIntervalLitForm::Qualified(q) => {
+                        let q = self.get(*q);
+                        if let Some(qualifier) = q.qualifier {
+                            let (fields, precision) = self.interval_qualifier(qualifier);
+                            typmods.push(TypmodArg::Integer(i64::from(fields)));
+                            if let Some(p) = precision {
+                                typmods.push(TypmodArg::Integer(p));
+                            }
+                        }
+                        q.value
+                    }
+                };
                 let tn = TypeName {
                     schema: Some("pg_catalog".to_owned()),
                     name: "interval".to_owned(),
@@ -13197,7 +13217,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     array_dims: 0,
                     location,
                 };
-                self.string_const_cast(handle, tn, i.value, location)
+                self.string_const_cast(handle, tn, value, location)
             }
             FlatExpr::Array(a) if matches!(self.get(*a), FlatArrayExpr::Subquery(_)) => {
                 let FlatArrayExpr::Subquery(sub) = self.get(*a) else {
@@ -13707,7 +13727,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let t = self.expr(scope, inner.value)?;
                 let xml = self.types().builtin(Builtin::Xml);
                 self.coerce_to_specific_type(inner.value, &t, xml, "XMLSERIALIZE")?;
-                let tn = self.type_name(inner.ty)?;
+                let tn = self.simple_type_name(inner.ty, 0, self.span(inner.ty).start)?;
                 let (target, target_typmod) = self.typenames.resolve(&tn)?;
                 let text_value = Typed {
                     ty: self.types().builtin(Builtin::Text),
