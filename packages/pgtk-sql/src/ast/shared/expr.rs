@@ -61,6 +61,8 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum Sconst {
         Unicode(UnicodeStringLitWithEscape),
+        /// scan.l refuses an incorrect Unicode escape (issue #95).
+        #[validate(crate::ast::validation::escape_sconst, flat = crate::ast::validation::escape_sconst_flat)]
         Escape(literal::EscapeStringLit),
         Dollar(literal::DollarStringLit),
         Sequence(literal::StringLitSequence),
@@ -1287,7 +1289,11 @@ recursa::ast_node! {
     /// One shape rather than a "plain" and a "within group" tail: the two ended
     /// the argument list on the same `)` and could only be told apart after it,
     /// which a one-token parser cannot do.
+    ///
+    /// The action refuses an argument `ORDER BY`, `DISTINCT` or `VARIADIC`
+    /// with `WITHIN GROUP` (issue #95).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::within_group, flat = crate::ast::validation::within_group_flat)]
     pub struct FunctionCallSuffix {
         pub open: FunctionCallOpen,
         pub body: Option<FunctionCallBody>,
@@ -3294,7 +3300,9 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
+    /// parser.c refuses an incorrect Unicode escape (issue #95).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::unicode_string, flat = crate::ast::validation::unicode_string_flat)]
     pub struct UnicodeStringLitWithEscape {
         pub lit: literal::UnicodeStringLit,
         pub uescape: Option<UescapeSuffix>,
@@ -4758,6 +4766,8 @@ recursa::ast_node! {
         /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
         /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
         /// as a type name followed by the string literal.
+        /// scan.l refuses an incorrect Unicode escape (issue #95).
+        #[validate(crate::ast::validation::escape_expr, flat = crate::ast::validation::escape_expr_flat)]
         EscapeStringLit(literal::EscapeStringLit),
         /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
         TimestampLit(TimestampLit),

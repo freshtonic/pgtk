@@ -26,18 +26,21 @@ use crate::ast::ddl::function::{
 };
 use crate::ast::ddl::rule::{FlatRuleQuery, RuleQuery};
 use crate::ast::dml::select::{
-    FetchFirstBody, FetchMode, FlatFetchFirstBody, FlatFetchMode, FlatLimitLockingClause,
-    FlatLimitOffsetClause, FlatLimitingClause, LimitLockingClause, LimitOffsetClause,
-    LimitingClause,
+    FetchFirstBody, FetchMode, FlatFetchFirstBody, FlatFetchMode, FlatForLockingClause,
+    FlatForUpdateWait, FlatLimitLockingClause, FlatLimitOffsetClause, FlatLimitingClause,
+    ForLockingClause, ForUpdateWait, LimitLockingClause, LimitOffsetClause, LimitingClause,
 };
 use crate::ast::dml::values::{
     FlatQueryBody, FlatSelectClause, FlatSubquery, QueryBody, SelectClause, Subquery,
 };
 use crate::ast::shared::expr::{
-    Expr, FlatExpr, FlatFuncArg, FlatFunctionTypedLiteralTail, FlatRow, FuncArg,
-    FunctionTypedLiteralTail, Row,
+    Expr, FlatExpr, FlatFuncArg, FlatFunctionCallBody, FlatFunctionCallSuffix,
+    FlatFunctionTypedLiteralTail, FlatRow, FlatSconst, FlatUescapeString,
+    FlatUnicodeStringLitWithEscape, FuncArg, FunctionCallBody, FunctionCallSuffix,
+    FunctionTypedLiteralTail, Row, Sconst, UescapeString, UnicodeStringLitWithEscape,
 };
 use crate::ast::shared::with_clause::{FlatWithBody, FlatWithStatement, WithBody, WithStatement};
+use crate::ident::{FoldError, escape_string_error, unicode_string_error};
 
 /// `wrong number of parameters on left side of OVERLAPS expression`.
 pub static OVERLAPS_LEFT: RejectionNote = RejectionNote::new(
@@ -120,6 +123,15 @@ pub static WITH_TIES_WITHOUT_ORDER_BY: RejectionNote = RejectionNote::new(
     "WITH TIES cannot be specified without ORDER BY clause",
     None,
     "gram.y REL_17_11 18913, insertSelectOptions",
+);
+
+/// `SKIP LOCKED and WITH TIES options cannot be used together`.
+pub static WITH_TIES_SKIP_LOCKED: RejectionNote = RejectionNote::new(
+    "QueryBody",
+    Some("42601"),
+    "SKIP LOCKED and WITH TIES options cannot be used together",
+    None,
+    "gram.y REL_17_11 18924, insertSelectOptions",
 );
 
 /// `multiple WITH clauses not allowed`.
@@ -356,6 +368,8 @@ struct SelectOptions {
     limit: bool,
     /// Whether the statement has a `WITH`.
     with: bool,
+    /// Whether a locking clause of the statement is `SKIP LOCKED`.
+    skip_locked: bool,
 }
 
 /// The `OFFSET`, the `LIMIT` and whether the `FETCH` is `WITH TIES`, of one
@@ -392,6 +406,16 @@ fn locking_limit<'a>(clause: &'a LimitLockingClause<'_>) -> Option<&'a LimitOffs
     }
 }
 
+/// Reports whether a locking clause has a `SKIP LOCKED` item.
+fn skip_locked(locking: Option<&ForLockingClause<'_>>) -> bool {
+    locking.is_some_and(|locking| {
+        locking
+            .items()
+            .iter()
+            .any(|item| matches!(item.wait, Some(ForUpdateWait::SkipLocked)))
+    })
+}
+
 /// The merged options of the statement one select clause names: none for a
 /// plain clause, the options of the parenthesized query for a `(...)`.
 fn clause_options(clause: &SelectClause<'_>) -> SelectOptions {
@@ -412,6 +436,11 @@ fn subquery_options(query: &Subquery<'_>) -> SelectOptions {
 fn body_options(body: &QueryBody<'_>) -> SelectOptions {
     let mut options = clause_options(&body.clause);
     options.order_by |= body.order_by.is_some();
+    options.skip_locked |= skip_locked(
+        body.limit_locking
+            .as_deref()
+            .and_then(LimitLockingClause::locking),
+    );
     if let Some(clause) = body_limit(body) {
         let (offset, limit) = limit_offset(clause);
         options.offset |= offset;
@@ -439,8 +468,17 @@ pub fn query_options(body: &QueryBody<'_>) -> Result<(), Refusal> {
     if limit.is_some() && inner.limit {
         return Err(Refusal::new(&MULTIPLE_LIMIT).at_field(2));
     }
-    if limit.is_some_and(with_ties) && !(body.order_by.is_some() || inner.order_by) {
-        return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+    if limit.is_some_and(with_ties) {
+        if !(body.order_by.is_some() || inner.order_by) {
+            return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+        }
+        let locking = body
+            .limit_locking
+            .as_deref()
+            .and_then(LimitLockingClause::locking);
+        if skip_locked(locking) || inner.skip_locked {
+            return Err(Refusal::new(&WITH_TIES_SKIP_LOCKED));
+        }
     }
     Ok(())
 }
@@ -506,6 +544,32 @@ fn flat_locking_limit<R: recursa::__private::FlatNode>(
     }
 }
 
+/// The flat form of [`skip_locked`]: the locking clause of one flat limit
+/// and locking tail.
+fn flat_skip_locked<R: recursa::__private::FlatNode>(
+    clause: Option<recursa::__private::Handle<FlatLimitLockingClause>>,
+    ast: &FlatAst<'_, R>,
+) -> bool {
+    let Some(clause) = clause else {
+        return false;
+    };
+    let locking = match ast[clause] {
+        FlatLimitLockingClause::LockingFirst(clause) => Some(ast[clause].locking),
+        FlatLimitLockingClause::LimitFirst(clause) => ast[clause].locking,
+    };
+    let Some(locking) = locking else {
+        return false;
+    };
+    match ast[locking] {
+        FlatForLockingClause::ReadOnly => false,
+        FlatForLockingClause::Items(items) => ast[items].iter().any(|item| {
+            ast[*item]
+                .wait
+                .is_some_and(|wait| matches!(ast[wait], FlatForUpdateWait::SkipLocked))
+        }),
+    }
+}
+
 /// The flat form of [`clause_options`].
 fn flat_clause_options<R: recursa::__private::FlatNode>(
     clause: &FlatSelectClause,
@@ -534,6 +598,7 @@ fn flat_body_options<R: recursa::__private::FlatNode>(
 ) -> SelectOptions {
     let mut options = flat_clause_options(&ast[body.clause], ast);
     options.order_by |= body.order_by.is_some();
+    options.skip_locked |= flat_skip_locked(body.limit_locking, ast);
     if let Some(clause) = flat_body_limit(body, ast) {
         let (offset, limit) = flat_limit_offset(&clause, ast);
         options.offset |= offset;
@@ -561,10 +626,13 @@ pub fn query_options_flat(
     if limit.is_some() && inner.limit {
         return Err(Refusal::new(&MULTIPLE_LIMIT).at_field(2));
     }
-    if limit.is_some_and(|limit| flat_with_ties(limit, ast))
-        && !(body.order_by.is_some() || inner.order_by)
-    {
-        return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+    if limit.is_some_and(|limit| flat_with_ties(limit, ast)) {
+        if !(body.order_by.is_some() || inner.order_by) {
+            return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+        }
+        if flat_skip_locked(body.limit_locking, ast) || inner.skip_locked {
+            return Err(Refusal::new(&WITH_TIES_SKIP_LOCKED));
+        }
     }
     Ok(())
 }
@@ -634,4 +702,257 @@ pub fn rule_query_options_flat(
         return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
     }
     Ok(())
+}
+
+// --- func_expr: func_application within_group_clause ---
+
+/// `cannot use multiple ORDER BY clauses with WITHIN GROUP`.
+pub static WITHIN_GROUP_ORDER_BY: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use multiple ORDER BY clauses with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15598, func_expr",
+);
+
+/// `cannot use DISTINCT with WITHIN GROUP`.
+pub static WITHIN_GROUP_DISTINCT: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use DISTINCT with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15603, func_expr",
+);
+
+/// `cannot use VARIADIC with WITHIN GROUP`.
+pub static WITHIN_GROUP_VARIADIC: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use VARIADIC with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15608, func_expr",
+);
+
+/// The `WITHIN GROUP` checks of one call, in the order of gram.y: an
+/// argument `ORDER BY`, `DISTINCT`, then `VARIADIC`.
+fn within_group_refusal(order_by: bool, distinct: bool, variadic: bool) -> Result<(), Refusal> {
+    // The error is at the `WITHIN GROUP` clause, field 3.
+    let note = if order_by {
+        &WITHIN_GROUP_ORDER_BY
+    } else if distinct {
+        &WITHIN_GROUP_DISTINCT
+    } else if variadic {
+        &WITHIN_GROUP_VARIADIC
+    } else {
+        return Ok(());
+    };
+    Err(Refusal::new(note).at_field(3))
+}
+
+/// gram.y `func_expr: func_application within_group_clause filter_clause
+/// over_clause`: the order of `WITHIN GROUP` and the aggregate `ORDER BY`
+/// share one field, so the action refuses a call with both. It also refuses
+/// `DISTINCT` and `VARIADIC` with `WITHIN GROUP` (REL_17_11 gram.y
+/// 15581-15612; REL_14_24 has the same checks).
+pub fn within_group(call: &FunctionCallSuffix<'_>) -> Result<(), Refusal> {
+    if call.within_group.is_none() {
+        return Ok(());
+    }
+    let (order_by, distinct, variadic) = match &call.body {
+        None | Some(FunctionCallBody::Star(_)) => (false, false, false),
+        Some(FunctionCallBody::All(args)) => (args.order_by.is_some(), false, false),
+        Some(FunctionCallBody::Distinct(args)) => (args.order_by.is_some(), true, false),
+        Some(FunctionCallBody::LeadingVariadic(args)) => (args.order_by.is_some(), false, true),
+        Some(FunctionCallBody::Args(args)) => (
+            args.order_by.is_some(),
+            false,
+            args.trailing_variadic.is_some(),
+        ),
+    };
+    within_group_refusal(order_by, distinct, variadic)
+}
+
+/// The flat form of [`within_group`].
+pub fn within_group_flat(
+    call: &FlatFunctionCallSuffix,
+    ast: &FlatAst<'_, FlatFunctionCallSuffix>,
+) -> Result<(), Refusal> {
+    if call.within_group.is_none() {
+        return Ok(());
+    }
+    let (order_by, distinct, variadic) = match call.body.map(|body| ast[body]) {
+        None | Some(FlatFunctionCallBody::Star(_)) => (false, false, false),
+        Some(FlatFunctionCallBody::All(args)) => (ast[args].order_by.is_some(), false, false),
+        Some(FlatFunctionCallBody::Distinct(args)) => (ast[args].order_by.is_some(), true, false),
+        Some(FlatFunctionCallBody::LeadingVariadic(args)) => {
+            (ast[args].order_by.is_some(), false, true)
+        }
+        Some(FlatFunctionCallBody::Args(args)) => (
+            ast[args].order_by.is_some(),
+            false,
+            ast[args].trailing_variadic.is_some(),
+        ),
+    };
+    within_group_refusal(order_by, distinct, variadic)
+}
+
+// --- Unicode escapes in string constants ---
+
+/// `invalid Unicode escape` in a `U&'...'` string.
+pub static UNICODE_STRING_ESCAPE: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\XXXX or \\+XXXXXX."),
+    "parser.c REL_17_11 494, str_udeescape",
+);
+
+/// `invalid Unicode escape value` in a `U&'...'` string.
+pub static UNICODE_STRING_VALUE: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "parser.c REL_17_11 347, check_unicode_value",
+);
+
+/// `invalid Unicode surrogate pair` in a `U&'...'` string.
+pub static UNICODE_STRING_PAIR: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "parser.c REL_17_11 523, str_udeescape",
+);
+
+/// `invalid Unicode escape` in an `E'...'` string.
+pub static ESCAPE_STRING_ESCAPE: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("22025"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\uXXXX or \\UXXXXXXXX."),
+    "scan.l REL_17_11 716, <xe,xeu>{xeunicodefail}",
+);
+
+/// `invalid Unicode escape value` in an `E'...'` string.
+pub static ESCAPE_STRING_VALUE: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "scan.l REL_17_11 1393, addunicode",
+);
+
+/// `invalid Unicode surrogate pair` in an `E'...'` string.
+pub static ESCAPE_STRING_PAIR: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "scan.l REL_17_11 677, <xe>{xeunicode}",
+);
+
+/// The refusal of a `U&'...'` string with the escape error `error`.
+fn unicode_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
+    let note = match error {
+        None => return Ok(()),
+        Some(FoldError::InvalidEscapeValue) => &UNICODE_STRING_VALUE,
+        Some(FoldError::InvalidSurrogatePair) => &UNICODE_STRING_PAIR,
+        Some(_) => &UNICODE_STRING_ESCAPE,
+    };
+    // The error is at the string, field 0.
+    Err(Refusal::new(note).at_field(0))
+}
+
+/// The refusal of an `E'...'` string with the escape error `error`.
+fn escape_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
+    let note = match error {
+        None => return Ok(()),
+        Some(FoldError::InvalidEscapeValue) => &ESCAPE_STRING_VALUE,
+        Some(FoldError::InvalidSurrogatePair) => &ESCAPE_STRING_PAIR,
+        Some(_) => &ESCAPE_STRING_ESCAPE,
+    };
+    Err(Refusal::new(note))
+}
+
+/// The source text of the string after `UESCAPE`.
+fn uescape_text<'a>(string: &'a UescapeString<'_>) -> &'a str {
+    match string {
+        UescapeString::Escape(string) => string.text(),
+        UescapeString::Dollar(string) => string.text(),
+        UescapeString::Sequence(string) => string.text(),
+        UescapeString::Plain(string) => string.text(),
+    }
+}
+
+/// The flat form of [`uescape_text`].
+fn flat_uescape_text<'a, R: recursa::__private::FlatNode>(
+    string: FlatUescapeString,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    match string {
+        FlatUescapeString::Escape(string) => ast[string].as_str(),
+        FlatUescapeString::Dollar(string) => ast[string].as_str(),
+        FlatUescapeString::Sequence(string) => ast[string].as_str(),
+        FlatUescapeString::Plain(string) => ast[string].as_str(),
+    }
+}
+
+/// `parser.c` `base_yylex` decodes a `U&'...'` string with `str_udeescape`,
+/// with the escape character of its `UESCAPE` clause, and refuses an
+/// incorrect Unicode escape (REL_17_11 parser.c 316-319 and 380-530).
+pub fn unicode_string(string: &UnicodeStringLitWithEscape<'_>) -> Result<(), Refusal> {
+    let uescape = string
+        .uescape
+        .as_ref()
+        .map(|uescape| uescape_text(&uescape.escape_char));
+    unicode_string_refusal(unicode_string_error(string.lit.text(), uescape))
+}
+
+/// The flat form of [`unicode_string`].
+pub fn unicode_string_flat(
+    string: &FlatUnicodeStringLitWithEscape,
+    ast: &FlatAst<'_, FlatUnicodeStringLitWithEscape>,
+) -> Result<(), Refusal> {
+    let uescape = string
+        .uescape
+        .map(|uescape| flat_uescape_text(ast[ast[uescape].escape_char], ast));
+    unicode_string_refusal(unicode_string_error(ast[string.lit].as_str(), uescape))
+}
+
+/// `scan.l` refuses an `E'...'` string with an incorrect Unicode escape
+/// (`crate::ident::escape_string_error`). The check is on each node that holds the
+/// token: the `Escape` arm of [`Sconst`] and of [`Expr`].
+pub fn escape_sconst(value: &Sconst<'_>) -> Result<(), Refusal> {
+    let Sconst::Escape(string) = value else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(string.text()))
+}
+
+/// The flat form of [`escape_sconst`].
+pub fn escape_sconst_flat(
+    value: &FlatSconst,
+    ast: &FlatAst<'_, FlatSconst>,
+) -> Result<(), Refusal> {
+    let FlatSconst::Escape(string) = value else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(ast[*string].as_str()))
+}
+
+/// The [`Expr`] form of [`escape_sconst`].
+pub fn escape_expr(expr: &Expr<'_>) -> Result<(), Refusal> {
+    let Expr::EscapeStringLit(string) = expr else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(string.text()))
+}
+
+/// The flat form of [`escape_expr`].
+pub fn escape_expr_flat(expr: &FlatExpr, ast: &FlatAst<'_, FlatExpr>) -> Result<(), Refusal> {
+    let FlatExpr::EscapeStringLit(string) = expr else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(ast[*string].as_str()))
 }

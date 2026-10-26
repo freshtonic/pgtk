@@ -15,8 +15,9 @@
 //! (`scansup.c`) downcases a byte with the high bit set only in a single-byte
 //! encoding, so here every non-ASCII character stays as written.
 //!
-//! The scanner rejects a zero-length quoted identifier (`""`, `U&""`).
-//! pgtk-sql's lexer accepts one, so [`fold_identifier`] reports it.
+//! The scanner rejects a zero-length quoted identifier (`""`, `U&""`), and
+//! so does pgtk-sql's lexer. [`fold_identifier`] also reports one, because a
+//! caller can give it any text.
 
 use std::borrow::Cow;
 use std::fmt;
@@ -337,6 +338,111 @@ fn escape(bytes: &[u8], at: usize, value: &mut Vec<u8>) -> Option<usize> {
             Some(at + 2)
         }
     }
+}
+
+/// The first Unicode escape error of a `U&'...'` string constant, which
+/// `str_udeescape` (`parser.c`, called from `base_yylex`) reports, or `None`
+/// when the string is correct.
+///
+/// `raw` is the source text of the `U&'...'` token, and `uescape` is the
+/// source text of the string after `UESCAPE`, if there is one. An escape
+/// character that `check_uescapechar` refuses gives `None`: the `UESCAPE`
+/// clause has its own rejection for it.
+pub(crate) fn unicode_string_error(raw: &str, uescape: Option<&str>) -> Option<FoldError> {
+    // The parts of a continued `U&'...'` string are joined before
+    // `str_udeescape` reads the value (scan.l `<xus>`, parser.c 316-319).
+    let value = quoted_parts(raw.as_bytes().get(2..)?, false)?;
+    let escape = match uescape {
+        Some(uescape) => escape_byte(&sconst_bytes(uescape)?).ok()?,
+        None => b'\\',
+    };
+    decode_escapes(std::str::from_utf8(&value).ok()?, escape).err()
+}
+
+/// The first Unicode escape error of an `E'...'` string constant, which
+/// `scan.l` reports, or `None` when the string is correct.
+///
+/// `scan.l` reads `\uXXXX` and `\UXXXXXXXX` (`<xe>{xeunicode}`). A `\u` or
+/// `\U` with fewer hexadecimal digits is "invalid Unicode escape"
+/// (`{xeunicodefail}`). A first UTF-16 surrogate must be followed at once by
+/// a `\u` or `\U` escape of a second surrogate (`<xeu>`), and a second
+/// surrogate alone is an error: both are "invalid Unicode surrogate pair".
+/// Code point 0 and a code point above U+10FFFF are "invalid Unicode escape
+/// value" (`addunicode`). REL_17_11 scan.l 656-720 and 1393; REL_14_24 has
+/// the same rules.
+///
+/// `raw` is the source text of the `E'...'` token. The other escapes of
+/// `scan.l` (`\n`, octal, `\x`) are not checked here.
+pub(crate) fn escape_string_error(raw: &str) -> Option<FoldError> {
+    // `sconst_bytes` reads each part of a continued string with the rules of
+    // `xe`, and gives `None` for a refused escape. The walk below only names
+    // the error.
+    if sconst_bytes(raw).is_some() {
+        return None;
+    }
+    escape_string_error_kind(raw).or(Some(FoldError::InvalidEscape))
+}
+
+/// The kind of the first Unicode escape error in the source text of an
+/// `E'...'` string. The text between the parts of a continued string is read
+/// as part of the string, which is sufficient to name the error.
+fn escape_string_error_kind(raw: &str) -> Option<FoldError> {
+    let inner = raw.get(1..)?.strip_prefix('\'')?.strip_suffix('\'')?;
+    let bytes = inner.as_bytes();
+    let mut pair_first: Option<u32> = None;
+    let mut at = 0;
+    while at < bytes.len() {
+        let escape = bytes[at] == b'\\';
+        let digits = match bytes.get(at + 1) {
+            Some(b'u') if escape => Some(4),
+            Some(b'U') if escape => Some(8),
+            _ => None,
+        };
+        let Some(digits) = digits else {
+            if pair_first.is_some() {
+                return Some(FoldError::InvalidSurrogatePair);
+            }
+            // A backslash escapes the next character, also a quote.
+            let next = if escape { at + 1 } else { at };
+            let ch = inner[next..].chars().next()?;
+            at = next + ch.len_utf8();
+            continue;
+        };
+        let Some(value) = hex_value(bytes, at + 2, digits) else {
+            return Some(FoldError::InvalidEscape);
+        };
+        at += 2 + digits;
+        let is_first = (0xD800..=0xDBFF).contains(&value);
+        let is_second = (0xDC00..=0xDFFF).contains(&value);
+        match pair_first.take() {
+            Some(_) if !is_second => return Some(FoldError::InvalidSurrogatePair),
+            // A pair always gives a correct code point.
+            Some(_) => {}
+            None if is_first => pair_first = Some(value),
+            None if is_second => return Some(FoldError::InvalidSurrogatePair),
+            None if value == 0 || value > 0x10_FFFF => {
+                return Some(FoldError::InvalidEscapeValue);
+            }
+            None => {}
+        }
+    }
+    pair_first.map(|_| FoldError::InvalidSurrogatePair)
+}
+
+/// Classify an identifier spelling for the rules that `gram.y` writes as
+/// `ColId`: `"current_schema"` for the unquoted keyword `CURRENT_SCHEMA`,
+/// `"name"` for each other spelling.
+///
+/// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
+/// kwlist.h 115), so it is no `ColId`. pgtk-sql lexes the word as an
+/// identifier (`crate::tokens`), so a rule that takes a `ColId` refuses it by
+/// its text. A quoted `"current_schema"` is a plain name.
+pub fn current_schema_class(raw: &str) -> Option<&'static str> {
+    Some(if raw.eq_ignore_ascii_case("current_schema") {
+        "current_schema"
+    } else {
+        "name"
+    })
 }
 
 /// `check_uescapechar` (`parser.c`), after `strlen(escstr) != 1`.

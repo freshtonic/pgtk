@@ -138,12 +138,59 @@ empty.** The `pg17` list is empty, and the `pg17` baseline must give the frozen
 legacy outcome counts of `baselines/postgresql-17.9.json` (the fast test checks
 this).
 
-The differential check finds an over-acceptance only when the oracle accepts
-the output of pgtk-sql. A statement that a version rejects is normally rejected
-again after the format step, so an older version's build that accepts newer
-syntax (for example `MERGE` in `pg14`) has no gap in this list. The version
-increments therefore need explicit negative tests for each "removed in N" and
-"added in N" change (decision 11 of `docs/plans/2026-09-22-target-versions.md`).
+Before #95 the differential check found an over-acceptance only when the
+oracle accepted the output of pgtk-sql. A statement that a version rejects is
+normally rejected again after the format step, so an older version's build
+that accepted newer syntax (for example `MERGE` in `pg14`) had no gap in this
+list. The check is now strict (see below), so such a statement fails. The
+version increments also have explicit negative tests for each "removed in N"
+and "added in N" change (decision 11 of
+`docs/plans/2026-09-22-target-versions.md`).
+
+### A statement that the oracle rejects (#95)
+
+Version parity says that a build rejects what the raw parser of its target
+version rejects. So when the oracle rejects a statement, pgtk-sql must reject
+it too, and an accept is a failure, whatever the rendering is:
+
+- "over-permissive": the oracle accepts the rendering of pgtk-sql. pgtk-sql
+  changed the meaning of the statement. This is the more specific failure.
+- "over-acceptance": the oracle also rejects the rendering.
+
+Before #95 the check failed only the first case. An over-accepted statement
+usually keeps its defect in the rendering, so the check did not find it. PRs
+#72 to #90 fixed about 20 such statements of the corpus because the fuzz
+round trip found them. The strict rule found 23 more on `pg17`, in six
+causes. The fixes of #95 remove all of them:
+
+| Cause | Statements | Rule | Fix |
+|---|---|---|---|
+| An incorrect Unicode escape in `U&'...'` | 10 (`strings.sql`) | parser.c `str_udeescape` | validation hook on `UnicodeStringLitWithEscape` |
+| An incorrect `\u` or `\U` escape in `E'...'` | 8 (`strings.sql`) | scan.l `<xe>{xeunicode}`, `{xeunicodefail}`, `addunicode` | validation hook on the `E'...'` arms of `Sconst` and `Expr` |
+| A zero-length delimited identifier `""` | 1 (`create_am.sql`) | scan.l `<xd>{xdstop}` | the identifier patterns need one character |
+| An argument `ORDER BY` with `WITHIN GROUP` | 1 (`aggregates.sql`) | gram.y `func_expr` | validation hook on `FunctionCallSuffix` |
+| `WITH TIES` with `SKIP LOCKED` | 1 (`limit.sql`) | gram.y `insertSelectOptions` | the `QueryBody` validation hook |
+| `CURRENT_SCHEMA` as a table name | 2 (`publication.sql`) | kwlist.h, gram.y `qualified_name` | declared rejection on `QualifiedName` |
+
+Each rejection comes from the raw parser (`scan.l`, `parser.c` or a `gram.y`
+action), not from a soft error of the oracle. So no version baseline records
+one of them as a gap.
+
+`baselines/pending-over-acceptance.json` is the temporary list of the
+over-acceptances that are not fixed. Each entry has the statement identity
+and a named cause. The differential test expects the "over-acceptance"
+failure for an entry where the oracle of the target version rejects the
+statement. So a new over-acceptance fails, and an entry that pgtk-sql now
+rejects fails until its entry is removed. The list is empty. A statement that
+the oracle rejects for a reason outside the raw parser goes in the version
+baseline as a `"fail"` gap with the oracle outcome `"reject"`, with its reason
+in this document.
+
+The rule needs the other target versions too. Their oracles reject statements
+that the `pg17` oracle accepts: 1009 for `pg14`, 616 for `pg15` and 369 for
+`pg16` (none for `pg18` and `pg19-beta`). Before #95 a build of an older
+version could accept such a statement and pass. Now it fails unless the
+version gates of the grammar refuse it.
 
 ### How the tests use the version baseline
 
@@ -151,8 +198,10 @@ The differential test reads the baseline of the build's target version. For
 each corpus file, it fails if:
 
 - the live oracle outcome of a statement differs from the recorded outcome;
-- a listed gap now agrees with the oracle, or has a different outcome; or
-- a statement that is not listed disagrees with the oracle.
+- a listed gap now agrees with the oracle, or has a different outcome;
+- a statement that is not listed disagrees with the oracle, also a statement
+  that the oracle rejects and pgtk-sql accepts; or
+- a pending over-acceptance changed (`baselines/pending-over-acceptance.json`).
 
 Thus the list cannot become stale in either direction. The accepted legacy
 gap test keeps the exact 17 contract for `pg17`. For another version, it skips
