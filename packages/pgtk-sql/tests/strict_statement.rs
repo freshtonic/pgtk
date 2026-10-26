@@ -914,6 +914,8 @@ fn lists_and_clauses_keep_the_cardinality_of_gram_y() {
             "CREATE TABLE t PARTITION OF u FOR VALUES WITH ()",
             "CREATE TABLE t () INHERITS ()",
             "CREATE FOREIGN TABLE t PARTITION OF u () DEFAULT SERVER s",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS ()) AS t",
+            "SELECT * FROM JSON_TABLE('{}', '$' COLUMNS (NESTED '$' COLUMNS ())) AS t",
             // A statement that needs an action.
             "ALTER SERVER s",
             "ALTER FOREIGN DATA WRAPPER w",
