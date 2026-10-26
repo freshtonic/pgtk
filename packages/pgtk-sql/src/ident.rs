@@ -206,7 +206,8 @@ pub fn uescape_class(raw: &str) -> Option<&'static str> {
 /// dollar-quoted string. The result is `None` for another spelling, for
 /// an `E'...'` escape that `scan.l` refuses (`xeunicodefail`, a code point
 /// that is not valid, or a surrogate that is not in a pair), and for an
-/// `E'...'` value that `scan.l` refuses: see [`is_valid_server_text`].
+/// `E'...'` value that `scan.l` refuses: a value with a zero byte, or one
+/// that is not UTF-8 (`pg_verifymbstr` in a UTF8 database).
 ///
 /// pgtk-sql lexes as if `standard_conforming_strings` is on, so a backslash
 /// in a plain string is an ordinary character.
