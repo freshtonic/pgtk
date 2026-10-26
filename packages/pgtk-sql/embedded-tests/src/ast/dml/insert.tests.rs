@@ -67,7 +67,7 @@ mod tests {
         let stmt_parsed = InsertStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
         assert!(stmt.rest.columns().is_none());
-        assert!(matches!(*stmt.rest.source(), super::InsertSource::Select(_)));
+        assert!(stmt.rest.source().is_some());
         assert!(input.is_eof());
     }
 
@@ -78,7 +78,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = InsertStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(*stmt.rest.source(), super::InsertSource::Default));
+        assert!(matches!(stmt.rest, super::InsertRest::Default));
         assert!(stmt.returning.is_some());
         assert!(input.is_eof());
     }
@@ -90,7 +90,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = InsertStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(matches!(*stmt.rest.source(), super::InsertSource::Select(_)));
+        assert!(stmt.rest.source().is_some());
         assert!(input.is_eof());
     }
 

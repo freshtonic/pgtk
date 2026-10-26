@@ -477,6 +477,52 @@ recursa::ast_node! {
 // --- SECURITY LABEL ---
 
 recursa::ast_node! {
+    /// The object kind plus name in a `SECURITY LABEL ON` clause: gram.y
+    /// `SecLabelStmt` (REL_17_11 gram.y 7234-7330). It has the kinds of
+    /// [`CommentObject`] except `CONSTRAINT`, `POLICY`, `RULE`, `TRIGGER` and
+    /// `OPERATOR`, which `SecLabelStmt` does not have (issue #58).
+    ///
+    /// Variant ordering: as in [`CommentObject`].
+    #[derive(Debug)]
+    pub enum SecurityLabelObject {
+        MaterializedView(CommentMatViewObject),
+        ForeignTable(CommentForeignTableObject),
+        TextSearchParser(CommentTsParserObject),
+        TextSearchDictionary(CommentTsDictionaryObject),
+        TextSearchTemplate(CommentTsTemplateObject),
+        TextSearchConfiguration(CommentTsConfigObject),
+        Table(CommentTableObject),
+        Sequence(CommentSequenceObject),
+        View(CommentViewObject),
+        Index(CommentIndexObject),
+        Collation(CommentCollationObject),
+        Conversion(CommentConversionObject),
+        Statistics(CommentStatisticsObject),
+        Column(CommentColumnObject),
+        AccessMethod(CommentAccessMethodObject),
+        EventTrigger(CommentEventTriggerObject),
+        ForeignDataWrapper(CommentForeignDataWrapperObject),
+        ProceduralLanguage(CommentProceduralLanguageObject),
+        Language(CommentLanguageObject),
+        Database(CommentDatabaseObject),
+        Role(CommentRoleObject),
+        Subscription(CommentSubscriptionObject),
+        Tablespace(CommentTablespaceObject),
+        Extension(CommentExtensionObject),
+        Publication(CommentPublicationObject),
+        Schema(CommentSchemaObject),
+        Server(CommentServerObject),
+        Type(CommentTypeObject),
+        Domain(CommentDomainObject),
+        Aggregate(CommentAggregateObject),
+        Function(CommentFunctionObject),
+        Procedure(CommentProcedureObject),
+        Routine(CommentRoutineObject),
+        LargeObject(CommentLargeObjectObject),
+    }
+}
+
+recursa::ast_node! {
     /// A security-label provider name — Postgres' `NonReservedWord_or_Sconst`.
     ///
     /// Variant ordering: `String` before `Word` is irrelevant (disjoint
@@ -502,16 +548,14 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `SECURITY LABEL [FOR provider] ON object IS { 'label' | NULL }`
     ///
-    /// The object grammar is shared verbatim with `COMMENT ON` ([`CommentObject`]).
-    /// Postgres' `SecLabelStmt` accepts a subset of object kinds; the wider
-    /// `CommentObject` enum is reused since SECURITY LABEL of an unsupported kind
-    /// is rejected by PostgreSQL anyway and never appears in the corpus.
+    /// The object kinds are those of gram.y `SecLabelStmt`
+    /// ([`SecurityLabelObject`]).
     #[derive(Debug)]
     #[tok(SECURITY, LABEL, this)]
     pub struct SecurityLabelStmt {
         pub provider: Option<SecurityLabelProvider>,
         #[tok(ON, this)]
-        pub object: CommentObject,
+        pub object: SecurityLabelObject,
         #[tok(IS, this)]
         pub text: CommentText,
     }

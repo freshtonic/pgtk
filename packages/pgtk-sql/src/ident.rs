@@ -122,6 +122,15 @@ pub fn fold_name(raw: &str) -> Option<Cow<'_, str>> {
     fold_identifier(raw).ok().map(|folded| folded.name)
 }
 
+/// Fold the source text of one identifier token as [`fold_name`] does, and
+/// then make it lower case, for a `gram.y` action that compares the name with
+/// `pg_strcasecmp`.
+///
+/// Returns `None` when the scanner rejects the text.
+pub fn fold_name_caseless(raw: &str) -> Option<String> {
+    fold_name(raw).map(|folded| folded.to_ascii_lowercase())
+}
+
 /// Fold the source text of one gram.y `RoleSpec` word for the declared
 /// classification of `RoleId` and `RoleSpec` (REL_17_11 gram.y 17305-17385).
 ///
@@ -171,6 +180,21 @@ pub fn fold_keyword(kind: crate::TokenKind) -> Option<Folded<'static>> {
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
         .then(|| truncate(downcase(spelling)))
+}
+
+/// Classify the source text of the string after `UESCAPE` for the
+/// `UESCAPE` rule of `parser.c` (`base_yylex`): `"valid"` when the string is
+/// one character that `check_uescapechar` admits, else `"invalid"`.
+///
+/// The text is a plain `'...'` string, in which `''` stands for one `'`.
+pub fn uescape_class(raw: &str) -> Option<&'static str> {
+    let inner = raw.strip_prefix('\'')?.strip_suffix('\'')?;
+    let value = inner.replace("''", "'");
+    Some(if escape_byte(&value).is_ok() {
+        "valid"
+    } else {
+        "invalid"
+    })
 }
 
 /// `check_uescapechar` (`parser.c`), after `strlen(escstr) != 1`.

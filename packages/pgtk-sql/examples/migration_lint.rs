@@ -32,7 +32,9 @@ use std::ops::ControlFlow;
 use std::process::ExitCode;
 
 use pgtk_sql::ast::ddl::index::CreateIndexStmt;
-use pgtk_sql::ast::ddl::table::{AlterColumnAction, AlterTableCmd, ColConstraintElem, ColumnDef};
+use pgtk_sql::ast::ddl::table::{
+    AlterColumnAction, AlterColumnTarget, AlterTableCmd, ColConstraintElem, ColumnDef,
+};
 use pgtk_sql::ast::dml::delete::DeleteStmt;
 use pgtk_sql::ast::dml::update::UpdateStmt;
 use pgtk_sql::document;
@@ -120,13 +122,17 @@ impl Visitor<AlterTableCmd<'_>> for Lint {
                 "drop-column",
                 "DROP COLUMN breaks each client that still reads it",
             ),
-            AlterTableCmd::AlterColumn(cmd) => match &cmd.action {
+            // A column number takes only SET STATISTICS, so only a column name can change type.
+            AlterTableCmd::AlterColumn(cmd) => match &cmd.target {
                 // `SET DATA TYPE t` and the short form `TYPE t`.
-                AlterColumnAction::SetDataType(_) | AlterColumnAction::Type(_) => self.report(
-                    "alter-column-type",
-                    "ALTER COLUMN ... TYPE can rewrite the table and its indexes",
-                ),
-                _ => {}
+                AlterColumnTarget::Name(column) => match &column.action {
+                    AlterColumnAction::SetDataType(_) | AlterColumnAction::Type(_) => self.report(
+                        "alter-column-type",
+                        "ALTER COLUMN ... TYPE can rewrite the table and its indexes",
+                    ),
+                    _ => {}
+                },
+                AlterColumnTarget::Number(_) => {}
             },
             _ => {}
         }

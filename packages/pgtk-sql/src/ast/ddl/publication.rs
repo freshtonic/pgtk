@@ -59,23 +59,15 @@ recursa::ast_node! {
 // has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
 #[cfg(feature = "since-pg15")]
 recursa::ast_node! {
-    /// `TABLES IN SCHEMA name [(cols)]` — the schema-scoped publication
-    /// object. The schema name is an unqualified identifier (PG accepts
-    /// `CURRENT_SCHEMA` as a special keyword form; pgtk-sql does not lex it as
-    /// a keyword so it flows through as a bare `Ident`).
-    ///
-    /// Per gram.y `PublicationObjSpec: TABLES IN SCHEMA ColId`, no column
-    /// list is permitted — PG rejects `TABLES IN SCHEMA foo (a, b)`
-    /// syntactically. The corpus (`publication.sql`) exercises this PG-rejected
-    /// form to verify the error; pgtk-sql accepts it over-permissively so the
-    /// statement is modelled instead of surfacing as a
-    /// a file-level parse error. The round-tripped output is still
-    /// PG-rejected, so the differential oracle stays valid.
+    /// `TABLES IN SCHEMA schema`: gram.y `PublicationObjSpec: TABLES IN_P
+    /// SCHEMA ColId | TABLES IN_P SCHEMA CURRENT_SCHEMA` (REL_17_11 gram.y
+    /// 10577-10589). It takes no column list (issue #58). pgtk-sql lexes
+    /// `CURRENT_SCHEMA` as an identifier (see `tokens.rs`), so the `ColId`
+    /// takes it.
     #[derive(Debug)]
     pub struct PublicationObjTablesInSchema {
         #[tok(TABLES, IN, SCHEMA, this)]
-        pub name: crate::tokens::ColId,
-        pub columns: Option<PublicationColumnList>,
+        pub schema: crate::tokens::ColId,
     }
 }
 
@@ -122,17 +114,153 @@ recursa::ast_node! {
 // has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
 #[cfg(feature = "since-pg15")]
 recursa::ast_node! {
-    /// One entry in a publication object list — Postgres' `PublicationObjSpec`.
+    /// gram.y `pub_obj_list` (REL_17_11 gram.y 10567-10660), as
+    /// `preprocess_pubobj_list` reads it (REL_17_11 gram.y 19370-19450).
     ///
-    /// Variant ordering: keyword-prefixed forms first (`Table` reserved,
-    /// `TablesInSchema` soft, `Only` reserved), then the catch-all `Bare`
-    /// (starts with an ident) so the keyword-prefixed forms win on peek.
+    /// A bare name continues the group of the object before it: a table
+    /// after `TABLE`, a schema after `TABLES IN SCHEMA`. The function rejects
+    /// a list that starts with a bare name ("invalid publication object
+    /// list"), and a schema continuation with a column list, a `WHERE`
+    /// clause, `ONLY`, `*` or a qualified name. So the list is a chain of
+    /// groups, each one opened by `TABLE` or `TABLES IN SCHEMA`, and a
+    /// continuation has the shape of its group (issue #55).
+    ///
+    /// Variant ordering: `Table` starts with `TABLE`, `TablesInSchema` with
+    /// `TABLES IN SCHEMA`.
     #[derive(Debug)]
-    pub enum PublicationObjSpec {
-        Table(PublicationObjTable),
-        TablesInSchema(PublicationObjTablesInSchema),
+    pub enum PublicationObjGroup {
+        Table(boxed!(PublicationTableGroup)),
+        TablesInSchema(boxed!(PublicationSchemaGroup)),
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// `TABLE relation [(cols)] [WHERE (expr)]` and the objects after it.
+    #[derive(Debug)]
+    pub struct PublicationTableGroup {
+        pub table: PublicationObjTable,
+        pub rest: Option<PublicationTableRest>,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// `, next` after a table object.
+    #[derive(Debug)]
+    pub struct PublicationTableRest {
+        #[tok(COMMA, this)]
+        pub next: PublicationTableNext,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// The object after a table object: a new group, or a table that
+    /// continues the group.
+    ///
+    /// Variant ordering: `Group` starts with `TABLE` or `TABLES IN SCHEMA`;
+    /// `TABLES` is also a `ColId`, and the token after it decides.
+    #[derive(Debug)]
+    pub enum PublicationTableNext {
+        Group(PublicationObjGroup),
+        Table(boxed!(PublicationTableContinuation)),
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// A table that continues a `TABLE` group, and the objects after it.
+    #[derive(Debug)]
+    pub struct PublicationTableContinuation {
+        pub table: PublicationTableName,
+        pub rest: Option<PublicationTableRest>,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// A continuation table: gram.y `PublicationObjSpec: ColId
+    /// opt_column_list OptWhereClause | ColId indirection ... |
+    /// extended_relation_expr ...`. The `CURRENT_SCHEMA` arm is no table
+    /// ("invalid table name"), so it has no variant here.
+    ///
+    /// Variant ordering: `Only` starts with `ONLY`; `Bare` with a name.
+    #[derive(Debug)]
+    pub enum PublicationTableName {
         Only(PublicationObjOnly),
         Bare(PublicationObjBare),
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// `TABLES IN SCHEMA schema` and the objects after it.
+    #[derive(Debug)]
+    pub struct PublicationSchemaGroup {
+        pub schema: PublicationObjTablesInSchema,
+        pub rest: Option<PublicationSchemaRest>,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// `, next` after a schema object.
+    #[derive(Debug)]
+    pub struct PublicationSchemaRest {
+        #[tok(COMMA, this)]
+        pub next: PublicationSchemaNext,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// The object after a schema object: a new group, or a schema that
+    /// continues the group.
+    ///
+    /// Variant ordering: as in [`PublicationTableNext`].
+    #[derive(Debug)]
+    pub enum PublicationSchemaNext {
+        Group(PublicationObjGroup),
+        Schema(boxed!(PublicationSchemaContinuation)),
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// A schema that continues a `TABLES IN SCHEMA` group, and the objects
+    /// after it.
+    #[derive(Debug)]
+    pub struct PublicationSchemaContinuation {
+        pub schema: crate::tokens::ColId,
+        pub rest: Option<PublicationSchemaRest>,
     }
 }
 
@@ -155,8 +283,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(FOR, this)]
     pub struct PublicationForObjects {
-        #[sep(COMMA)]
-        pub objects: one_or_many!(PublicationObjSpec),
+        pub objects: PublicationObjGroup,
     }
 }
 
@@ -357,8 +484,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(SET, this)]
     pub struct AlterPublicationSetObjects {
-        #[sep(COMMA)]
-        pub objects: one_or_many!(PublicationObjSpec),
+        pub objects: PublicationObjGroup,
     }
 }
 
@@ -371,8 +497,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(ADD, this)]
     pub struct AlterPublicationAddObjects {
-        #[sep(COMMA)]
-        pub objects: one_or_many!(PublicationObjSpec),
+        pub objects: PublicationObjGroup,
     }
 }
 
@@ -385,8 +510,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(DROP, this)]
     pub struct AlterPublicationDropObjects {
-        #[sep(COMMA)]
-        pub objects: one_or_many!(PublicationObjSpec),
+        pub objects: PublicationObjGroup,
     }
 }
 

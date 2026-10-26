@@ -7,19 +7,15 @@ mod tests {
 
     /// `ALTER PUBLICATION ... ADD TABLES IN SCHEMA name (cols)` — PG rejects
     /// this syntactically (`TABLES IN SCHEMA ColId` has no opt_column_list),
-    /// but pgtk-sql accepts it over-permissively so the publication.sql corpus
-    /// statement parses into a structured AST.
+    /// and so does pgtk-sql (issue #58).
     // Added in 15: research, PostgreSQL 15, "Changes to existing statements"
     // (REL_15_19 gram.y `PublicationObjSpec`).
     #[cfg(feature = "since-pg15")]
     #[test]
     fn parse_alter_publication_add_tables_in_schema_with_columns() {
-        let lexed = crate::lex("ALTER PUBLICATION testpub1_forschema ADD TABLES IN SCHEMA foo (a, b)");
-        assert_eq!(lexed.errors().count(), 0, "lex errors in input");
-        let mut input = lexed.input();
-        let _stmt_parsed = AlterPublicationStmt::parse(&mut input).unwrap();
-        let _stmt = _stmt_parsed.ast();
-        assert!(input.is_eof());
+        assert_statements_rejected(&[
+            "ALTER PUBLICATION testpub1_forschema ADD TABLES IN SCHEMA foo (a, b)",
+        ]);
     }
 
     /// Sanity: `ALTER PUBLICATION ... ADD TABLES IN SCHEMA name` (bare,

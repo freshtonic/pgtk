@@ -228,8 +228,10 @@ recursa::ast_node! {
         pub unique: bool,
         #[presence(CONCURRENTLY)]
         pub concurrently: bool,
-        pub if_not_exists: Option<IfNotExists>,
-        pub name: Option<crate::tokens::ColId>,
+        /// gram.y `opt_single_name`, or `IF NOT EXISTS name`: `IF NOT
+        /// EXISTS` takes a name (REL_17_11 gram.y 8093-8126; REL_14_24 gram.y
+        /// 7310-7340; issue #57).
+        pub name: Option<IndexName>,
         /// gram.y `ON relation_expr`. `ONLY` restricts the index to the named
         /// table without descending into its partitions.
         #[tok(ON, this)]
@@ -244,6 +246,42 @@ recursa::ast_node! {
         pub with_storage: Option<boxed!(WithStorage)>,
         pub tablespace: Option<crate::ast::ddl::table::TablespaceClause>,
         pub where_clause: Option<boxed!(WhereClause)>,
+    }
+}
+
+recursa::ast_node! {
+    /// The name of `CREATE INDEX`, with `IF NOT EXISTS` before it.
+    ///
+    /// Variant ordering: `IfNotExists` leads with `IF`, which is also a
+    /// `ColId`; the token after `IF` parts the two forms.
+    #[derive(Debug)]
+    pub enum IndexName {
+        IfNotExists(IndexIfNotExistsName),
+        Plain(crate::tokens::ColId),
+    }
+}
+
+recursa::ast_node! {
+    /// `IF NOT EXISTS name`.
+    #[derive(Debug)]
+    pub struct IndexIfNotExistsName {
+        #[tok(IF, NOT, EXISTS, this)]
+        pub name: crate::tokens::ColId,
+    }
+}
+
+impl<'input> CreateIndexStmt<'input> {
+    /// Whether the statement has `IF NOT EXISTS`.
+    pub fn if_not_exists(&self) -> bool {
+        matches!(self.name, Some(IndexName::IfNotExists(_)))
+    }
+
+    /// The index name, when written.
+    pub fn name(&self) -> Option<&crate::tokens::ColId<'input>> {
+        match self.name.as_ref()? {
+            IndexName::IfNotExists(name) => Some(&name.name),
+            IndexName::Plain(name) => Some(name),
+        }
     }
 }
 
@@ -326,17 +364,22 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A column reference inside `ALTER INDEX … ALTER COLUMN col_ref …`:
-    /// either an integer column position (`SignedIconst`) or a column name
-    /// (`Ident`). Postgres' gram.y has two productions; we union them as one
-    /// enum so the surrounding action struct can be derived.
-    ///
-    /// Variant ordering: `Number` first (lex token kind disjoint from
-    /// `Ident`), then `Name`.
-    #[derive(Debug)]
-    pub enum ColumnRef {
-        Number(SignedIconst),
-        Name(crate::tokens::ColId),
+    /// The `Iconst` column number of gram.y `alter_table_cmd: ALTER
+    /// opt_column Iconst SET STATISTICS set_statistics_value`. The number has
+    /// no sign, and the action rejects a number below 1 or above 32767
+    /// (REL_17_11 gram.y 2487; REL_14_24 gram.y 2271). The error is at the
+    /// number (`parser_errposition(@3)`).
+    #[classify(value, fold = crate::tokens::literal::column_number_class)]
+    #[reject(
+        one_of(value, "out_of_range"),
+        code = "22023",
+        message = "column number must be in range from 1 to 32767",
+        cite = "REL_17_11 gram.y 2487, alter_table_cmd",
+    )]
+    #[derive(Debug, derive_more :: Deref)]
+    pub struct ColumnNumber {
+        #[deref]
+        pub value: literal::IntegerLit,
     }
 }
 
@@ -359,23 +402,68 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// One `ALTER COLUMN …` cmd on ALTER INDEX. The two forms (`SET
-    /// STATISTICS` and `SET (params)`) both start with `ALTER … SET`; the
-    /// disambiguation token is `STATISTICS` vs `(`.
-    ///
-    /// The common prefix is represented once so the LR alternatives part at the
-    /// keyword or parenthesis immediately following `SET`, rather than duplicating
-    /// a potentially multi-token signed column reference.
+    /// One `ALTER [COLUMN] …` cmd on ALTER INDEX. A column name takes `SET
+    /// STATISTICS`, `SET (params)` or `RESET (params)`; a column number takes
+    /// only `SET STATISTICS` (REL_17_11 gram.y 2470-2515).
     #[derive(Debug)]
     pub struct AlterColumnIndexCmd {
         #[tok(ALTER, optional(COLUMN), this)]
-        pub col_ref: ColumnRef,
+        pub target: AlterColumnIndexTarget,
+    }
+}
+
+recursa::ast_node! {
+    /// The column of an [`AlterColumnIndexCmd`], with its action.
+    #[derive(Debug)]
+    pub enum AlterColumnIndexTarget {
+        Number(AlterColumnNumberStatistics),
+        Name(AlterColumnIndexName),
+    }
+}
+
+recursa::ast_node! {
+    /// `Iconst SET STATISTICS value`.
+    #[derive(Debug)]
+    pub struct AlterColumnNumberStatistics {
+        pub number: ColumnNumber,
+        pub statistics: AlterColumnStatisticsAction,
+    }
+}
+
+recursa::ast_node! {
+    /// `ColId action`.
+    #[derive(Debug)]
+    pub struct AlterColumnIndexName {
+        pub name: crate::tokens::ColId,
         pub action: AlterColumnIndexAction,
     }
 }
 
 recursa::ast_node! {
-    /// One action on a single-target `ALTER INDEX [IF EXISTS] name action` —
+    /// One action of `ALTER INDEX IF EXISTS name action`: an `alter_table_cmd`
+    /// or `RENAME TO`. gram.y has no `IF EXISTS` form of `index_partition_cmd`
+    /// (`ATTACH PARTITION`) or of `AlterObjectDependsStmt` (REL_17_11 gram.y
+    /// 2156-2175, 9579, 9932), so those are [`AlterIndexAction`] variants only
+    /// (issue #58).
+    ///
+    /// Variant ordering:
+    /// - `SetTablespace` (`SET TABLESPACE`) and `SetReloptions` (`SET (`) and
+    ///   `ResetReloptions` (`RESET …`) — second tokens are disjoint, so order
+    ///   is for clarity.
+    /// - `AlterColumn` starts with the `ALTER` token, distinct from all
+    ///   `SET`/`RESET`/`RENAME` first tokens.
+    #[derive(Debug)]
+    pub enum AlterIndexIfExistsAction {
+        SetTablespace(SetTablespaceClause),
+        SetReloptions(SetReloptions),
+        ResetReloptions(ResetReloptions),
+        AlterColumn(AlterColumnIndexCmd),
+        Rename(RenameTo),
+    }
+}
+
+recursa::ast_node! {
+    /// One action on a single-target `ALTER INDEX name action` —
     /// the corpus-exercised subset of `alter_table_cmds` plus `RenameStmt` and
     /// `AlterObjectDependsStmt` and `index_partition_cmd`.
     ///
@@ -432,20 +520,30 @@ recursa::ast_node! {
     /// INDEX` keywords, so they sit on either side of a single enum and share that
     /// LR prefix once.
     ///
-    /// Variant ordering: `All` (starts with `ALL`) before `Single`
-    /// (starts with `[IF EXISTS] qualified_name` — never `ALL`).
+    /// Variant ordering: `All` (starts with `ALL`) and `IfExists` (starts
+    /// with `IF EXISTS`) before `Single` (starts with a `qualified_name`).
     #[derive(Debug)]
     pub enum AlterIndexBody {
         All(AllInTablespaceBody),
+        IfExists(AlterIndexIfExists),
         Single(AlterIndexSingle),
     }
 }
 
 recursa::ast_node! {
-    /// `[IF EXISTS] name action` — the per-index branch of ALTER INDEX.
+    /// `IF EXISTS name action`.
+    #[derive(Debug)]
+    pub struct AlterIndexIfExists {
+        #[tok(IF, EXISTS, this)]
+        pub name: QualifiedName,
+        pub action: AlterIndexIfExistsAction,
+    }
+}
+
+recursa::ast_node! {
+    /// `name action` — the per-index branch of ALTER INDEX.
     #[derive(Debug)]
     pub struct AlterIndexSingle {
-        pub if_exists: Option<IfExists>,
         pub name: QualifiedName,
         pub action: AlterIndexAction,
     }
