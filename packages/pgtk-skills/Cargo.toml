@@ -1,0 +1,20 @@
+[package]
+name = "pgtk-skills"
+version = "0.1.0"
+description = "Compiles and runs the Rust code of the agent skills in skills/"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+# Cargo-only (no BUCK file): the doctests of this crate are the Rust code blocks
+# of each skills/*/SKILL.md. `cargo test -p pgtk-skills --doc` compiles each
+# block and runs each block that is not `no_run`. When an API of a published
+# crate changes, a skill that uses the old API stops this test.
+[dependencies]
+pgtk-analyze = { path = "../pgtk-analyze" }
+pgtk-catalog = { path = "../pgtk-catalog", features = ["fixture", "postgres", "serde"] }
+pgtk-sql = { path = "../pgtk-sql", features = ["spans"] }
+postgres.workspace = true
+recursa.workspace = true
+serde_json.workspace = true

@@ -19,7 +19,8 @@ PGTK_ANALYZE_DEPS = [
 
 rust_library(
     name = "pgtk-analyze",
-    srcs = glob(["src/**/*.rs"]),
+    # src/lib.rs includes the README as the crate documentation.
+    srcs = glob(["src/**/*.rs"]) + ["README.md"],
     crate = "pgtk_analyze",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -30,7 +31,8 @@ rust_library(
 
 rust_test(
     name = "pgtk-analyze-test",
-    srcs = glob(["src/**/*.rs"]),
+    # src/lib.rs includes the README as the crate documentation.
+    srcs = glob(["src/**/*.rs"]) + ["README.md"],
     crate = "pgtk_analyze",
     crate_root = "src/lib.rs",
     edition = "2024",

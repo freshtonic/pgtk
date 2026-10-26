@@ -39,7 +39,10 @@ by build.
   Examples that we expect from PostgreSQL 18 are a `NotNull` constraint kind,
   a virtual kind of generated column (so `Column.generated` becomes an enum),
   and a flag for a constraint that is `NOT ENFORCED`. The first live run
-  against each version decides the exact list. Public enums become
+  against each version decides the exact list. (The first runs, against
+  18.6 and the pinned 19 commit, found these three, plus the `conperiod` flag
+  of a temporal key, and the built-in types `oid8` and `regdatabase` in 19.
+  The model now holds each of them.) Public enums become
   `#[non_exhaustive]` in one breaking release, so that later versions can add
   variants without more breaks. A server that does not have a fact gives
   `None`, or never gives the variant.

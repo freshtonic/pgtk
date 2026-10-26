@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Check that each link in llms.txt to a file of this repository points to a
+# file that exists. llms.txt is written by hand (https://llmstxt.org), so this
+# check stops a link from going bad when a file moves or is deleted.
+#
+# A link to a repository file is a relative path, or a URL that starts with
+# one of the prefixes below. The check removes the prefix and the branch name,
+# and then looks for the path in the working tree. Links to other sites (for
+# example docs.rs) are not checked.
+#
+# Usage: scripts/check-llms-txt [<file>]
+#   The default file is llms.txt at the root of the repository.
+
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+file=${1:-"$root/llms.txt"}
+
+raw='https://raw.githubusercontent.com/freshtonic/pgtk/'
+blob='https://github.com/freshtonic/pgtk/blob/'
+tree='https://github.com/freshtonic/pgtk/tree/'
+
+if [[ ! -f "$file" ]]; then
+    echo "error: $file does not exist" >&2
+    exit 1
+fi
+
+checked=0
+missing=0
+# Each Markdown link target: the text between "](" and the next ")".
+while IFS= read -r target; do
+    target=${target%%#*}
+    case "$target" in
+        "$raw"*) path=${target#"$raw"} ;;
+        "$blob"*) path=${target#"$blob"} ;;
+        "$tree"*) path=${target#"$tree"} ;;
+        *://* | mailto:* | '') continue ;;
+        *) path="main/${target#./}" ;;
+    esac
+    # Remove the branch name, for example "main/".
+    path=${path#*/}
+    checked=$((checked + 1))
+    if [[ ! -e "$root/$path" ]]; then
+        echo "error: llms.txt links to $path, which does not exist" >&2
+        missing=$((missing + 1))
+    fi
+done < <(grep -oE '\]\([^)]*\)' "$file" | sed -e 's/^](//' -e 's/)$//')
+
+if [[ $missing -gt 0 ]]; then
+    echo "$missing of $checked repository links in llms.txt are bad" >&2
+    exit 1
+fi
+echo "All $checked repository links in llms.txt point to files that exist"

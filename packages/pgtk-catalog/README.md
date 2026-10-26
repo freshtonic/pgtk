@@ -23,12 +23,12 @@ needs to type-check SQL.
   cannot point to an entity of a different kind. `catalog[handle]` gives you the entity.
 - **PostgreSQL's name rules.** Look up a name in a schema, or resolve an unqualified name
   against a search path, the way the server does.
-- **One build for all server versions.** One binary reads PostgreSQL 14, 15, 16 and 17. The
-  loader finds the server version when it connects.
+- **One build for all server versions.** One binary reads PostgreSQL 14, 15, 16, 17 and 18, and
+  19 beta with the `pg19-beta` feature. The loader finds the server version when it connects.
 - **Bring your own driver.** Adapters for `postgres` and `tokio-postgres` are included. For any
   other driver, implement a trait with one method.
-- **Works offline.** The `fixture` feature includes a stock PostgreSQL 17 catalog in the crate,
-  for tests and for tools that never connect to a server.
+- **Works offline.** The `fixture` feature includes a stock catalog of each supported version in
+  the crate, for tests and for tools that never connect to a server.
 - **Safe and small.** `unsafe` is forbidden in this crate. The only required dependency is
   `thiserror`.
 
@@ -41,26 +41,29 @@ pgtk-catalog = { version = "0.1", features = ["postgres"] }
 
 Load a catalog from a live server:
 
-```rust,ignore
-let mut client = postgres::Client::connect(url, postgres::NoTls)?;
-let loaded = pgtk_catalog::load(&mut client)?;
+```rust,no_run
+let url = "postgresql://postgres@localhost/postgres";
+let mut client = postgres::Client::connect(url, postgres::NoTls).expect("connect");
+let loaded = pgtk_catalog::load(&mut client).expect("load the catalog");
 let catalog = loaded.catalog;
 ```
 
 `loaded.diagnostics` holds one note for each entity that the loader could not fully keep. For a
 stock database, the list is empty.
 
-Or use the built-in PostgreSQL 17 catalog (the `fixture` feature), with no server:
+Or use a built-in catalog (the `fixture` feature), with no server. There is one for each
+version, from `fixture::pg14()` to `fixture::pg18()`, and `fixture::pg19_beta()` with `pg19-beta`:
 
-```rust,ignore
+```rust
 let catalog = pgtk_catalog::fixture::pg17();
 ```
 
 Look up a type by name, then read it:
 
-```rust,ignore
+```rust
 use pgtk_catalog::{Builtin, QualifiedName, SearchPath};
 
+let catalog = pgtk_catalog::fixture::pg17();
 let name = QualifiedName::new("pg_catalog", "int4");
 let int4 = catalog.type_named(&name).unwrap();
 assert_eq!(catalog.as_builtin(int4), Some(Builtin::Int4));
@@ -71,12 +74,22 @@ let same = catalog.type_visible(&path, "int4").unwrap();
 assert_eq!(same, int4);
 ```
 
-Try the `inspect` example. It finds each entity with a given name: a type, a relation, each
-function overload and each operator overload.
+## Examples
+
+The `examples/` folder has programs that you can copy and change.
+
+| Example | Features | What it does |
+|---|---|---|
+| `inspect` | `fixture` | Finds each entity with a given name in the built-in catalog: a type, a relation, each function overload and each operator overload. |
+| `describe_schema` | `postgres` | Loads the catalog of a live server, and prints the tables of a schema with their columns, types, primary keys and parents, like `\d` in psql. |
+| `snapshot` | `postgres`, `serde` | Saves the catalog of a live server to a JSON file. Later, it loads the file with no server. A CI job can check queries with the file and no database. |
 
 ```sh
 cargo run -p pgtk-catalog --features fixture --example inspect -- int4
 cargo run -p pgtk-catalog --features fixture --example inspect -- information_schema.tables
+cargo run -p pgtk-catalog --features postgres --example describe_schema -- postgresql://postgres@localhost/app public
+cargo run -p pgtk-catalog --features postgres,serde --example snapshot -- save postgresql://postgres@localhost/app catalog.json
+cargo run -p pgtk-catalog --features postgres,serde --example snapshot -- show catalog.json
 ```
 
 ## Use a different driver
@@ -84,13 +97,15 @@ cargo run -p pgtk-catalog --features fixture --example inspect -- information_sc
 Implement `Executor` for your client, and give it to `load`. With the `async` feature,
 `AsyncExecutor` and `load_async` do the same for an async client.
 
-```rust,ignore
+```rust
+struct MyClient;
+
 impl pgtk_catalog::Executor for MyClient {
-    type Error = MyError;
+    type Error = std::io::Error;
 
     // Rows is Vec<Vec<Option<String>>>: each value in text format, None for NULL.
     fn query(&mut self, sql: &str) -> Result<pgtk_catalog::Rows, Self::Error> {
-        todo!("run the SQL text and give back each row")
+        todo!("run {sql} with your driver, and give back each row")
     }
 }
 ```
@@ -105,7 +120,8 @@ The loader reads `pg_catalog` only. It never reads `information_schema`.
 | `tokio-postgres` | `AsyncExecutor` for `tokio_postgres::Client`. Turns on `async`. |
 | `async` | The `AsyncExecutor` trait and `load_async`. |
 | `serde` | `Serialize` and `Deserialize` for a `Catalog`. Save a catalog, and load it again later. |
-| `fixture` | The built-in PostgreSQL 17 catalog. Turns on `serde`. |
+| `fixture` | The built-in catalogs of PostgreSQL 14 to 18, and of 19 beta with `pg19-beta`. Turns on `serde`. |
+| `pg19-beta` | Loads a PostgreSQL 19 beta server. The 19 catalog can change before 19.0. |
 
 ## Documents
 

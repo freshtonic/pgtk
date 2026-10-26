@@ -139,7 +139,7 @@ impl Catalog {
     /// The format version of a serialized catalog.
     ///
     /// A fixture with another version is not readable.
-    pub const FORMAT_VERSION: u32 = 10;
+    pub const FORMAT_VERSION: u32 = 11;
 
     /// Make a catalog and build its indexes.
     ///
@@ -330,10 +330,15 @@ impl Catalog {
     ///
     /// # Panics
     ///
-    /// This panics when the catalog does not hold the type. Only a catalog
+    /// This panics when the catalog does not hold the type. A catalog holds
+    /// each built-in of its server version. It does not hold a built-in that
+    /// is newer than its server, that is, when
+    /// [`Builtin::since`] is more than
+    /// [`metadata().server_version.major`](Metadata::server_version). Use
+    /// [`try_builtin`](Catalog::try_builtin) for such a built-in. A catalog
     /// that a test built with
     /// [`permit_missing_builtins`](crate::CatalogBuilder::permit_missing_builtins)
-    /// can lack one.
+    /// can lack any built-in.
     pub fn builtin(&self, b: Builtin) -> Handle<Type> {
         match self.try_builtin(b) {
             Some(handle) => handle,

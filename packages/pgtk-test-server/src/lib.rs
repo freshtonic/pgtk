@@ -1,3 +1,7 @@
+#![doc = include_str!("../README.md")]
+//!
+//! # Details
+//!
 //! PostgreSQL servers for the pgtk tests, built from the vendored PostgreSQL
 //! source.
 //!

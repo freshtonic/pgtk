@@ -23,8 +23,23 @@ crate does.
 `csrc/psql_oracle.c` is the shim. `src/lib.rs` turns its result into
 [`Scan`], which reports the text psql forwards to the server, one event for
 each interpolation, one for each `;` that submits the query buffer, one for
-each backslash command with the name `psqlscanslash.l` read, and whether the
-document ended with a complete buffer.
+each backslash command with the name `psqlscanslash.l` read and the extent and
+value of each of its arguments, one for each inactive `\if` branch whose query
+text psql discards, and whether the document ended with a complete buffer.
+
+The shim reads the arguments of each command as `HandleSlashCmds` and
+`exec_command` in `command.c` read them: with the same `psql_scan_slash_option`
+calls and option types (`OT_NORMAL`, `OT_WHOLE_LINE`, `OT_FILEPIPE`, and the
+option list of `\g`), then the extra options that `HandleSlashCmds` drops, then
+`psql_scan_slash_command_end`. A name that psql does not know takes the error
+path, which drops the rest of the line. The shim applies `\set` and `\unset`
+to its own variables, and `\if`, `\elif`, `\else` and `\endif` to its own
+conditional stack, as `exec_command_if` and the others do: it evaluates the
+expression with `ParseVariableBool`, substitutes no variable in an inactive
+branch, and saves and restores the query length and the lexer state as
+`save_query_text_state` and `discard_query_text` do. It runs no other command.
+The passthrough of the lexer is a conditional stack whose only entry is
+inactive, so `psqlscanslash.l` never runs a backquoted shell command.
 
 The interpolation events come from psql's own `get_variable` callback. That
 matters: the oracle reports what the scanner recognised, not what a second
@@ -50,29 +65,28 @@ submission. pgtk-psql renders one SQL string for a whole document (ADR 0007).
 Three adaptations make the two comparable. Each is deliberate, and each is
 recorded here because it bounds what the oracle can prove.
 
-1. **The whole document is one input.** The flex rules of `psqlscan.l` do not
-   read line boundaries, so the lexing is the same. psql's line-at-a-time
-   reading does bound how far a backslash command's arguments can run, so the
-   shim resumes SQL lexing at the first line break after a command name,
-   which is where psql's own input buffer would have ended. A command whose
-   arguments end earlier than the line does — `\timing on SELECT 1;` — has its
-   tail read as arguments here and as SQL by psql. Every such command is an
-   unmodelled meta-command in pgtk-psql, so no document is decided by this
-   alone.
+1. **The SQL text of the whole document is one input.** The flex rules of
+   `psqlscan.l` do not read line boundaries, so the lexing is the same. psql's
+   line-at-a-time reading does bound how far the arguments of a backslash
+   command can run, so the shim reads a command and its arguments from the
+   rest of its line only, which is where psql's own input buffer ends. SQL
+   lexing then continues where the command ends, on the same line when a
+   `\\` ends the command.
 2. **The query buffer is never reset.** The `{whitespace}` rule of
    `psqlscan.l` does not echo while the buffer is empty, so psql drops the
    leading trivia of every statement. The shim seeds the buffer with one byte
    and removes it at the end, so the trivia survives and the forwarded text
-   can be compared byte for byte with pgtk-psql's rendering.
-3. **Backslash-command arguments are not read.** The shim calls
-   `psql_scan_slash_command` and nothing else, so `psql_scan_slash_option`
-   never runs and a backquoted argument never starts a shell command. The
-   cost is that an interpolation inside an argument is not reported.
+   can be compared byte for byte with pgtk-psql's rendering. For the same
+   reason the shim keeps the text of an inactive `\if` branch in the buffer
+   and reports the range that psql discards; the test removes it.
+3. **Every known command succeeds.** psql drops the rest of the line after a
+   command that fails when it runs. The shim runs no command, so it reads every
+   known command as one that succeeds, as pgtk-psql does. It does not model
+   the hooks of psql's special variables either.
 
-Two boundaries are outside the classification table in [`classify`], because
-they are not `PSQL_CMD_SEND` in `command.c`: `\watch` runs the query buffer
-and resets it, and `\r` discards it. Both answer `Command::Other`. Neither
-appears in the corpus.
+Two boundaries are not `PSQL_CMD_SEND` in `command.c`, and [`classify`] still
+names them: `\watch` runs the query buffer and resets it, so it is
+`Command::Send`, and `\r` clears it, so it is `Command::Discard`.
 
 The oracle quotes a bound value itself, mirroring `PQescapeLiteral` and
 `PQescapeIdentifier` (`fe-exec.c`, `PQescapeInternal`), because those need the
@@ -112,18 +126,21 @@ rather than by a written expectation.
 
 ### What is compared
 
-Four facts, for each document, unbound and then with every variable psql
+Five facts, for each document, unbound and then with every variable psql
 recognised bound to an inert value:
 
 - the text forwarded to the server;
-- the extent and name of each interpolation;
-- the extent of each query-buffer boundary; and
+- the extent and name of each interpolation in SQL text;
+- the extent of each query-buffer boundary;
+- the extent of each backslash command and of each of its arguments; and
 - whether the document ends with a complete buffer.
 
 The oracle's text is composed the way pgtk-psql composes its own: a send command
-becomes the `;` that separates the two statements it stands between, and a
-discard command (18) removes the buffer it ends, keeping the whitespace before
-it.
+becomes the `;` that separates the two statements it stands between, a
+discard command (`\r`, and the commands of 18) removes the buffer it ends,
+keeping the whitespace before it, and the text of an inactive `\if` branch goes
+where psql discards it. An interpolation inside a command argument is part of
+the command, so it is not in the second list.
 
 ### The pinned outcomes
 
@@ -149,31 +166,40 @@ that fits none of them is `unclassified`, which fails the test.
 
 | Class | Why |
 |---|---|
-| `unmodelled-meta-command` | The document holds a backslash command that is not a send or discard command. psql stops SQL lexing there and reads the rest of the line as arguments; pgtk-psql keeps the whole command as one `SqlAtom::MetaCommand` token and forwards it (ADR 0007; freshtonic/pg-sql#11, #12, #13). |
-| `send-command-arguments` | The document holds a send or discard command with arguments. psql reads them and the server never sees them; pgtk-psql ends the statement at the command name and forwards the rest as SQL text. It is the same gap as the one above, narrowed to a command pgtk-psql does model. |
+| `copy-data` | The document holds `COPY ... FROM STDIN` or `\copy ... from stdin`, and an unknown command. psql reads the data lines after the command itself, up to `\.`. Neither side reads them as data: both read them as psql text, where `\N` and `\.` are unknown commands, and the two read an unknown command differently (the next class). |
+| `unknown-command` | The document holds a name that is not a command of the target version. psql reports an error and drops the rest of the line. pgtk-psql keeps the name only, as `MetaCommand::Unknown`, and forwards it, so that the server SQL shows the error. Before 15 `\getenv` is unknown, so each corpus file that uses it is here. |
 | `boundary-suppressed-by-nesting` | psql suppresses the `;` boundary inside parentheses and inside a tracked `BEGIN ... END` block of a `CREATE FUNCTION` (`psqlscan.l` 650, `psqlscan_is_create_routine`). pgtk-psql tracks neither, because it renders one string for the whole document rather than splitting it into submissions, so it only ever has more boundaries than psql. The forwarded text is the same. |
 | `open-lexical-region` | The document reaches end of input inside a string, a quoted identifier, a dollar-quoted body or a comment. psql asks for another line. pgtk-psql runs each such region to end of input as one opaque token, so the forwarded text and the interpolations agree, but it has no notion of an open query buffer (freshtonic/pg-sql#11), so every one of these documents disagrees on `complete` only. See "What the oracle found" (ADR 0007, freshtonic/recursa#131, freshtonic/pg-sql#89). |
 | `refused` | pgtk-psql refuses a document for any other reason. The list is empty at every target version. |
 
+The classes `unmodelled-meta-command` and `send-command-arguments` are gone.
+pgtk-psql reads every meta-command with its arguments now (freshtonic/pgtk#42,
+ADR 0013).
+
 ### Outcomes by target version
 
-| Feature | Documents | Agree | `unmodelled-meta-command` | `send-command-arguments` | `boundary-suppressed-by-nesting` | `open-lexical-region` |
+| Feature | Documents | Agree | `copy-data` | `unknown-command` | `boundary-suppressed-by-nesting` | `open-lexical-region` |
 |---|---|---|---|---|---|---|
-| `pg14` | 296 | 180 | 105 | 1 | 4 | 6 |
-| `pg15` | 296 | 182 | 105 | 1 | 4 | 4 |
-| `pg16` | 296 | 182 | 105 | 1 | 4 | 4 |
-| `pg17` | 296 | 182 | 104 | 2 | 4 | 4 |
-| `pg18` | 305 | 191 | 104 | 2 | 4 | 4 |
-| `pg19-beta` | 305 | 191 | 104 | 2 | 4 | 4 |
+| `pg14` | 327 | 266 | 22 | 25 | 8 | 6 |
+| `pg15` | 327 | 287 | 22 | 6 | 8 | 4 |
+| `pg16` | 327 | 287 | 22 | 6 | 8 | 4 |
+| `pg17` | 327 | 288 | 22 | 5 | 8 | 4 |
+| `pg18` | 336 | 297 | 22 | 5 | 8 | 4 |
+| `pg19-beta` | 336 | 297 | 22 | 5 | 8 | 4 |
 
-Three differences across the six, and each has a cause:
+Before freshtonic/pgtk#42, 104 or 105 documents of each version were
+`unmodelled-meta-command` gaps and 182 documents agreed at `pg17`.
+
+These differences across the six have a cause:
 
 - `pg18` and `pg19-beta` have nine more documents, the pipeline and
   prepared-statement commands of 18. All nine agree.
 - Before 17 a vertical tab does not end a command name in `psqlscanslash.l`,
   so `\g<VT>x` is one unknown command rather than `\g` with an argument
   (`docs/research/psql-14-19-syntax-changes.md`, item A4). The shaped document
-  `name/vertical-tab` changes class at 17, not outcome.
+  `name/vertical-tab` is an `unknown-command` gap before 17 and agrees from 17.
+- `pg14` has no `\getenv` (added in 15), so 18 corpus files that use it (and
+  hold no COPY data) and `shaped/name/getenv` are `unknown-command` gaps.
 - `pg14` has two more `open-lexical-region` documents: `number/exponent-string`
   and `number/param-junk`. See below.
 
@@ -214,7 +240,23 @@ and `shaped/number/exponent-string` and `shaped/number/param-junk` at `pg14`.
 From 15 the two number documents agree, because `1e` is one trailing-junk
 token in both and no escape string is opened.
 
-The rest of the gaps are the documented limits: 104 or 105 corpus and shaped
-documents hold a meta-command pgtk-psql keeps as one unparsed token, 1 or 2 hold
-a send command with arguments, 4 hold a `;` psql suppresses inside parentheses
-or a `BEGIN ... END` block, and 4 end inside an open region.
+The rest of the gaps are the documented limits: at `pg17`, 22 documents hold
+COPY data, 5 hold an unknown command, 8 hold a `;` psql suppresses inside
+parentheses or a `BEGIN ... END` block, and 4 end inside an open region.
+
+**Arguments were read to the end of the line, and are not now.** The oracle
+used to resume SQL lexing at the line break after a command name. That was
+wrong for `\x \x`, for `\set a b \\ SELECT 1;` and for every command whose
+arguments end before the line does. The oracle now reads the arguments with
+`psql_scan_slash_option`, as `command.c` does, and pgtk-psql agrees with it on
+the extent of every command and argument of the corpus.
+
+**`\watch` and `\r` end the query buffer.** Neither returns `PSQL_CMD_SEND`,
+so the table of [`classify`] left them out. `\watch` runs the buffer and
+resets it, and `\r` clears it. `psql.sql` uses both, so the table now names
+them, and pgtk-psql renders `\watch` as a send command and `\r` as a discard.
+
+**An inactive branch restores the lexer state.** `psql.sql` has `(bogus` in an
+inactive branch. psql restores the parenthesis depth when it discards the
+branch (`discard_query_text`), so the `;` after the block ends the statement.
+The oracle does the same.

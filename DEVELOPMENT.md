@@ -172,8 +172,8 @@ Buck2 builds less than Cargo:
 
 - Buck2 builds the default features of each crate only. For pgtk-sql it also turns on `spans`.
   The other Target Versions and the oracle features are Cargo-only.
-- `pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features` and
-  `pgtk-catalog-xtask` are Cargo-only. They have no BUCK file. So Buck2 does not run the oracle
+- `pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
+  `pgtk-catalog-xtask` and `pgtk-skills` are Cargo-only. They have no BUCK file. So Buck2 does not run the oracle
   tests or the live tests.
 - The Buck2 tests are the unit tests of each crate, and the pgtk-sql integration tests that need
   only the library (`STANDALONE_TESTS` and the embedded tests in `packages/pgtk-sql/BUCK`). The
@@ -232,3 +232,10 @@ moved, is made again.
 
 If a build fails, run the script directly to see the full output:
 `packages/pgtk-oracle/scripts/build-pg.sh pg17`.
+
+## llms.txt
+
+`llms.txt` at the root of the repository is an index of pgtk for LLMs (https://llmstxt.org). It is
+written by hand. When you add, move or delete a crate, a public entry point, a feature, an ADR or
+a document that it names, change `llms.txt` too. `scripts/check-llms-txt` checks that each link to
+a file of the repository points to a file that exists. CI runs it.

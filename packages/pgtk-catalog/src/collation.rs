@@ -40,6 +40,7 @@ pub struct Collation {
 /// The provider of a collation, from `collprovider`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum CollationProvider {
     /// The `default` collation, which stands for the collation of the
     /// database. The letter is `d`.
