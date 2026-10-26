@@ -9,10 +9,10 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateViewStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert_eq!(stmt.name.object(), "v");
+        assert_eq!(stmt.name().object(), "v");
         assert!(!stmt.or_replace);
         assert!(stmt.temp.is_none());
-        assert!(!stmt.recursive);
+        assert!(!stmt.recursive());
         assert!(input.is_eof());
     }
 
@@ -36,8 +36,8 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateViewStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.recursive);
-        assert!(stmt.columns.is_some());
+        assert!(stmt.recursive());
+        assert!(stmt.columns().is_some());
         assert!(input.is_eof());
     }
 
@@ -51,7 +51,7 @@ mod tests {
         let stmt_parsed = CreateViewStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
         assert!(stmt.or_replace);
-        assert!(stmt.recursive);
+        assert!(stmt.recursive());
         assert!(input.is_eof());
     }
 

@@ -510,9 +510,10 @@ recursa::ast_node! {
         #[tok(PARTITION, OF, this)]
         pub parent: QualifiedName,
         pub column_options: Option<ForeignTablePartitionColumnOptions>,
-        pub for_values: Option<crate::ast::ddl::table::ForValuesClause>,
-        #[presence(DEFAULT)]
-        pub default: bool,
+        /// gram.y `PartitionBoundSpec`: `FOR VALUES ...` or `DEFAULT`, one of
+        /// them and only one (REL_17_11 gram.y `CreateForeignTableStmt`;
+        /// issue #57).
+        pub bound: crate::ast::ddl::table::PartitionBoundSpec,
         pub server: ForeignTableServerClause,
         pub options: Option<CreateGenericOptions>,
     }

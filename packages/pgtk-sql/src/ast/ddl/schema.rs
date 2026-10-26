@@ -61,7 +61,7 @@ recursa::ast_node! {
     pub enum SchemaElement {
         Grant(GrantPrivilegeStmt),
         CreateView(boxed!(crate::ast::ddl::view::CreateViewStmt)),
-        CreateTable(boxed!(crate::ast::ddl::table::CreateTableStmt)),
+        CreateTable(boxed!(crate::ast::ddl::table::CreatePlainTableStmt)),
         CreateIndex(boxed!(crate::ast::ddl::index::CreateIndexStmt)),
         CreateSequence(CreateSequenceStmt),
         CreateTrigger(boxed!(CreateTriggerStmt)),
@@ -69,10 +69,42 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// gram.y `CreateSchemaStmt` (REL_17_11 gram.y 1527-1585).
     #[derive(Debug)]
     #[tok(CREATE, SCHEMA, this)]
     pub struct CreateSchemaStmt {
-        pub if_not_exists: Option<crate::ast::shared::flags::IfNotExists>,
+        pub form: CreateSchemaForm,
+    }
+}
+
+recursa::ast_node! {
+    /// The two forms of `CREATE SCHEMA`. The actions of the `IF NOT EXISTS`
+    /// productions reject a schema element list that is not empty (REL_17_11
+    /// gram.y 1559 and 1575; REL_14_24 gram.y 1418 and 1433), so only the
+    /// plain form has elements.
+    ///
+    /// Variant ordering: `IfNotExists` leads with `IF`, which is also a
+    /// `ColId`; the token after `IF` parts the two forms, as in gram.y.
+    #[derive(Debug)]
+    pub enum CreateSchemaForm {
+        IfNotExists(CreateSchemaIfNotExists),
+        Plain(CreateSchemaPlain),
+    }
+}
+
+recursa::ast_node! {
+    /// `IF NOT EXISTS head`, with no schema element.
+    #[derive(Debug)]
+    pub struct CreateSchemaIfNotExists {
+        #[tok(IF, NOT, EXISTS, this)]
+        pub head: SchemaNameClause,
+    }
+}
+
+recursa::ast_node! {
+    /// `head schema_element*`.
+    #[derive(Debug)]
+    pub struct CreateSchemaPlain {
         /// Schema name and/or `AUTHORIZATION` clause. Postgres requires at least
         /// one — the enum forces that structurally.
         pub head: SchemaNameClause,
@@ -80,6 +112,29 @@ recursa::ast_node! {
         /// is a top-level statement type; the surrounding semicolons live on the
         /// enclosing statement, not on the nested ones.
         pub elements: zero_or_many!(SchemaElement),
+    }
+}
+
+impl<'input> CreateSchemaStmt<'input> {
+    /// Whether the statement has `IF NOT EXISTS`.
+    pub fn if_not_exists(&self) -> bool {
+        matches!(self.form, CreateSchemaForm::IfNotExists(_))
+    }
+
+    /// The schema name and/or `AUTHORIZATION` clause.
+    pub fn head(&self) -> &SchemaNameClause<'input> {
+        match &self.form {
+            CreateSchemaForm::IfNotExists(form) => &form.head,
+            CreateSchemaForm::Plain(form) => &form.head,
+        }
+    }
+
+    /// The nested schema elements. The `IF NOT EXISTS` form has none.
+    pub fn elements(&self) -> &[SchemaElement<'input>] {
+        match &self.form {
+            CreateSchemaForm::IfNotExists(_) => &[],
+            CreateSchemaForm::Plain(form) => &form.elements,
+        }
     }
 }
 

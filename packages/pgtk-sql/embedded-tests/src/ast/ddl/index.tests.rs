@@ -28,7 +28,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateIndexStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert_eq!(stmt.name.as_ref().unwrap().text(), "fooi");
+        assert_eq!(stmt.name().unwrap().text(), "fooi");
         assert_eq!(stmt.relation.name().object(), "foo");
         assert!(input.is_eof());
     }
@@ -76,7 +76,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateIndexStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.if_not_exists.is_some());
+        assert!(stmt.if_not_exists());
         assert!(input.is_eof());
     }
 
@@ -108,7 +108,7 @@ mod tests {
         let mut input = lexed.input();
         let stmt_parsed = CreateIndexStmt::parse(&mut input).unwrap();
         let stmt = stmt_parsed.ast();
-        assert!(stmt.name.is_none());
+        assert!(stmt.name().is_none());
         assert!(input.is_eof());
     }
 
@@ -314,7 +314,7 @@ mod tests {
         let stmt = stmt_parsed.ast();
         assert!(stmt.unique);
         assert!(stmt.concurrently);
-        assert!(stmt.if_not_exists.is_some());
+        assert!(stmt.if_not_exists());
         assert!(stmt.using.is_some());
         assert!(stmt.include.is_some());
         assert!(stmt.with_storage.is_some());

@@ -1121,3 +1121,86 @@ fn statements_that_a_gram_y_action_rejects() {
         "SELECT U&'d!0061t' UESCAPE '!'",
     ]);
 }
+
+/// CREATE statement forms that gram.y does not have (issue #57).
+#[test]
+fn create_statements_keep_the_forms_of_gram_y() {
+    assert_rejects(
+        &[
+            // `OptTemp` holds one persistence keyword.
+            "CREATE TEMP UNLOGGED TABLE t (a int)",
+            "CREATE TEMPORARY UNLOGGED TABLE t OF typ",
+            // The clauses of CREATE TABLE are in the order of gram.y.
+            "CREATE TABLE t USING heap OF typ",
+            "CREATE TABLE t USING heap (a int)",
+            "CREATE TABLE t USING heap PARTITION OF p DEFAULT",
+            "CREATE TABLE t (a int) WITH OIDS",
+            // `IF NOT EXISTS` takes a name.
+            "CREATE INDEX IF NOT EXISTS ON t (a)",
+            "CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ON t (a)",
+            "CREATE STATISTICS IF NOT EXISTS ON a, b FROM t",
+            // A hash partition bound is an integer.
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS DEFAULT, REMAINDER 0)",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 1 + 1)",
+            // `PARTITION OF` takes exactly one bound.
+            "CREATE TABLE p1 PARTITION OF p",
+            "CREATE TABLE p1 PARTITION OF p FOR VALUES IN (1) DEFAULT",
+            "CREATE FOREIGN TABLE p1 PARTITION OF p SERVER s",
+            "CREATE FOREIGN TABLE p1 PARTITION OF p FOR VALUES IN (1) DEFAULT SERVER s",
+            // A view has no access method.
+            "CREATE VIEW v USING heap AS SELECT 1",
+            "CREATE RECURSIVE VIEW v (a) USING heap AS SELECT 1",
+            // A recursive view has a column list.
+            "CREATE RECURSIVE VIEW v AS SELECT 1",
+            "CREATE RECURSIVE VIEW v WITH (security_barrier) AS SELECT 1",
+            // `key_actions`: one ON UPDATE and one ON DELETE at most.
+            "CREATE TABLE t (a int REFERENCES p ON UPDATE CASCADE ON UPDATE RESTRICT)",
+            "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT ON DELETE NO ACTION)",
+            // `UNIQUE USING INDEX` has no `NULLS [NOT] DISTINCT`.
+            "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT USING INDEX i)",
+            "ALTER TABLE t ADD UNIQUE NULLS DISTINCT USING INDEX i",
+            // A CREATE SCHEMA element is no CREATE TABLE AS.
+            "CREATE SCHEMA s CREATE TABLE t AS SELECT 1",
+            // `into_clause` has no access method.
+            "SELECT 1 INTO t USING heap",
+            "SELECT 1 INTO UNLOGGED t USING heap",
+            // `opt_with` comes once before the whole option list (issue #24).
+            "CREATE DATABASE d WITH OWNER = x WITH TEMPLATE = y",
+            "CREATE EXTENSION e WITH SCHEMA s WITH VERSION '1.0'",
+            "CREATE GROUP g WITH SUPERUSER WITH CREATEDB",
+            "CREATE ROLE r WITH LOGIN WITH SUPERUSER",
+            "CREATE USER u WITH LOGIN WITH SUPERUSER",
+        ],
+        "gram.y has no such CREATE form",
+    );
+    assert_accepts(&[
+        "CREATE TEMP TABLE t (a int)",
+        "CREATE UNLOGGED TABLE t OF typ",
+        "CREATE TABLE t OF typ (a WITH OPTIONS NOT NULL) PARTITION BY LIST (a) USING heap WITH (fillfactor = 70) TABLESPACE s",
+        "CREATE TABLE t (a int) INHERITS (p) USING heap WITHOUT OIDS",
+        "CREATE TABLE t USING heap AS SELECT 1",
+        "CREATE TABLE t (a, b) USING heap WITH (fillfactor = 70) TABLESPACE s AS SELECT 1, 2 WITH NO DATA",
+        "CREATE TEMP TABLE t ON COMMIT DROP AS SELECT 1",
+        "CREATE INDEX IF NOT EXISTS i ON t (a)",
+        "CREATE INDEX ON t (a)",
+        "CREATE INDEX if ON t (a)",
+        "CREATE STATISTICS IF NOT EXISTS s ON a, b FROM t",
+        "CREATE STATISTICS s ON a, b FROM t",
+        "CREATE TABLE p1 PARTITION OF p DEFAULT",
+        "CREATE TABLE p1 PARTITION OF p FOR VALUES IN (1) USING heap",
+        "CREATE FOREIGN TABLE p1 PARTITION OF p DEFAULT SERVER s",
+        "CREATE RECURSIVE VIEW v (a) WITH (security_barrier) AS SELECT 1",
+        "CREATE OR REPLACE TEMP VIEW v (a) AS SELECT 1",
+        "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT)",
+        "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))",
+        "ALTER TABLE t ADD UNIQUE USING INDEX i",
+        "CREATE SCHEMA s CREATE TABLE t (a int) CREATE VIEW v AS SELECT 1",
+        "SELECT 1 INTO TEMP TABLE t",
+        "CREATE DATABASE d WITH OWNER = x TEMPLATE = y",
+        "CREATE DATABASE d WITH",
+        "CREATE EXTENSION e WITH SCHEMA s VERSION '1.0'",
+        "CREATE GROUP g WITH SUPERUSER CREATEDB",
+        "CREATE ROLE r LOGIN",
+        "CREATE USER u WITH LOGIN SUPERUSER",
+    ]);
+}
