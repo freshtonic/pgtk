@@ -16,7 +16,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SingleAssignment {
         pub column: literal::Ident,
-        pub indirection: zero_or_many!(crate::ast::shared::expr::IndirectionEl),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #87).
+        pub indirection: Option<crate::ast::shared::expr::Indirection>,
         #[tok(EQ, this)]
         pub value: Expr,
     }
@@ -30,7 +32,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SetTarget {
         pub column: literal::Ident,
-        pub indirection: zero_or_many!(crate::ast::shared::expr::IndirectionEl),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #87).
+        pub indirection: Option<crate::ast::shared::expr::Indirection>,
     }
 }
 
