@@ -34,10 +34,14 @@ jobs:
       # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
       - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      # A build links the shared libraries of the runner image, such as libxml2. The key names the
+      # image release, so a new image does not restore a build that it cannot run.
+      - id: image
+        run: echo "release=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pgtk-sql/postgres
-          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+          key: postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       - run: cargo build --locked --workspace
       # The examples. Each example names the features that it needs in `required-features`, and
       # pgtk-test-features turns all of them on in a workspace build, so this step builds each
@@ -60,10 +64,14 @@ jobs:
       # clippy runs the build scripts, so the oracle crates need the PostgreSQL builds.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
       - run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev
+      # A build links the shared libraries of the runner image, such as libxml2. The key names the
+      # image release, so a new image does not restore a build that it cannot run.
+      - id: image
+        run: echo "release=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pgtk-sql/postgres
-          key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+          key: postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
       # One job at a time: two checks of the generated grammar crates at the same time use all of
       # the 8 GB of the runner, and the runner stops.
       - run: cargo clippy --locked --workspace --all-targets -j 1 -- -D warnings

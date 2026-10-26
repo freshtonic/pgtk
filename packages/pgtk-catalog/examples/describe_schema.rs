@@ -31,7 +31,8 @@
 use std::process::ExitCode;
 
 use pgtk_catalog::{
-    Builtin, Catalog, Column, Handle, Identity, Relation, RelationKind, Type, TypmodDetail,
+    Builtin, Catalog, Column, Generated, Handle, Identity, Relation, RelationKind, Type,
+    TypmodDetail,
 };
 
 fn main() -> ExitCode {
@@ -97,6 +98,8 @@ fn describe(catalog: &Catalog, handle: Handle<Relation>, relation: &Relation) {
         RelationKind::MaterializedView => "materialized view",
         RelationKind::ForeignTable => "foreign table",
         RelationKind::Sequence => "sequence",
+        // A later version can add a kind of relation.
+        _ => "relation",
     };
     println!("{kind} {}", catalog.qualified_name_of_relation(handle));
 
@@ -119,15 +122,22 @@ fn describe(catalog: &Catalog, handle: Handle<Relation>, relation: &Relation) {
             ty,
             if column.not_null { "not null" } else { "" },
         );
-        if column.generated {
-            line.push_str("  generated");
-        } else if column.has_default {
+        match column.generated {
+            Some(Generated::Stored) => line.push_str("  generated stored"),
+            Some(Generated::Virtual) => line.push_str("  generated virtual"),
+            // A later version can add a kind of generated column.
+            Some(_) => line.push_str("  generated"),
+            None => {}
+        }
+        if !column.is_generated() && column.has_default {
             // The model keeps that a default exists, not its text.
             line.push_str("  default");
         }
         match column.identity {
             Some(Identity::Always) => line.push_str("  identity always"),
             Some(Identity::ByDefault) => line.push_str("  identity by default"),
+            // A later version can add a kind of identity column.
+            Some(_) => line.push_str("  identity"),
             None => {}
         }
         println!("{}", line.trim_end());
@@ -163,7 +173,8 @@ fn column_type(catalog: &Catalog, column: &Column) -> String {
             format!("{name}({precision},{scale})")
         }
         Some(TypmodDetail::TimePrecision(precision)) => format!("{name}({precision})"),
-        Some(TypmodDetail::Interval { .. }) | None => name,
+        // A later version can add a kind of type modifier. Print the name only.
+        Some(TypmodDetail::Interval { .. }) | Some(_) | None => name,
     }
 }
 
