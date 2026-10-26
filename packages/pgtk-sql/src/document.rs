@@ -44,6 +44,43 @@ type SqlDocumentItemFamily =
 /// an interpolation such as `:name` — is not SQL and selects
 /// [`SqlParseError::Rejected`]; use the `pgtk-psql` crate to render it to SQL
 /// first.
+///
+/// # Examples
+///
+/// Parse a document, and read the location of each statement:
+///
+/// ```
+/// use pgtk_sql::ast::Statement;
+///
+/// let source = "SELECT 1;\nINSERT INTO t VALUES (2);";
+/// let document = pgtk_sql::document::parse_sql(source).expect("PostgreSQL accepts both");
+///
+/// let statements = document.statements();
+/// assert_eq!(statements.len(), 2);
+/// assert!(matches!(statements[1], Statement::Insert(_)));
+///
+/// // `items` gives each statement with its span in the source.
+/// let spans = document
+///     .items()
+///     .map(|item| item.source_bounds().expect("a span").range())
+///     .collect::<Vec<_>>();
+/// assert_eq!(&source[spans[1].clone()], "INSERT INTO t VALUES (2);");
+/// ```
+///
+/// A rejection names the first statement that PostgreSQL rejects, and the
+/// location of each error in it:
+///
+/// ```
+/// use pgtk_sql::document::{SqlParseError, parse_sql};
+///
+/// let source = "SELECT 1; SELECT FROM WHERE;";
+/// let Err(SqlParseError::Rejected(rejection)) = parse_sql(source) else {
+///     panic!("PostgreSQL rejects the second statement");
+/// };
+/// assert_eq!(&source[rejection.island().range()], "SELECT FROM WHERE;");
+/// let first = &rejection.diagnostics()[0];
+/// assert_eq!(&source[first.span().range()], "WHERE");
+/// ```
 pub fn parse_sql(source: &str) -> Result<SqlDocument<'_>, SqlParseError<'_>> {
     match SqlDocumentItem::frame(source) {
         Err(FrameFailure::Fatal(fatal)) => Err(SqlParseError::Fatal(fatal)),

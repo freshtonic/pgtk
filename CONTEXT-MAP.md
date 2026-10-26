@@ -16,7 +16,10 @@ The tooling crates (`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk
 ## Relationships
 
 - **pgtk-sql → pgtk-analyze**: Analysis reads a Statement that pgtk-sql parsed, and never changes
-  it. pgtk-analyze uses pgtk-sql's terms for the parsed form.
+  it. pgtk-analyze uses pgtk-sql's terms for the parsed form. When pgtk-sql rejects a text, there
+  is no Analysis: pgtk-analyze gives the Rejection to the caller with no change.
+- **Explanation** has the same meaning in pgtk-sql (for a Rejection) and in pgtk-analyze (for a
+  Diagnostic).
 - **pgtk-catalog → pgtk-analyze**: Analysis reads a Catalog and never changes it. pgtk-analyze uses
   pgtk-catalog's definitions of Catalog and Search Path.
 

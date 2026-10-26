@@ -666,6 +666,8 @@ impl<'c> FuncResolver<'c> {
             FunctionKind::Function => FuncDetail::Normal,
             FunctionKind::Procedure => FuncDetail::Procedure,
             FunctionKind::Window => FuncDetail::WindowFunc,
+            // A kind that a newer catalog adds is called as a plain function.
+            _ => FuncDetail::Normal,
         };
         // The defaults' own types, for the parameters the call left out.
         let defaults: Vec<TypeRef> = (nargs..best.args.len())

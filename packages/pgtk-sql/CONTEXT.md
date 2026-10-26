@@ -59,6 +59,26 @@ API.
   supported PostgreSQL grammar.
 - **SQL file item**: one statement, raw or COPY payload region, or the first
   strict rejection encountered while processing a SQL file.
+- **Rejection**: the outcome when the target version's raw parser would
+  refuse a text. It has a PostgreSQL part and an Explanation. The PostgreSQL
+  part is what PostgreSQL reports: SQLSTATE `42601` with `syntax error at or
+  near "..."`, or the SQLSTATE and message of a `gram.y` `ereport`, and the
+  cursor position. The PostgreSQL part must agree with PostgreSQL exactly.
+  _Avoid_: syntax error (as a separate term), parse error, parse failure.
+- **Explanation**: the part of a Rejection that PostgreSQL does not give:
+  labels (a span with a short message), notes, and help (a suggested change),
+  for example the expected tokens in words. It adds to the PostgreSQL part
+  and never changes it. `pgtk-analyze` uses the same term for its
+  Diagnostics.
+  _Avoid_: embellishment, decoration, extras.
+- **Strict parse**: a parse of a document that stops at the first Rejection
+  and returns only that Rejection.
+- **Recovering parse**: a parse of a document that continues after a
+  Rejection at the next statement boundary, so that each statement has its
+  own result: a PostgreSQL statement or a Rejection. A boundary is a
+  top-level `;`. A `;` in parentheses, in a quoted or dollar-quoted text, or
+  in a `BEGIN ATOMIC ... END` body is not a boundary.
+  _Avoid_: lenient parse, loose parse, best-effort parse.
 - **psql document**: one client-side source document in psql's language --
   runs of SQL text, variable interpolations, and query-buffer terminators.
   It belongs to the `pgtk-psql` crate, never to this grammar: `gram.y` has no
