@@ -2051,6 +2051,7 @@ pub mod literal {
         use crate::tokens::{ColIdText, ColLabelText};
         use arbitrary::{Arbitrary, Unstructured};
 
+        const IDENT_START: &[u8] = b"abcdefghijklmnopqrstuvwxyz_";
         const IDENT_REST: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789_";
         const SAFE_CHARS: &[u8] = b"abc123 ";
 
@@ -2191,12 +2192,14 @@ pub mod literal {
         impl<'a> Arbitrary<'a> for DollarStringLit<'_> {
             fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
                 // Tag: empty (yielding `$$...$$`) or a short ident-like word.
-                // The body must not contain the close sequence, so use the
-                // safe-char alphabet (no `$`).
+                // A tag does not start with a digit: `$1$` is a parameter
+                // (scan.l `dolq_start`). The body must not contain the close
+                // sequence, so use the safe-char alphabet (no `$`).
                 let tag_len: usize = u.int_in_range(0..=4)?;
                 let mut tag = String::with_capacity(tag_len);
-                for _ in 0..tag_len {
-                    tag.push(*u.choose(IDENT_REST)? as char);
+                for index in 0..tag_len {
+                    let alphabet = if index == 0 { IDENT_START } else { IDENT_REST };
+                    tag.push(*u.choose(alphabet)? as char);
                 }
                 let body = arb_safe_body(u, 20)?;
                 let s = format!("${tag}${body}${tag}$");
