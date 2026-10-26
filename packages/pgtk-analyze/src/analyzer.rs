@@ -15522,6 +15522,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatWindowFrameBetweenExtent as Extent, FlatWindowFrameEnd as End,
             FlatWindowFrameEndAfterCurrentRow as AfterCurrent,
             FlatWindowFrameEndAfterFollowing as AfterFollowing,
+            FlatWindowFrameEndAfterUnboundedFollowing as AfterUnboundedFollowing,
             FlatWindowFrameSingleBound as Single,
         };
         let preceding = |h: Handle<pgtk_sql::ast::shared::expr::FlatWindowFramePreceding>| {
@@ -15542,6 +15543,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let start = match self.get(self.get(*single).bound) {
                     Single::CurrentRow => FrameBound::CurrentRow,
                     Single::UnboundedPreceding => FrameBound::UnboundedPreceding,
+                    // A declared rule refuses it when it is reduced.
+                    Single::UnboundedFollowing => FrameBound::UnboundedFollowing,
                     Single::Preceding(p) => preceding(*p),
                 };
                 (start, self.span(body).start, None, NO_LOCATION)
@@ -15550,10 +15553,21 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let extent = self.get(*between).extent;
                 let start_at = self.span(extent).start;
                 match self.get(extent) {
+                    // A declared rule refuses it when it is reduced.
                     Extent::FromUnboundedFollowing(e) => (
                         FrameBound::UnboundedFollowing,
                         start_at,
-                        Some(end(*e)),
+                        Some(match self.get(*e) {
+                            AfterUnboundedFollowing::CurrentRow => FrameBound::CurrentRow,
+                            AfterUnboundedFollowing::UnboundedPreceding => {
+                                FrameBound::UnboundedPreceding
+                            }
+                            AfterUnboundedFollowing::UnboundedFollowing => {
+                                FrameBound::UnboundedFollowing
+                            }
+                            AfterUnboundedFollowing::Preceding(p) => preceding(*p),
+                            AfterUnboundedFollowing::Following(f) => following(*f),
+                        }),
                         self.span(*e).start,
                     ),
                     Extent::FromUnboundedPreceding(e) => (
@@ -15574,6 +15588,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     Extent::FromCurrentRow(e) => {
                         let bound = match self.get(*e) {
                             AfterCurrent::CurrentRow => FrameBound::CurrentRow,
+                            // A declared rule refuses it when it is reduced.
+                            AfterCurrent::UnboundedPreceding => FrameBound::UnboundedPreceding,
                             AfterCurrent::UnboundedFollowing => FrameBound::UnboundedFollowing,
                             AfterCurrent::Following(f) => following(*f),
                         };
@@ -15582,6 +15598,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     Extent::FromFollowing(f) => {
                         let f = self.get(*f);
                         let bound = match self.get(f.end) {
+                            // A declared rule refuses it when it is reduced.
+                            AfterFollowing::UnboundedPreceding => FrameBound::UnboundedPreceding,
                             AfterFollowing::UnboundedFollowing => FrameBound::UnboundedFollowing,
                             AfterFollowing::Following(h) => following(*h),
                         };

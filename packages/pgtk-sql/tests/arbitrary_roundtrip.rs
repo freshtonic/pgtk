@@ -9,6 +9,12 @@
 //! 3. With `postgres-oracle`, the raw parser of the target version must
 //!    accept the rendering.
 //!
+//! `Arbitrary` samples a Node that a `gram.y` action check refuses
+//! (`#[validate(...)]`, `crate::ast::validation`), because the sampler cannot
+//! run the check. The test skips such a statement when pgtk-sql refuses its
+//! rendering with a declared rejection and PostgreSQL refuses it with the same
+//! message: both parsers agree.
+//!
 //! The test reports the yield: the attempts, the statements that it checked
 //! and the count of each skip reason. A yield below `MIN_YIELD_PER_MILLE`
 //! fails the test, so a change to the derives cannot make the test empty.
@@ -91,6 +97,9 @@ enum Skip {
     OtherSampleError,
     /// The rendering is empty.
     EmptyRendering,
+    /// pgtk-sql refuses the rendering with a declared rejection, and
+    /// PostgreSQL refuses it with the same message.
+    AgreedRejection,
 }
 
 /// How a checked statement failed.
@@ -112,7 +121,6 @@ enum FailureKind {
 use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
 // The issue of each group of known failures.
-const EREPORTS: u32 = 55;
 const DECORATED_CLOSE: u32 = 89;
 
 /// One known failure. It matches a failure of its kind when `sql` matches
@@ -148,7 +156,6 @@ const fn known(
 #[rustfmt::skip]
 const KNOWN_FAILURES: &[KnownFailure] = &[
     known(Parse, DECORATED_CLOSE, r#"OPERATOR\([^()]*\) (E|U&|B|X)?'"#, r#"^unexpected "\)" after "#, "an OPERATOR(op) before a string literal, whose close is the merged kind RPAREN_TYPED_LA"),
-    known(Oracle, EREPORTS, r#""#, r#"ordered-set aggregate with a VARIADIC|OUT and INOUT arguments|WITH TIES cannot be specified|type modifier cannot have parameter name|multiple (ORDER BY|OFFSET|LIMIT|WITH) clauses not allowed|frame start cannot be|frame end cannot be|wrong number of parameters on (left|right) side of OVERLAPS"#, "a statement that a gram.y action rejects with ereport()"),
 ];
 
 struct Failure {
@@ -200,19 +207,41 @@ fn tokens(text: &str) -> Vec<String> {
         .collect()
 }
 
-/// Checks one rendering: the parse, the fixpoint and the oracle.
-fn check(rendered: &str) -> Result<(), (FailureKind, String)> {
+/// Reports whether PostgreSQL refuses `rendered` with the message of the
+/// declared rejection that refused it in pgtk-sql.
+fn agreed_rejection(rendered: &str, error: &recursa::ParseError) -> bool {
+    let Some(note) = error.rejection() else {
+        return false;
+    };
+    #[cfg(feature = "postgres-oracle")]
+    {
+        pgtk_oracle::parse_error(rendered).as_deref() == Some(note.message())
+    }
+    #[cfg(not(feature = "postgres-oracle"))]
+    {
+        let _ = (rendered, note);
+        true
+    }
+}
+
+/// Checks one rendering: the parse, the fixpoint and the oracle. `Ok(false)`
+/// is a rendering that both parsers refuse with the same message.
+fn check(rendered: &str) -> Result<bool, (FailureKind, String)> {
     let lexed = pgtk_sql::lex(rendered);
     if let Some(error) = lexed.errors().next() {
         return Err((Lex, format!("{error:?}")));
     }
     let mut input = lexed.input();
-    let parsed = Statement::parse(&mut input).map_err(|error| {
-        let range = error.span().range();
-        let before = context(rendered, range.start, 40);
-        let token = rendered.get(range).unwrap_or("");
-        (Parse, format!("unexpected {token:?} after {before:?}"))
-    })?;
+    let parsed = match Statement::parse(&mut input) {
+        Ok(parsed) => parsed,
+        Err(error) if agreed_rejection(rendered, &error) => return Ok(false),
+        Err(error) => {
+            let range = error.span().range();
+            let before = context(rendered, range.start, 40);
+            let token = rendered.get(range).unwrap_or("");
+            return Err((Parse, format!("unexpected {token:?} after {before:?}")));
+        }
+    };
     if !input.is_eof() {
         return Err((Parse, "trailing input".to_owned()));
     }
@@ -237,7 +266,7 @@ fn check(rendered: &str) -> Result<(), (FailureKind, String)> {
     if let Some(error) = pgtk_oracle::parse_error(rendered) {
         return Err((Oracle, error));
     }
-    Ok(())
+    Ok(true)
 }
 
 fn run(attempts: usize) -> Report {
@@ -269,14 +298,18 @@ fn run(attempts: usize) -> Report {
             *report.skips.entry(Skip::EmptyRendering).or_default() += 1;
             continue;
         }
-        report.checked += 1;
-        if let Err((kind, detail)) = check(&rendered) {
-            report.failures.push(Failure {
-                attempt,
-                kind,
-                rendered,
-                detail,
-            });
+        match check(&rendered) {
+            Ok(true) => report.checked += 1,
+            Ok(false) => *report.skips.entry(Skip::AgreedRejection).or_default() += 1,
+            Err((kind, detail)) => {
+                report.checked += 1;
+                report.failures.push(Failure {
+                    attempt,
+                    kind,
+                    rendered,
+                    detail,
+                });
+            }
         }
     }
     report

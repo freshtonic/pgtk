@@ -6,6 +6,7 @@ pub mod session;
 pub mod shared;
 pub mod tcl;
 pub mod utility;
+pub mod validation;
 
 pub use self::file::{StatementTerminator, TerminatedStatement};
 

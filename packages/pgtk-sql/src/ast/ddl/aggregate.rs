@@ -165,6 +165,7 @@ recursa::ast_node! {
     /// definition list, which occupies the same position.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::ordered_set_arguments, flat = crate::ast::validation::ordered_set_arguments_flat)]
     pub struct CreateAggregateArgLists {
         #[sep(COMMA)]
         pub direct: one_or_many!(CreateAggregateArg),

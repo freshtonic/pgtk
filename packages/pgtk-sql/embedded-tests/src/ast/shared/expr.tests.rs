@@ -915,16 +915,15 @@ mod tests {
     /// production for every argument shape, so an ordered, `DISTINCT` or
     /// `VARIADIC` argument list before `WITHIN GROUP` is grammatical and only
     /// parse analysis rejects it (`cannot use multiple ORDER BY clauses with
-    /// WITHIN GROUP`). A typed literal still admits a named argument, which
-    /// gram.y rejects in a rule action. Its semantically rejected inner
-    /// `ORDER BY` is excluded here because pgtk-sql has no rule-action phase.
+    /// WITHIN GROUP`). A typed literal refuses a named argument, as the gram.y
+    /// action does (`crate::ast::validation`), and its inner `ORDER BY` is
+    /// excluded by the grammar.
     #[test]
     fn accept_function_applications_gram_y_admits() {
         for src in [
             "f(1 ORDER BY 1) WITHIN GROUP (ORDER BY 1)",
             "f(DISTINCT 1) WITHIN GROUP (ORDER BY 1)",
             "f(VARIADIC xs) WITHIN GROUP (ORDER BY 1)",
-            "mytype(n => 1) 'x'",
         ] {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");

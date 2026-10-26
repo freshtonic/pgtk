@@ -733,8 +733,9 @@ recursa::ast_node! {
 // own type, except two. A start of `UNBOUNDED FOLLOWING` and an end of
 // `UNBOUNDED PRECEDING` stay, because the keyword must shift there as in
 // gram.y (`%nonassoc UNBOUNDED`): without the arm, `unbounded` reduces as a
-// column name and the bound reads as an offset. Their checks need a declared
-// rejection of one variant, which recursa does not have.
+// column name and the bound reads as an offset. A declared rejection of the
+// variant (`#[reject(variant(...))]`) refuses each of them when it is reduced,
+// with the message and the SQLSTATE of the action.
 
 recursa::ast_node! {
     /// `unit BETWEEN start AND end [EXCLUDE ...]`
@@ -750,11 +751,21 @@ recursa::ast_node! {
     /// `start AND end` of a `BETWEEN` frame, one variant for each kind of
     /// start bound. `UNBOUNDED FOLLOWING` is no start bound.
     #[derive(Debug)]
+    #[reject(
+        variant(FromUnboundedFollowing),
+        code = "42P20",
+        message = "frame start cannot be UNBOUNDED FOLLOWING",
+        cite = "gram.y REL_17_11 16359, frame_extent: BETWEEN frame_bound AND frame_bound",
+    )]
     pub enum WindowFrameBetweenExtent {
         /// `UNBOUNDED FOLLOWING AND end`, which the gram.y action refuses:
         /// "frame start cannot be UNBOUNDED FOLLOWING". The arm stays so that
-        /// the keyword shifts (see the note above).
-        FromUnboundedFollowing(#[tok(UNBOUNDED, FOLLOWING, AND, this)] WindowFrameEnd),
+        /// the keyword shifts (see the note above), and the declared rule
+        /// refuses it when it is reduced. Its end takes every bound, because
+        /// the action reports the start before it reads the end.
+        FromUnboundedFollowing(
+            #[tok(UNBOUNDED, FOLLOWING, AND, this)] WindowFrameEndAfterUnboundedFollowing,
+        ),
         /// `UNBOUNDED PRECEDING AND end`.
         FromUnboundedPreceding(#[tok(UNBOUNDED, PRECEDING, AND, this)] WindowFrameEnd),
         /// `offset PRECEDING AND end`.
@@ -799,6 +810,12 @@ recursa::ast_node! {
     /// same way: the keyword shifts. A quoted `"unbounded" PRECEDING` is an
     /// offset.
     #[derive(Debug)]
+    #[reject(
+        variant(UnboundedPreceding),
+        code = "42P20",
+        message = "frame end cannot be UNBOUNDED PRECEDING",
+        cite = "gram.y REL_17_11 16364, frame_extent: BETWEEN frame_bound AND frame_bound",
+    )]
     pub enum WindowFrameEnd {
         #[tok(CURRENT, ROW)]
         CurrentRow,
@@ -812,11 +829,39 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// The end bound after a `CURRENT ROW` start: no `offset PRECEDING`.
+    /// The end bound after an `UNBOUNDED FOLLOWING` start: each bound. The
+    /// start refuses the frame, and the gram.y action reports the start
+    /// first, so this end refuses none of them.
     #[derive(Debug)]
+    pub enum WindowFrameEndAfterUnboundedFollowing {
+        #[tok(CURRENT, ROW)]
+        CurrentRow,
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
+        Preceding(WindowFramePreceding),
+        Following(WindowFrameFollowing),
+    }
+}
+
+recursa::ast_node! {
+    /// The end bound after a `CURRENT ROW` start: no `offset PRECEDING`.
+    /// `UNBOUNDED PRECEDING` stays so that the keyword shifts, and the
+    /// declared rule refuses it, because the gram.y action checks the end
+    /// before it checks the start against the end.
+    #[derive(Debug)]
+    #[reject(
+        variant(UnboundedPreceding),
+        code = "42P20",
+        message = "frame end cannot be UNBOUNDED PRECEDING",
+        cite = "gram.y REL_17_11 16364, frame_extent: BETWEEN frame_bound AND frame_bound",
+    )]
     pub enum WindowFrameEndAfterCurrentRow {
         #[tok(CURRENT, ROW)]
         CurrentRow,
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
         #[tok(UNBOUNDED, FOLLOWING)]
         UnboundedFollowing,
         Following(WindowFrameFollowing),
@@ -825,8 +870,18 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// The end bound after an `offset FOLLOWING` start: a bound that follows.
+    /// `UNBOUNDED PRECEDING` stays so that the keyword shifts, and the
+    /// declared rule refuses it, as for [`WindowFrameEndAfterCurrentRow`].
     #[derive(Debug)]
+    #[reject(
+        variant(UnboundedPreceding),
+        code = "42P20",
+        message = "frame end cannot be UNBOUNDED PRECEDING",
+        cite = "gram.y REL_17_11 16364, frame_extent: BETWEEN frame_bound AND frame_bound",
+    )]
     pub enum WindowFrameEndAfterFollowing {
+        #[tok(UNBOUNDED, PRECEDING)]
+        UnboundedPreceding,
         #[tok(UNBOUNDED, FOLLOWING)]
         UnboundedFollowing,
         Following(WindowFrameFollowing),
@@ -844,13 +899,23 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// The bound of a frame without `BETWEEN`, which also ends the frame at
-    /// the current row: no bound that follows.
+    /// the current row: no bound that follows. `UNBOUNDED FOLLOWING` stays so
+    /// that the keyword shifts, and the declared rule refuses it as the gram.y
+    /// action does.
     #[derive(Debug)]
+    #[reject(
+        variant(UnboundedFollowing),
+        code = "42P20",
+        message = "frame start cannot be UNBOUNDED FOLLOWING",
+        cite = "gram.y REL_17_11 16335, frame_extent: frame_bound",
+    )]
     pub enum WindowFrameSingleBound {
         #[tok(CURRENT, ROW)]
         CurrentRow,
         #[tok(UNBOUNDED, PRECEDING)]
         UnboundedPreceding,
+        #[tok(UNBOUNDED, FOLLOWING)]
+        UnboundedFollowing,
         Preceding(WindowFramePreceding),
     }
 }
@@ -1233,6 +1298,7 @@ recursa::ast_node! {
     /// semantic-action gap and remain structurally accepted here. It parts from
     /// [`FunctionCallSuffix`] on the string after `)`.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::typed_literal_arguments, flat = crate::ast::validation::typed_literal_arguments_flat)]
     pub struct FunctionTypedLiteralTail {
         pub open: FunctionCallOpen,
         /// gram.y `func_arg_list`.
@@ -4384,6 +4450,7 @@ recursa::ast_node! {
         /// `(start, end) OVERLAPS (start, end)` — SQL time-period overlap test.
         /// gram.y `a_expr: row OVERLAPS row` (REL_17_11 gram.y 14997): each
         /// operand is a [`Row`], not an expression.
+        #[validate(crate::ast::validation::overlaps, flat = crate::ast::validation::overlaps_flat)]
         Overlaps(boxed!(Row), #[tok(OVERLAPS, this)] boxed!(Row)),
         /// Record comparison operators: `expr *= expr`, `*<>`, `*<`, `*<=`,
         /// `*>`, `*>=` — compare ROW/composite values field by field.
