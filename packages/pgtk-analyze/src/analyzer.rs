@@ -125,8 +125,8 @@ use pgtk_sql::ast::shared::expr::{FlatFuncCallName, FlatFunctionApplicationExpr}
 use pgtk_sql::ast::shared::expr::{
     FlatFunctionCallApplication, FlatInlineWindowSpec, FlatQuantifiedComparisonOperand,
     FlatQuantifiedComparisonTail, FlatQuantifiedLikeOperator, FlatWindowFrameBody,
-    FlatWindowFrameBound, FlatWindowFrameClause, FlatWindowFrameDirection, FlatWindowFrameUnit,
-    FlatWindowSpec, FlatWindowSpecBody, FlatWithinGroupClause,
+    FlatWindowFrameClause, FlatWindowFrameUnit, FlatWindowSpec, FlatWindowSpecBody,
+    FlatWithinGroupClause,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -15460,22 +15460,85 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         })
     }
 
-    /// A frame bound as written.
-    fn frame_bound(&self, bound: Handle<FlatWindowFrameBound>) -> Result<FrameBound> {
-        Ok(match self.get(bound) {
-            FlatWindowFrameBound::CurrentRow => FrameBound::CurrentRow,
-            FlatWindowFrameBound::Unbounded(d) => match self.get(*d) {
-                FlatWindowFrameDirection::Preceding => FrameBound::UnboundedPreceding,
-                FlatWindowFrameDirection::Following => FrameBound::UnboundedFollowing,
-            },
-            FlatWindowFrameBound::Offset(o) => {
-                let o = self.get(*o);
-                match self.get(o.direction) {
-                    FlatWindowFrameDirection::Preceding => FrameBound::OffsetPreceding(o.expr),
-                    FlatWindowFrameDirection::Following => FrameBound::OffsetFollowing(o.expr),
+    /// The start and end bounds of a frame as written; `None` for the end of
+    /// a frame without `BETWEEN`. The grammar admits only the combinations
+    /// that gram.y's `frame_extent` keeps.
+    fn frame_bounds(
+        &self,
+        body: Handle<FlatWindowFrameBody>,
+    ) -> (FrameBound, usize, Option<FrameBound>, usize) {
+        use pgtk_sql::ast::shared::expr::{
+            FlatWindowFrameBetweenExtent as Extent, FlatWindowFrameEnd as End,
+            FlatWindowFrameEndAfterCurrentRow as AfterCurrent,
+            FlatWindowFrameEndAfterFollowing as AfterFollowing,
+            FlatWindowFrameSingleBound as Single,
+        };
+        let preceding = |h: Handle<pgtk_sql::ast::shared::expr::FlatWindowFramePreceding>| {
+            FrameBound::OffsetPreceding(self.get(h).offset)
+        };
+        let following = |h: Handle<pgtk_sql::ast::shared::expr::FlatWindowFrameFollowing>| {
+            FrameBound::OffsetFollowing(self.get(h).offset)
+        };
+        let end = |h: Handle<End>| match self.get(h) {
+            End::CurrentRow => FrameBound::CurrentRow,
+            End::UnboundedPreceding => FrameBound::UnboundedPreceding,
+            End::UnboundedFollowing => FrameBound::UnboundedFollowing,
+            End::Preceding(p) => preceding(*p),
+            End::Following(f) => following(*f),
+        };
+        match self.get(body) {
+            FlatWindowFrameBody::Single(single) => {
+                let start = match self.get(self.get(*single).bound) {
+                    Single::CurrentRow => FrameBound::CurrentRow,
+                    Single::UnboundedPreceding => FrameBound::UnboundedPreceding,
+                    Single::Preceding(p) => preceding(*p),
+                };
+                (start, self.span(body).start, None, NO_LOCATION)
+            }
+            FlatWindowFrameBody::Between(between) => {
+                let extent = self.get(*between).extent;
+                let start_at = self.span(extent).start;
+                match self.get(extent) {
+                    Extent::FromUnboundedFollowing(e) => (
+                        FrameBound::UnboundedFollowing,
+                        start_at,
+                        Some(end(*e)),
+                        self.span(*e).start,
+                    ),
+                    Extent::FromUnboundedPreceding(e) => (
+                        FrameBound::UnboundedPreceding,
+                        start_at,
+                        Some(end(*e)),
+                        self.span(*e).start,
+                    ),
+                    Extent::FromPreceding(f) => {
+                        let f = self.get(*f);
+                        (
+                            preceding(f.start),
+                            start_at,
+                            Some(end(f.end)),
+                            self.span(f.end).start,
+                        )
+                    }
+                    Extent::FromCurrentRow(e) => {
+                        let bound = match self.get(*e) {
+                            AfterCurrent::CurrentRow => FrameBound::CurrentRow,
+                            AfterCurrent::UnboundedFollowing => FrameBound::UnboundedFollowing,
+                            AfterCurrent::Following(f) => following(*f),
+                        };
+                        (FrameBound::CurrentRow, start_at, Some(bound), NO_LOCATION)
+                    }
+                    Extent::FromFollowing(f) => {
+                        let f = self.get(*f);
+                        let bound = match self.get(f.end) {
+                            AfterFollowing::UnboundedFollowing => FrameBound::UnboundedFollowing,
+                            AfterFollowing::Following(h) => following(*h),
+                        };
+                        (following(f.start), start_at, Some(bound), NO_LOCATION)
+                    }
                 }
             }
-        })
+        }
     }
 
     /// `transformWindowDefinitions` over the query level's windows.
@@ -15646,62 +15709,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let has_order = order_count > 0;
         let f = self.get(frame);
         let unit = *self.get(f.unit);
-        let (start, start_at, end, end_at) = match self.get(f.body) {
-            FlatWindowFrameBody::Single(s) => {
-                let s = self.get(*s);
-                (
-                    self.frame_bound(s.bound)?,
-                    self.span(s.bound).start,
-                    None,
-                    NO_LOCATION,
-                )
-            }
-            FlatWindowFrameBody::Between(b) => {
-                let b = self.get(*b);
-                (
-                    self.frame_bound(b.start)?,
-                    self.span(b.start).start,
-                    Some(self.frame_bound(b.end)?),
-                    self.span(b.end).start,
-                )
-            }
-        };
-        // gram.y's frame_extent rules, at the offending bound.
+        let (start, start_at, end, end_at) = self.frame_bounds(f.body);
+        // gram.y's frame_extent rules that the grammar does not state (see
+        // `WindowFrameBetween`), at the offending bound.
         let err = |m: &str, at: usize| -> crate::diagnostic::AnalyzeError {
             Diagnostic::new("42P20", m.to_owned()).at(at).into()
         };
         if start == FrameBound::UnboundedFollowing {
             return Err(err("frame start cannot be UNBOUNDED FOLLOWING", start_at));
         }
-        match end {
-            None => {
-                if matches!(start, FrameBound::OffsetFollowing(_)) {
-                    return Err(err(
-                        "frame starting from following row cannot end with current row",
-                        start_at,
-                    ));
-                }
-            }
-            Some(end) => {
-                if end == FrameBound::UnboundedPreceding {
-                    return Err(err("frame end cannot be UNBOUNDED PRECEDING", end_at));
-                }
-                if start == FrameBound::CurrentRow && matches!(end, FrameBound::OffsetPreceding(_))
-                {
-                    return Err(err(
-                        "frame starting from current row cannot have preceding rows",
-                        end_at,
-                    ));
-                }
-                if matches!(start, FrameBound::OffsetFollowing(_))
-                    && matches!(end, FrameBound::OffsetPreceding(_) | FrameBound::CurrentRow)
-                {
-                    return Err(err(
-                        "frame starting from following row cannot have preceding rows",
-                        end_at,
-                    ));
-                }
-            }
+        if end == Some(FrameBound::UnboundedPreceding) {
+            return Err(err("frame end cannot be UNBOUNDED PRECEDING", end_at));
         }
         let offsets: Vec<Handle<FlatExpr>> = [Some(start), end]
             .into_iter()
