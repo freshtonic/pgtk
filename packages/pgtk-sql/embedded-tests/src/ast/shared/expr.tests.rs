@@ -3505,7 +3505,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3547,7 +3547,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3592,7 +3592,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3604,7 +3604,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3616,7 +3616,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3628,7 +3628,7 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { subscripts, .. }) if !subscripts.is_empty()));
+        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 

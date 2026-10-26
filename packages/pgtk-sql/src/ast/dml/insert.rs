@@ -288,7 +288,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct InsertColumnItem {
         pub name: crate::tokens::ColId,
-        pub indirection: zero_or_many!(crate::ast::shared::expr::IndirectionEl),
+        /// gram.y `opt_indirection`, with a `.*` as the last element only
+        /// (`check_indirection`, REL_17_11 gram.y 18779; issue #87).
+        pub indirection: Option<crate::ast::shared::expr::Indirection>,
     }
 }
 

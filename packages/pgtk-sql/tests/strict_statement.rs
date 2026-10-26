@@ -1557,3 +1557,93 @@ fn a_json_wrapper_takes_its_behavior_after_with_only() {
         "SELECT JSON_QUERY(j, '$' WITH UNCONDITIONAL WRAPPER)",
     ]);
 }
+
+/// gram.y `opt_cycle_clause` takes an `AexprConst` after `TO` and after
+/// `DEFAULT`, in each target version (REL_17_11 gram.y 12944; issue #87).
+#[test]
+fn a_cycle_mark_value_is_a_constant() {
+    let cycle = |values: &str| {
+        format!(
+            "WITH RECURSIVE c(a, x) AS (SELECT 1, true) CYCLE a SET x TO {values} USING p SELECT 1"
+        )
+    };
+    let rejected = [
+        "-1 DEFAULT 0",
+        "(1) DEFAULT 0",
+        "1 + 1 DEFAULT 0",
+        "1::int DEFAULT 0",
+        "a DEFAULT 0",
+        "$1 DEFAULT 0",
+        "f(1) DEFAULT 0",
+        "XMLELEMENT(NAME e) DEFAULT 0",
+        "CURRENT_DATE DEFAULT 0",
+        "DEFAULT DEFAULT 0",
+        "1 DEFAULT 'a' || 'b'",
+    ]
+    .map(cycle);
+    assert_rejects(
+        &rejected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "a CYCLE mark value is an AexprConst",
+    );
+    let accepted = [
+        "'Y' DEFAULT 'N'",
+        "1 DEFAULT 0",
+        "1.5 DEFAULT B'1'",
+        "X'1F' DEFAULT $$x$$",
+        "E'x' DEFAULT U&'x'",
+        "TRUE DEFAULT FALSE",
+        "NULL DEFAULT NULL",
+        "int4 '1' DEFAULT numeric(10, 2) '2'",
+        "bool 't' DEFAULT varchar(3) 'x'",
+        "timestamp '2000-01-01' DEFAULT time with time zone '1:00'",
+        "interval '1' day DEFAULT interval(3) '1'",
+        "pg_catalog.int4 '1' DEFAULT char(3) 'x'",
+        "s.t(3) 'x' DEFAULT t(3) 'x'",
+    ]
+    .map(cycle);
+    assert_accepts(&accepted.iter().map(String::as_str).collect::<Vec<_>>());
+}
+
+/// gram.y `columnref: ColId indirection` and `c_expr: PARAM
+/// opt_indirection` (REL_17_11 gram.y 15357): a subscripted column and a
+/// parameter take each indirection element, and a `.*` is the last element
+/// only (`check_indirection`; issue #87).
+#[test]
+fn a_subscripted_column_or_a_parameter_takes_an_indirection() {
+    assert_rejects(
+        &[
+            "SELECT a[1].*.b FROM t",
+            "SELECT a[1].*[1] FROM t",
+            "SELECT $1.*.a",
+            "SELECT $1.*[1]",
+            "SELECT $1.a(1)",
+            "SELECT $1 'x'",
+        ],
+        "gram.y refuses this indirection",
+    );
+    assert_accepts(&[
+        "SELECT a[1].*, a[1].b.*, a[1][2].b.c[3].* FROM t",
+        "SELECT $1.a, $1.*, $1.a.b[1].c, $1[1].a.*",
+        "SELECT $1.a FROM t WHERE $1.* IS NULL",
+    ]);
+}
+
+/// gram.y `set_target` and `insert_column_item` are `ColId
+/// opt_indirection`, so the raw parser takes a `.*` as the last element
+/// (REL_17_11 gram.y 12209, 12405; issue #87).
+#[test]
+fn an_assignment_target_takes_an_indirection() {
+    assert_rejects(
+        &[
+            "UPDATE t SET a.*.b = 1",
+            "UPDATE t SET a.*[1] = 1",
+            "INSERT INTO t (a.*.b) VALUES (1)",
+        ],
+        "gram.y refuses this indirection",
+    );
+    assert_accepts(&[
+        "UPDATE t SET a.* = 1, b[1].* = 2, c[1].d = 3",
+        "UPDATE t SET (a.*, b[1].c) = (1, 2)",
+        "INSERT INTO t (a.*, b[1].*, c[1].d) VALUES (1, 2, 3)",
+    ]);
+}
