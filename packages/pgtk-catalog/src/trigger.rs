@@ -38,6 +38,7 @@ pub struct Trigger {
 /// The timing of a trigger, from the bits of `tgtype`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[non_exhaustive]
 pub enum TriggerTiming {
     /// `BEFORE`. Bit 2 is set.
     Before,

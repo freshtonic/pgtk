@@ -38,6 +38,7 @@
 //! # Example
 //!
 //! ```
+//! # #[cfg(feature = "since-pg16")] {
 //! use pgtk_sql::ast::Statement;
 //! use pgtk_sql::minimum_version::{minimum_version, minimum_version_above};
 //! use pgtk_sql::TargetVersion;
@@ -55,6 +56,7 @@
 //! // A PostgreSQL 15 server rejects it; a PostgreSQL 16 server does not.
 //! assert!(minimum_version_above(&parsed, TargetVersion::Pg15).is_some());
 //! assert!(minimum_version_above(&parsed, TargetVersion::Pg16).is_none());
+//! # }
 //! ```
 //!
 //! # The lexical gates
@@ -211,6 +213,7 @@ impl VersionRequirement {
 /// // Every supported version parses this statement.
 /// assert!(minimum_version(&parsed).is_none());
 ///
+/// # #[cfg(feature = "since-pg15")] {
 /// let lexed = pgtk_sql::lex("MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN DELETE");
 /// let mut input = lexed.input();
 /// let parsed = Statement::parse(&mut input).expect("statement");
@@ -219,6 +222,7 @@ impl VersionRequirement {
 ///     minimum_version(&parsed).map(|found| found.version()),
 ///     Some(TargetVersion::Pg15)
 /// );
+/// # }
 /// ```
 pub fn minimum_version<F>(parsed: &ArenaParsed<'_, F>) -> Option<VersionRequirement>
 where
@@ -237,6 +241,7 @@ where
 /// [`minimum_version_above`](Self::minimum_version_above).
 ///
 /// ```
+/// # #[cfg(all(feature = "since-pg16", feature = "spans"))] {
 /// use pgtk_sql::ast::Statement;
 /// use pgtk_sql::{MinimumVersion, TargetVersion};
 ///
@@ -251,6 +256,7 @@ where
 /// assert_eq!(rejected.sqlstate(), Some("42601"));
 /// // The span covers the subquery that lacks the alias.
 /// assert_eq!(rejected.span().map(|span| span.range()), Some(14..24));
+/// # }
 /// ```
 pub trait MinimumVersion {
     /// See [`minimum_version`].
@@ -296,6 +302,7 @@ where
 /// tokens and keep the higher version.
 ///
 /// ```
+/// # #[cfg(all(feature = "since-pg16", feature = "spans"))] {
 /// use pgtk_sql::ast::Statement;
 /// use pgtk_sql::{MinimumVersion, TargetVersion};
 ///
@@ -311,6 +318,7 @@ where
 /// assert_eq!(rejected.version(), TargetVersion::Pg16);
 /// assert_eq!(rejected.sqlstate(), Some("42601"));
 /// assert_eq!(rejected.span().map(|span| span.range()), Some(14..24));
+/// # }
 /// ```
 impl<R: FlatRequires> MinimumVersion for FlatAst<'_, R> {
     fn minimum_version(&self) -> Option<VersionRequirement> {
@@ -334,6 +342,7 @@ impl<R: FlatRequires> MinimumVersion for FlatAst<'_, R> {
 /// Pass the parse itself, so the answer keeps its span.
 ///
 /// ```
+/// # #[cfg(feature = "since-pg16")] {
 /// use pgtk_sql::ast::Statement;
 /// use pgtk_sql::TargetVersion;
 /// use pgtk_sql::minimum_version::minimum_version_above;
@@ -347,6 +356,7 @@ impl<R: FlatRequires> MinimumVersion for FlatAst<'_, R> {
 /// assert_eq!(found.version(), TargetVersion::Pg16);
 /// assert!(found.is_absence());
 /// assert!(minimum_version_above(&parsed, TargetVersion::Pg16).is_none());
+/// # }
 /// ```
 pub fn minimum_version_above<F>(
     parsed: &ArenaParsed<'_, F>,
@@ -501,6 +511,7 @@ fn has_vertical_tab(text: &str) -> bool {
 /// so a caller that reports one diagnostic per statement narrows it first.
 ///
 /// ```
+/// # #[cfg(feature = "since-pg16")] {
 /// use pgtk_sql::TargetVersion;
 /// use pgtk_sql::minimum_version::lexical_minimum_version;
 ///
@@ -511,6 +522,7 @@ fn has_vertical_tab(text: &str) -> bool {
 ///
 /// let lexed = pgtk_sql::lex("SELECT 1071");
 /// assert!(lexical_minimum_version(lexed.tokens()).is_none());
+/// # }
 /// ```
 pub fn lexical_minimum_version<'input>(
     tokens: impl IntoIterator<Item = crate::Token<'input>>,
@@ -524,6 +536,7 @@ pub fn lexical_minimum_version<'input>(
 /// as for [`lexical_minimum_version`].
 ///
 /// ```
+/// # #[cfg(feature = "since-pg16")] {
 /// use pgtk_sql::TargetVersion;
 /// use pgtk_sql::minimum_version::lexical_minimum_version_above;
 ///
@@ -531,6 +544,7 @@ pub fn lexical_minimum_version<'input>(
 /// let tokens = lexed.tokens().collect::<Vec<_>>();
 /// assert!(lexical_minimum_version_above(tokens.iter().copied(), TargetVersion::Pg15).is_some());
 /// assert!(lexical_minimum_version_above(tokens.iter().copied(), TargetVersion::Pg16).is_none());
+/// # }
 /// ```
 pub fn lexical_minimum_version_above<'input>(
     tokens: impl IntoIterator<Item = crate::Token<'input>>,

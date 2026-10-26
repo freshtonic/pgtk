@@ -21,8 +21,7 @@ pr_labels = ["release"]
 pr_draft = false
 # Publish only from the merged release PR, never from an arbitrary main commit.
 release_always = false
-# Before 1.0, and much of the public API of pgtk-sql is generated. Semver checks
-# give noise.
+# Off by default. pgtk-catalog and pgtk-analyze turn it on below.
 semver_check = false
 
 [changelog]
@@ -40,23 +39,28 @@ commit_parsers = [
 ]
 
 # The published crates. Each has its own version: pgtk-analyze depends on
-# pgtk-sql and pgtk-catalog with caret requirements, and release-plz updates
-# them when it bumps a dependency. Tags are `<crate>-v<version>`.
+# pgtk-sql and pgtk-catalog, and pgtk-psql depends on pgtk-sql, with caret
+# requirements, and release-plz updates them when it bumps a dependency. Tags
+# are `<crate>-v<version>`.
 [[package]]
 name = "pgtk-sql"
 
+# Not semver-checked before its second release, as pgtk-catalog was not.
+[[package]]
+name = "pgtk-psql"
+
+# cargo-semver-checks compares the public API with the last release on crates.io, and
+# release-plz sets the next version from the result. It needs a release on crates.io, so it
+# starts with the second release. pgtk-sql is not checked: see docs/semver-checks.md.
 [[package]]
 name = "pgtk-catalog"
+semver_check = true
 
 [[package]]
 name = "pgtk-analyze"
+semver_check = true
 
 # Never released: the crates with `publish = false`.
-[[package]]
-name = "pgtk-psql"
-release = false
-publish = false
-
 [[package]]
 name = "pgtk-oracle"
 release = false

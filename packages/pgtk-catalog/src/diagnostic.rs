@@ -64,6 +64,7 @@ pub enum Diagnostic {
 
 /// The kind of an entity that a diagnostic names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum EntityKind {
     /// A schema.
     Schema,

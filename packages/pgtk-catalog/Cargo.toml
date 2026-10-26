@@ -12,12 +12,20 @@ repository.workspace = true
 readme = "README.md"
 publish = true
 
+
+# docs.rs documents each loader adapter and the built-in catalog.
+[package.metadata.docs.rs]
+all-features = true
+
 [features]
 default = []
 # Serialize and deserialize a Catalog.
 serde = ["dep:serde"]
-# Embed a stock PostgreSQL 17 Catalog as a Fixture. Implies `serde`.
+# Embed a stock Catalog of each supported version as a Fixture. Implies `serde`.
 fixture = ["serde", "dep:serde_json", "dep:zstd"]
+# Accept a PostgreSQL 19 server, and add its fixture with `fixture`. The 19
+# catalog can still change before 19.0. Additive: it changes no other version.
+pg19-beta = []
 # Async `Executor` trait.
 async = []
 # Sync adapter for the `postgres` crate.
@@ -33,9 +41,19 @@ zstd = { workspace = true, optional = true }
 postgres = { workspace = true, optional = true }
 tokio-postgres = { workspace = true, optional = true }
 
+# The examples. CI builds them with `cargo build --workspace --examples`, where
+# pgtk-test-features turns on each feature that they need.
 [[example]]
 name = "inspect"
 required-features = ["fixture"]
+
+[[example]]
+name = "describe_schema"
+required-features = ["postgres"]
+
+[[example]]
+name = "snapshot"
+required-features = ["postgres", "serde"]
 
 [dev-dependencies]
 pgtk-test-server = { path = "../pgtk-test-server" }

@@ -4,7 +4,8 @@
 
 rust_library(
     name = "pgtk-catalog",
-    srcs = glob(["src/**/*.rs"]),
+    # src/lib.rs includes the README as the crate documentation.
+    srcs = glob(["src/**/*.rs"]) + ["README.md"],
     crate = "pgtk_catalog",
     crate_root = "src/lib.rs",
     edition = "2024",
@@ -14,7 +15,8 @@ rust_library(
 
 rust_test(
     name = "pgtk-catalog-test",
-    srcs = glob(["src/**/*.rs"]),
+    # src/lib.rs includes the README as the crate documentation.
+    srcs = glob(["src/**/*.rs"]) + ["README.md"],
     crate = "pgtk_catalog",
     crate_root = "src/lib.rs",
     edition = "2024",
