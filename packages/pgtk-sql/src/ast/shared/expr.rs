@@ -46,6 +46,29 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// gram.y `Sconst`: a string constant in each of its spellings. gram.y
+    /// `Sconst` is `SCONST` (REL_17_11 gram.y 17297), which scan.l gives for
+    /// the plain `'…'` form, a continued `'…'` form (`quotecontinue`), the
+    /// `E'…'` (escape) form and a dollar-quoted `$tag$…$tag$` form. scan.l
+    /// gives `USCONST` for `U&'…'`, and parser.c (`base_yylex`) makes it
+    /// `SCONST` after it reads an optional `UESCAPE` clause (REL_17_11
+    /// parser.c 316-319, gram.y 686-687). So a `U&'…'` string is an `Sconst`
+    /// in each rule, with its `UESCAPE` clause (issues #74 and #93).
+    ///
+    /// A bit string (`B'…'`) and a hex string (`X'…'`) are not an `Sconst`:
+    /// scan.l makes them `BCONST` and `XCONST` tokens. So they have no variant
+    /// here (issue #52).
+    #[derive(Debug)]
+    pub enum Sconst {
+        Unicode(UnicodeStringLitWithEscape),
+        Escape(literal::EscapeStringLit),
+        Dollar(literal::DollarStringLit),
+        Sequence(literal::StringLitSequence),
+        Plain(literal::StringLit),
+    }
+}
+
+recursa::ast_node! {
     /// Content inside IN parentheses: either a subquery or expression list.
     ///
     /// PG's `in_expr` is either `select_with_parens` or `'(' expr_list ')'`.
@@ -575,7 +598,7 @@ recursa::ast_node! {
         Call(FunctionCallTail),
         /// gram.y `AexprConst: func_name Sconst` (REL_17_11 gram.y 17223):
         /// `pg_catalog.int4 '1'`.
-        TypedLiteral(literal::StringLit),
+        TypedLiteral(Sconst),
         /// `t.a.*`, the last element of the chain.
         Star(ParenthesizedDotStar),
         /// `t.a[1]` and the elements after the subscript.
@@ -1311,7 +1334,7 @@ recursa::ast_node! {
         /// gram.y `func_arg_list`.
         pub args: FunctionArgumentList,
         pub close: FunctionCallClose,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2348,7 +2371,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FixedTypeCastFunc {
         pub type_name: FixedTypeCastFuncName,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2372,7 +2395,7 @@ recursa::ast_node! {
         /// and `precision` is also an operator class after a column in an
         /// index element, which the LR parser could not tell apart.
         pub type_name: crate::tokens::type_function_name,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2392,7 +2415,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTypeCastFunc {
         #[tok(JSON, this)]
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2434,7 +2457,7 @@ recursa::ast_node! {
         /// Optional precision, e.g., `timestamp(6)`.
         pub precision: Option<IconstPrecision>,
         pub tz: Option<TimeZoneQualifier>,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2446,7 +2469,7 @@ recursa::ast_node! {
         /// Optional precision, e.g., `time(2)`.
         pub precision: Option<IconstPrecision>,
         pub tz: Option<TimeZoneQualifier>,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2522,7 +2545,7 @@ recursa::ast_node! {
     /// `'str' [qualifier]` after `INTERVAL`.
     #[derive(Debug)]
     pub struct IntervalLitQualified {
-        pub value: literal::StringLit,
+        pub value: Sconst,
         pub qualifier: Option<IntervalQualifier>,
     }
 }
@@ -2532,7 +2555,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct IntervalLitPrecision {
         pub precision: IconstPrecision,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -3199,14 +3222,15 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Field argument of `EXTRACT(field FROM source)`.
+    /// Field argument of `EXTRACT(field FROM source)`: gram.y `extract_arg`,
+    /// whose string arm is `Sconst` (REL_17_11 gram.y 16620).
     ///
     /// Variant ordering: `StringLit` before `Ident` — string literal has a
     /// distinct first token (`'`) so order is not strictly required; listed
     /// first to match the Postgres docs ordering.
     #[derive(Debug)]
     pub enum ExtractField {
-        StringLit(StringLitSeq0),
+        StringLit(Sconst),
         Ident(literal::AliasName),
     }
 }

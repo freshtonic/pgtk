@@ -453,7 +453,7 @@ recursa::ast_node! {
     pub enum CommentText {
         #[tok(NULL)]
         Null,
-        Text(literal::StringLit),
+        Text(crate::ast::shared::expr::Sconst),
     }
 }
 
@@ -530,7 +530,7 @@ recursa::ast_node! {
     /// one the corpus exercises (`FOR 'dummy'`).
     #[derive(Debug)]
     pub enum SecurityLabelProviderName {
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         Word(literal::Ident),
     }
 }

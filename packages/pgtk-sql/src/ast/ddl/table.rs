@@ -967,7 +967,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct GenericOption {
         pub name: literal::AliasName,
-        pub value: crate::ast::utility::copy::CopySconst,
+        pub value: crate::ast::shared::expr::Sconst,
     }
 }
 

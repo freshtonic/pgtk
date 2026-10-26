@@ -132,7 +132,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum QualifiedTypedLiteralValue {
         /// `func_name Sconst`.
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         /// `func_name '(' func_arg_list ')' Sconst`.
         Call(crate::ast::shared::expr::FunctionTypedLiteralTail),
     }

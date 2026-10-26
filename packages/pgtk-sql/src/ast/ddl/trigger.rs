@@ -195,7 +195,7 @@ recursa::ast_node! {
     pub enum TriggerFuncArg {
         Numeric(literal::NumericLit),
         Integer(literal::IntegerLit),
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         Ident(literal::AliasName),
     }
 }
@@ -409,7 +409,7 @@ recursa::ast_node! {
     #[tok(LPAREN, this, RPAREN)]
     pub struct EventTriggerValueList {
         #[sep(COMMA)]
-        pub values: one_or_many!(literal::StringLit),
+        pub values: one_or_many!(crate::ast::shared::expr::Sconst),
     }
 }
 

@@ -3,7 +3,6 @@
 //! `tcl/savepoint.rs`; PREPARE/EXECUTE/DEALLOCATE in `tcl/prepared.rs`.
 
 use crate::ast::shared::names::QualifiedName;
-use crate::tokens::literal;
 
 // --- Transaction control ---
 
@@ -196,7 +195,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct PreparedGid {
         #[tok(PREPARED, this)]
-        pub gid: literal::StringLit,
+        pub gid: crate::ast::shared::expr::Sconst,
     }
 }
 

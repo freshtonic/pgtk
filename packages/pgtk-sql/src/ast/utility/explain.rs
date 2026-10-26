@@ -21,7 +21,7 @@ recursa::ast_node! {
         Numeric(literal::NumericLit),
         Integer(literal::IntegerLit),
         // Quoted string (e.g. `FORMAT 'json'`).
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         Ident(crate::tokens::ColId),
     }
 }
@@ -132,19 +132,6 @@ impl<'input> ExplainStmt<'input> {
 
 #[cfg(feature = "since-pg19")]
 recursa::ast_node! {
-    /// gram.y `Sconst`: a string constant in any of its spellings. `B'...'`
-    /// and `X'...'` are other tokens (`BCONST`, `XCONST`).
-    #[derive(Debug)]
-    pub enum Sconst {
-        Unicode(literal::UnicodeStringLit),
-        Escape(literal::EscapeStringLit),
-        Dollar(literal::DollarStringLit),
-        Plain(literal::StringLit),
-    }
-}
-
-#[cfg(feature = "since-pg19")]
-recursa::ast_node! {
     /// gram.y `utility_option_arg` (b73d13c:1188): `opt_boolean_or_string |
     /// NumericOnly`. `opt_boolean_or_string` is `TRUE | FALSE | ON |
     /// NonReservedWord | Sconst`; `NumericOnly` is a numeric constant with an
@@ -158,7 +145,7 @@ recursa::ast_node! {
         #[tok(ON)]
         On,
         Word(crate::tokens::NonReservedWord),
-        String(Sconst),
+        String(crate::ast::shared::expr::Sconst),
         Signed(crate::ast::session::set_reset::SignedNumericLit),
         Unsigned(crate::ast::session::set_reset::UnsignedNumericLit),
     }

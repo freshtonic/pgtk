@@ -1668,3 +1668,80 @@ fn an_operator_call_takes_a_string_literal_after_its_close() {
         "SELECT a FROM t ORDER BY a USING OPERATOR(<)",
     ]);
 }
+
+/// gram.y `Sconst` is `SCONST`, which scan.l gives for each string spelling:
+/// a plain string, a continued string, an escape string and a dollar-quoted
+/// string. parser.c makes a Unicode string an `SCONST` too (REL_17_11
+/// parser.c 316-319). Each typed literal of `AexprConst` (REL_17_11 gram.y
+/// 17223-17281), `zone_value` (1840-1877), the `CYCLE` mark values and the
+/// `extract_arg` take an `Sconst`. Before each of these spellings, the `)`
+/// is the merged kind `RPAREN_TYPED_LA` (issue #93).
+#[test]
+fn a_typed_literal_takes_each_sconst_spelling() {
+    assert_accepts(&[
+        "SELECT date E'2000-01-01'",
+        "SELECT date $$x$$",
+        "SELECT char(3) E'x'",
+        "SELECT f(3) $$x$$",
+        "SET TIME ZONE INTERVAL(3) $$1$$",
+        "SELECT date 'x'\n'y'",
+        "SELECT f(3) 'x'\n'y'",
+        "SELECT f(3) E'x', f(3) U&'x', f(3) U&'x' UESCAPE '!'",
+        "SELECT pg_catalog.int4 E'1', pg_catalog.int4 $$1$$, s.t(3) $$x$$",
+        "SELECT numeric(10, 2) $$1.5$$, varchar(3) U&'x', bit(1) E'1'",
+        "SELECT int4 U&'1' UESCAPE '!', text 'a'\n'b'",
+        "SELECT timestamp(3) E'2000-01-01', time with time zone $$00:00$$",
+        "SELECT interval $$1$$ year, interval(2) E'1 s', interval 'x'\n'y' day",
+        "SELECT EXTRACT(E'year' FROM now())",
+        "SET TIME ZONE E'UTC'",
+        "SET TIME ZONE $$UTC$$",
+        "SET TIME ZONE INTERVAL $$1$$ HOUR",
+        "SET TIME ZONE INTERVAL(3) U&'1'",
+        "SET TIME ZONE INTERVAL 'x'\n'y'",
+        "WITH RECURSIVE c(a) AS (SELECT 1) CYCLE a SET m TO date E'x' \
+         DEFAULT s.t(3) $$x$$ USING p SELECT 1",
+        "WITH RECURSIVE c(a) AS (SELECT 1) CYCLE a SET m TO t(3) U&'x' \
+         DEFAULT pg_catalog.text $$y$$ USING p SELECT 1",
+        "SELECT 1 OPERATOR(+) U&'2', 1 OPERATOR(+) '2'\n'3'",
+        "COPY t FROM U&'f' UESCAPE '!'",
+    ]);
+}
+
+/// The other rules that take gram.y `Sconst` take each of its spellings too
+/// (issue #93): `copy_file_name`, `func_as`, `NonReservedWord_or_Sconst`,
+/// `enum_val_list`, `TriggerFuncArg`, `event_trigger_value_list`,
+/// `comment_text`, `security_label`, `opt_boolean_or_string`,
+/// `notify_payload`, `file_name` and the `Sconst` of the transaction, `SET`,
+/// tablespace and conversion statements.
+#[test]
+fn each_rule_that_takes_an_sconst_takes_each_spelling() {
+    assert_accepts(&[
+        "COPY t FROM E'f'",
+        "COPY t TO PROGRAM $$cat$$",
+        "COPY t FROM 'a'\n'b' WITH (FORMAT $$csv$$)",
+        "CREATE FUNCTION f() RETURNS int AS E'select 1' LANGUAGE $$sql$$",
+        "CREATE FUNCTION f() RETURNS int AS U&'lib', $$sym$$ LANGUAGE c",
+        "CREATE TYPE e AS ENUM (E'a', $$b$$, U&'c')",
+        "ALTER TYPE e ADD VALUE E'x' BEFORE $$y$$",
+        "ALTER TYPE e RENAME VALUE E'x' TO $$y$$",
+        "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f(E'a', $$b$$)",
+        "CREATE EVENT TRIGGER e ON ddl_command_start WHEN TAG IN (E'a', $$b$$) \
+         EXECUTE FUNCTION f()",
+        "COMMENT ON TABLE t IS $$x$$",
+        "SECURITY LABEL FOR $$p$$ ON TABLE t IS E'x'",
+        "EXPLAIN (FORMAT $$json$$) SELECT 1",
+        "VACUUM (INDEX_CLEANUP $$on$$) t",
+        "NOTIFY c, $$x$$",
+        "LOAD E'lib'",
+        "PREPARE TRANSACTION $$g$$",
+        "COMMIT PREPARED E'g'",
+        "SET x = E'a', $$b$$",
+        "SET SESSION AUTHORIZATION $$r$$",
+        "SET SCHEMA E's'",
+        "SET NAMES $$utf8$$",
+        "SET TRANSACTION SNAPSHOT $$s$$",
+        "CREATE TABLESPACE s LOCATION $$/x$$",
+        "CREATE CONVERSION c FOR E'a' TO $$b$$ FROM f",
+        "ALTER EXTENSION e UPDATE TO $$2$$",
+    ]);
+}
