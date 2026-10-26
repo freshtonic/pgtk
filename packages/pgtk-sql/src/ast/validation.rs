@@ -864,12 +864,22 @@ fn unicode_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
     Err(Refusal::new(note).at_field(0))
 }
 
+/// `invalid byte sequence for encoding "UTF8"` in an `E'...'` string.
+pub static ESCAPE_STRING_BYTES: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("22021"),
+    "invalid byte sequence for encoding \"UTF8\"",
+    None,
+    "scan.l REL_17_11 633, pg_verifymbstr",
+);
+
 /// The refusal of an `E'...'` string with the escape error `error`.
 fn escape_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
     let note = match error {
         None => return Ok(()),
         Some(FoldError::InvalidEscapeValue) => &ESCAPE_STRING_VALUE,
         Some(FoldError::InvalidSurrogatePair) => &ESCAPE_STRING_PAIR,
+        Some(FoldError::InvalidByteSequence) => &ESCAPE_STRING_BYTES,
         Some(_) => &ESCAPE_STRING_ESCAPE,
     };
     Err(Refusal::new(note))
@@ -920,8 +930,8 @@ pub fn unicode_string_flat(
     unicode_string_refusal(unicode_string_error(ast[string.lit].as_str(), uescape))
 }
 
-/// `scan.l` refuses an `E'...'` string with an incorrect Unicode escape
-/// (`crate::ident::escape_string_error`). The check is on each node that holds the
+/// `scan.l` refuses an `E'...'` string with an incorrect Unicode escape, or
+/// whose value is no valid UTF-8 (`crate::ident::escape_string_error`). The check is on each node that holds the
 /// token: the `Escape` arm of [`Sconst`] and of [`Expr`].
 pub fn escape_sconst(value: &Sconst<'_>) -> Result<(), Refusal> {
     let Sconst::Escape(string) = value else {

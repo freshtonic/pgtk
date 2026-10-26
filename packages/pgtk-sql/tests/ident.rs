@@ -30,6 +30,9 @@ fn folds_each_identifier_form() {
         ("Ärger", "Ärger", true),
         ("ÄRGER", "Ärger", false),
         ("straße", "straße", true),
+        // scan.l `ident_cont` takes `$`, which has no case.
+        ("A$B", "a$b", false),
+        ("a$1", "a$1", true),
         // A keyword in an identifier position: its lowercase spelling.
         ("VALUE", "value", false),
         ("Coalesce", "coalesce", false),

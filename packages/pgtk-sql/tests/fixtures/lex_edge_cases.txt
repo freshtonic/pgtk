@@ -169,7 +169,7 @@
 ## edge "SELECT 1 é 2" (13 bytes, 4 records)
 0..6 T SELECT "SELECT"
 7..8 T IntegerLit "1"
-9..11 E RCA4000 9..11 "é"
+9..11 T ColIdText "é"
 12..13 T IntegerLit "2"
 ## edge "SELECT 'é'" (11 bytes, 2 records)
 0..6 T SELECT "SELECT"

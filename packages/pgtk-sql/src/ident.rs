@@ -57,6 +57,9 @@ pub enum FoldError {
     InvalidEscapeValue,
     /// A UTF-16 surrogate without its partner.
     InvalidSurrogatePair,
+    /// The value of an `E'...'` string holds a zero byte or is not UTF-8
+    /// (`pg_verifymbstr`, after an octal or a hexadecimal escape).
+    InvalidByteSequence,
 }
 
 impl fmt::Display for FoldError {
@@ -67,6 +70,7 @@ impl fmt::Display for FoldError {
             Self::InvalidEscape => "invalid Unicode escape",
             Self::InvalidEscapeValue => "invalid Unicode escape value",
             Self::InvalidSurrogatePair => "invalid Unicode surrogate pair",
+            Self::InvalidByteSequence => "invalid byte sequence for encoding \"UTF8\"",
         })
     }
 }
@@ -199,16 +203,19 @@ pub fn uescape_class(raw: &str) -> Option<&'static str> {
 /// The spellings are the plain `'...'` string, a continued string
 /// (`quotecontinue`: more `'...'` parts after a newline), an `E'...'` string
 /// (also continued, with the escapes of `xe` in each part) and a
-/// dollar-quoted string. The result is `None` for another spelling, and for
+/// dollar-quoted string. The result is `None` for another spelling, for
 /// an `E'...'` escape that `scan.l` refuses (`xeunicodefail`, a code point
-/// that is not valid, or a surrogate that is not in a pair).
+/// that is not valid, or a surrogate that is not in a pair), and for an
+/// `E'...'` value that `scan.l` refuses: see [`is_valid_server_text`].
 ///
 /// pgtk-sql lexes as if `standard_conforming_strings` is on, so a backslash
 /// in a plain string is an ordinary character.
 pub fn sconst_bytes(raw: &str) -> Option<Vec<u8>> {
     match raw.as_bytes().first()? {
         b'\'' => quoted_parts(raw.as_bytes(), false),
-        b'E' | b'e' => quoted_parts(&raw.as_bytes()[1..], true),
+        b'E' | b'e' => {
+            quoted_parts(&raw.as_bytes()[1..], true).filter(|value| is_valid_server_text(value))
+        }
         b'$' => {
             let close = raw[1..].find('$')? + 1;
             let tag = &raw[..=close];
@@ -217,6 +224,19 @@ pub fn sconst_bytes(raw: &str) -> Option<Vec<u8>> {
         }
         _ => None,
     }
+}
+
+/// `pg_verifymbstr` (`mbutils.c`) for the value of an `E'...'` string.
+///
+/// scan.l verifies the value when an octal or a hexadecimal escape (or a
+/// backslash before a non-ASCII byte) gives a zero byte or a byte with the
+/// high bit set (`saw_non_ascii`, REL_17_11 scan.l 627-636 and 735-750,
+/// 1425; REL_14_24 scan.l 588-597). In a UTF8 database the value must then be
+/// UTF-8 with no zero byte, else the error is "invalid byte sequence for
+/// encoding". The other bytes of a string come from the UTF-8 source text, so
+/// the test is the same whether or not scan.l makes it.
+fn is_valid_server_text(value: &[u8]) -> bool {
+    !value.contains(&0) && std::str::from_utf8(value).is_ok()
 }
 
 /// The parts of a (continued) quoted string, joined. `escapes` selects the
@@ -359,8 +379,8 @@ pub(crate) fn unicode_string_error(raw: &str, uescape: Option<&str>) -> Option<F
     decode_escapes(std::str::from_utf8(&value).ok()?, escape).err()
 }
 
-/// The first Unicode escape error of an `E'...'` string constant, which
-/// `scan.l` reports, or `None` when the string is correct.
+/// The first escape error of an `E'...'` string constant, which `scan.l`
+/// reports, or `None` when the string is correct.
 ///
 /// `scan.l` reads `\uXXXX` and `\UXXXXXXXX` (`<xe>{xeunicode}`). A `\u` or
 /// `\U` with fewer hexadecimal digits is "invalid Unicode escape"
@@ -371,16 +391,20 @@ pub(crate) fn unicode_string_error(raw: &str, uescape: Option<&str>) -> Option<F
 /// value" (`addunicode`). REL_17_11 scan.l 656-720 and 1393; REL_14_24 has
 /// the same rules.
 ///
-/// `raw` is the source text of the `E'...'` token. The other escapes of
-/// `scan.l` (`\n`, octal, `\x`) are not checked here.
+/// An octal or a hexadecimal escape can give a value that is not UTF-8 or
+/// that holds a zero byte: "invalid byte sequence for encoding"
+/// ([`is_valid_server_text`]).
+///
+/// `raw` is the source text of the `E'...'` token.
 pub(crate) fn escape_string_error(raw: &str) -> Option<FoldError> {
-    // `sconst_bytes` reads each part of a continued string with the rules of
-    // `xe`, and gives `None` for a refused escape. The walk below only names
-    // the error.
-    if sconst_bytes(raw).is_some() {
-        return None;
+    // `quoted_parts` reads each part of a continued string with the rules of
+    // `xe`, and gives `None` for a refused Unicode escape. The walk below
+    // only names that error.
+    match quoted_parts(raw.as_bytes().get(1..)?, true) {
+        Some(value) if is_valid_server_text(&value) => None,
+        Some(_) => Some(FoldError::InvalidByteSequence),
+        None => escape_string_error_kind(raw).or(Some(FoldError::InvalidEscape)),
     }
-    escape_string_error_kind(raw).or(Some(FoldError::InvalidEscape))
 }
 
 /// The kind of the first Unicode escape error in the source text of an
