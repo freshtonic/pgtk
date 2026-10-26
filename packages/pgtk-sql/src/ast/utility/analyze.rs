@@ -7,17 +7,55 @@ recursa::ast_node! {
     /// ```sql
     /// ANALYZE [VERBOSE] [table_name [(column, ...)]]
     /// ```
+    ///
+    /// gram.y `AnalyzeStmt` has either the `VERBOSE` keyword or the
+    /// parenthesized options, never both (REL_17_11 gram.y 11832-11855), so
+    /// they are the two variants of [`AnalyzeForm`] (issue #58).
     #[derive(Debug)]
     #[tok(ANALYZE, this)]
     pub struct AnalyzeStmt {
-        #[presence(VERBOSE)]
-        /// Optional `VERBOSE` keyword (legacy bareword form).
-        pub verbose: bool,
-        /// Optional parenthesized options list, e.g.
-        /// `(VERBOSE, SKIP_LOCKED, BUFFER_USAGE_LIMIT '512 kB')`.
-        pub options: Option<AnalyzeOptions>,
+        pub form: AnalyzeForm,
         #[sep(COMMA)]
         pub targets: Option<one_or_many!(AnalyzeTarget)>,
+    }
+}
+
+recursa::ast_node! {
+    /// The options of `ANALYZE`: the parenthesized list, or the legacy
+    /// optional `VERBOSE` keyword.
+    ///
+    /// Variant ordering: `Options` starts with `(`; `Legacy` may be empty.
+    #[derive(Debug)]
+    pub enum AnalyzeForm {
+        /// Parenthesized options list, e.g.
+        /// `(VERBOSE, SKIP_LOCKED, BUFFER_USAGE_LIMIT '512 kB')`.
+        Options(AnalyzeOptions),
+        Legacy(AnalyzeLegacy),
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `opt_verbose` of the legacy `ANALYZE` form.
+    #[derive(Debug)]
+    pub struct AnalyzeLegacy {
+        /// Optional `VERBOSE` keyword (legacy bareword form).
+        #[presence(VERBOSE)]
+        pub verbose: bool,
+    }
+}
+
+impl<'input> AnalyzeStmt<'input> {
+    /// Whether the legacy `VERBOSE` keyword is present.
+    pub fn verbose(&self) -> bool {
+        matches!(&self.form, AnalyzeForm::Legacy(legacy) if legacy.verbose)
+    }
+
+    /// The parenthesized options list.
+    pub fn options(&self) -> Option<&AnalyzeOptions<'input>> {
+        match &self.form {
+            AnalyzeForm::Options(options) => Some(options),
+            AnalyzeForm::Legacy(_) => None,
+        }
     }
 }
 

@@ -108,15 +108,38 @@ recursa::ast_node! {
     /// VACUUM '(' option [, ...] ')' [vacuum_relation [, ...]]
     /// ```
     ///
-    /// In the parenthesised form, `options` is `Some` and the four legacy
-    /// keyword fields are all `None`. In the legacy form, `options` is `None`
-    /// and any combination of `FULL` / `FREEZE` / `VERBOSE` / `ANALYZE` is
-    /// permitted in that fixed declaration order. Both forms share the optional
+    /// The parenthesised form has no legacy keyword after the list: gram.y
+    /// has no such form (REL_17_11 gram.y 11800-11830), so the two forms are
+    /// the variants of [`VacuumForm`] (issue #58). In the legacy form, any
+    /// combination of `FULL` / `FREEZE` / `VERBOSE` / `ANALYZE` is permitted
+    /// in that fixed declaration order. Both forms share the optional
     /// trailing relation list.
     #[derive(Debug)]
     #[tok(VACUUM, this)]
     pub struct VacuumStmt {
-        pub options: Option<VacuumOptions>,
+        pub form: VacuumForm,
+        #[sep(COMMA)]
+        pub relations: Option<one_or_many!(VacuumRelation)>,
+    }
+}
+
+recursa::ast_node! {
+    /// The options of `VACUUM`: the parenthesized list, or the legacy
+    /// keywords.
+    ///
+    /// Variant ordering: `Options` starts with `(`; `Legacy` may be empty.
+    #[derive(Debug)]
+    pub enum VacuumForm {
+        Options(VacuumOptions),
+        Legacy(VacuumLegacyOptions),
+    }
+}
+
+recursa::ast_node! {
+    /// `[FULL] [FREEZE] [VERBOSE] [ANALYZE]`: gram.y `opt_full opt_freeze
+    /// opt_verbose opt_analyze`.
+    #[derive(Debug)]
+    pub struct VacuumLegacyOptions {
         #[presence(FULL)]
         pub full: bool,
         #[presence(FREEZE)]
@@ -125,8 +148,43 @@ recursa::ast_node! {
         pub verbose: bool,
         #[presence(ANALYZE)]
         pub analyze: bool,
-        #[sep(COMMA)]
-        pub relations: Option<one_or_many!(VacuumRelation)>,
+    }
+}
+
+impl<'input> VacuumStmt<'input> {
+    /// The parenthesized options list.
+    pub fn options(&self) -> Option<&VacuumOptions<'input>> {
+        match &self.form {
+            VacuumForm::Options(options) => Some(options),
+            VacuumForm::Legacy(_) => None,
+        }
+    }
+
+    fn legacy(&self) -> Option<&VacuumLegacyOptions> {
+        match &self.form {
+            VacuumForm::Options(_) => None,
+            VacuumForm::Legacy(legacy) => Some(legacy),
+        }
+    }
+
+    /// Whether the legacy `FULL` keyword is present.
+    pub fn full(&self) -> bool {
+        self.legacy().is_some_and(|legacy| legacy.full)
+    }
+
+    /// Whether the legacy `FREEZE` keyword is present.
+    pub fn freeze(&self) -> bool {
+        self.legacy().is_some_and(|legacy| legacy.freeze)
+    }
+
+    /// Whether the legacy `VERBOSE` keyword is present.
+    pub fn verbose(&self) -> bool {
+        self.legacy().is_some_and(|legacy| legacy.verbose)
+    }
+
+    /// Whether the legacy `ANALYZE` keyword is present.
+    pub fn analyze(&self) -> bool {
+        self.legacy().is_some_and(|legacy| legacy.analyze)
     }
 }
 

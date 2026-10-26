@@ -60,11 +60,16 @@ recursa::ast_node! {
     /// `DEFAULT VALUES`, as two alternatives that both begin by shifting the
     /// parenthesis marker when a `(` follows the table name.
     ///
-    /// Variant ordering: `Columns` starts with `(`; `Plain` with `OVERRIDING`,
-    /// `DEFAULT` or a query (which may also start with `(`, decided by the
-    /// token after it).
+    /// `DEFAULT VALUES` takes no column list and no `OVERRIDING` clause, so
+    /// it is a variant of its own (issue #58).
+    ///
+    /// Variant ordering: `Default` starts with `DEFAULT`; `Columns` starts
+    /// with `(`; `Plain` with `OVERRIDING` or a query (which may also start
+    /// with `(`, decided by the token after it).
     #[derive(Debug)]
     pub enum InsertRest {
+        #[tok(DEFAULT, VALUES)]
+        Default,
         Columns(InsertColumnsRest),
         Plain(InsertPlainRest),
     }
@@ -77,7 +82,7 @@ recursa::ast_node! {
         pub columns: boxed!(ColumnList),
         pub overriding: Option<OverridingClause>,
         #[pretty(break_before = soft)]
-        pub source: boxed!(InsertSource),
+        pub source: boxed!(Subquery),
     }
 }
 
@@ -86,7 +91,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct InsertPlainRest {
         pub overriding: Option<OverridingClause>,
-        pub source: boxed!(InsertSource),
+        pub source: boxed!(Subquery),
     }
 }
 
@@ -95,7 +100,7 @@ impl<'input> InsertRest<'input> {
     pub fn columns(&self) -> Option<&ColumnList<'input>> {
         match self {
             InsertRest::Columns(rest) => Some(&rest.columns),
-            InsertRest::Plain(_) => None,
+            InsertRest::Default | InsertRest::Plain(_) => None,
         }
     }
 
@@ -104,24 +109,17 @@ impl<'input> InsertRest<'input> {
         match self {
             InsertRest::Columns(rest) => rest.overriding.as_ref(),
             InsertRest::Plain(rest) => rest.overriding.as_ref(),
+            InsertRest::Default => None,
         }
     }
 
-    /// The row source.
-    pub fn source(&self) -> &InsertSource<'input> {
+    /// The row source; `None` for `DEFAULT VALUES`.
+    pub fn source(&self) -> Option<&Subquery<'input>> {
         match self {
-            InsertRest::Columns(rest) => &rest.source,
-            InsertRest::Plain(rest) => &rest.source,
+            InsertRest::Columns(rest) => Some(&rest.source),
+            InsertRest::Plain(rest) => Some(&rest.source),
+            InsertRest::Default => None,
         }
-    }
-}
-
-recursa::ast_node! {
-    #[derive(Debug)]
-    pub enum InsertSource {
-        #[tok(DEFAULT, VALUES)]
-        Default,
-        Select(boxed!(Subquery)),
     }
 }
 
@@ -207,13 +205,16 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Parenthesized `index_params` arbiter list on `ON CONFLICT`.
+    /// Parenthesized `index_params` arbiter list on `ON CONFLICT`. gram.y
+    /// `index_params` has one item at least (REL_17_11 gram.y
+    /// `opt_conf_expr: '(' index_params ')' where_clause`), so `ON CONFLICT
+    /// ()` is a syntax error (issue #58).
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct ConflictTargetList(
         #[sep(COMMA)]
         #[deref]
-        pub zero_or_many!(ConflictTargetItem),
+        pub one_or_many!(ConflictTargetItem),
     );
 }
 
@@ -223,26 +224,39 @@ recursa::ast_node! {
     /// Variant ordering: each variant has a distinct first token (`(` vs `ON`),
     /// so order is for clarity.
     #[derive(Debug)]
+    #[allow(
+        clippy::large_enum_variant,
+        reason = "keep the public parser AST variants inline"
+    )]
     pub enum ConflictTarget {
-        /// `( index_params )` — the inferring-by-columns form.
-        Index(ConflictTargetList),
+        /// `( index_params ) [WHERE predicate]` — the inferring-by-columns
+        /// form.
+        Index(ConflictIndexTarget),
         /// `ON CONSTRAINT name` — the named-constraint form.
         Constraint(OnConflictConstraint),
     }
 }
 
 recursa::ast_node! {
-    /// ON CONFLICT clause: `ON CONFLICT [(col, ...) | ON CONSTRAINT name]
-    /// DO UPDATE SET ... | DO NOTHING`
+    /// `( index_params ) [WHERE predicate]`.
+    #[derive(Debug)]
+    pub struct ConflictIndexTarget {
+        pub columns: ConflictTargetList,
+        /// `WHERE predicate` after the arbiter target list, restricting the
+        /// partial-index arbiter to matching rows. gram.y has it only on the
+        /// index-params form (`opt_conf_expr`), so it is here and not on
+        /// [`OnConflictClause`] (issue #58).
+        pub where_clause: Option<WhereClause>,
+    }
+}
+
+recursa::ast_node! {
+    /// ON CONFLICT clause: `ON CONFLICT [(col, ...) [WHERE ...] | ON
+    /// CONSTRAINT name] DO UPDATE SET ... | DO NOTHING`
     #[derive(Debug)]
     #[tok(ON, CONFLICT, this)]
     pub struct OnConflictClause {
         pub target: Option<ConflictTarget>,
-        /// `WHERE predicate` after the arbiter target list, restricting the
-        /// partial-index arbiter to matching rows. Only valid for the
-        /// index-params form (gram.y attaches `where_clause` to that branch
-        /// only); attached at the outer struct so the enum stays simple.
-        pub where_clause: Option<WhereClause>,
         pub action: ConflictAction,
     }
 }

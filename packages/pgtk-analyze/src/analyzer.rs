@@ -78,9 +78,7 @@ use pgtk_sql::ast::ddl::procedure::FlatCallStmt;
 use pgtk_sql::ast::ddl::table::FlatCtasSource;
 use pgtk_sql::ast::dml::delete::{FlatDeleteStmt, FlatDeleteTableAlias};
 use pgtk_sql::ast::dml::insert::{FlatConflictAction, FlatConflictTarget, FlatOnConflictClause};
-use pgtk_sql::ast::dml::insert::{
-    FlatInsertRest, FlatInsertSource, FlatInsertStmt, FlatOverridingKind,
-};
+use pgtk_sql::ast::dml::insert::{FlatInsertRest, FlatInsertStmt, FlatOverridingKind};
 #[cfg(feature = "since-pg15")]
 use pgtk_sql::ast::dml::merge::{
     FlatInsertAction, FlatMatchedAction, FlatMatchedKind, FlatMergeStmt, FlatMergeTableAlias,
@@ -4700,11 +4698,20 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     icolumns.push((name, ty, typmod, loc, parts));
                     attnums.push(attnum);
                 }
-                (true, c.source)
+                (true, Some(c.source))
             }
-            FlatInsertRest::Plain(p) => {
-                let p = self.get(*p);
-                override_kind = p.overriding.map(|o| *self.get(self.get(o).which));
+            FlatInsertRest::Plain(_) | FlatInsertRest::Default => {
+                let source = match self.get(stmt.rest) {
+                    FlatInsertRest::Plain(p) => {
+                        let p = self.get(*p);
+                        override_kind = p.overriding.map(|o| *self.get(self.get(o).which));
+                        Some(p.source)
+                    }
+                    _ => {
+                        override_kind = None;
+                        None
+                    }
+                };
                 let rel = &self.catalog()[relation];
                 let mut cols: Vec<_> = rel.columns.iter().collect();
                 cols.sort_by_key(|c| c.position);
@@ -4718,14 +4725,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     ));
                     attnums.push(c.position);
                 }
-                (false, p.source)
+                (false, source)
             }
         };
         let mut rows: Vec<Vec<InsertValue>> = Vec::new();
-        match self.get(source) {
-            FlatInsertSource::Default => {}
-            FlatInsertSource::Select(sub) => {
-                let sub_handle = *sub;
+        match source {
+            None => {}
+            Some(sub_handle) => {
                 let sub = self.get(sub_handle);
                 let body = self.get(sub.body);
                 let mut value_rows: Option<Vec<Handle<FlatValuesRow>>> = None;
@@ -4955,15 +4961,17 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         .into());
                     }
                 }
-                FlatConflictTarget::Index(list) => {
+                FlatConflictTarget::Index(index) => {
+                    let index = self.get(*index);
+                    let list = index.columns;
                     // gram.y locates the inference clause at its parenthesis.
-                    let start = self.span(*list).start;
+                    let start = self.span(list).start;
                     let infer_location = if self.source[start..].starts_with('(') {
                         start
                     } else {
                         self.source[..start].rfind('(').unwrap_or(start)
                     };
-                    let items = self.list(self.get(*list).0).to_vec();
+                    let items = self.list1(self.get(list).0).to_vec();
                     let saved = self.expr_kind;
                     self.expr_kind = ExprKind::IndexExpression;
                     for item in items {
@@ -5017,7 +5025,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         }
                     }
                     self.expr_kind = saved;
-                    self.where_clause_kind(scope, clause.where_clause, ExprKind::IndexPredicate)?;
+                    self.where_clause_kind(scope, index.where_clause, ExprKind::IndexPredicate)?;
                 }
             }
         }

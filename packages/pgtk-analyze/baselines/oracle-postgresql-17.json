@@ -3,14 +3,14 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 358,
+    "skipped": 380,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 27,
+    "skipped_parse_failed": 49,
     "skipped_aborted_transaction": 206,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
-    "agree": 41732,
-    "known_divergence": 812,
+    "agree": 41730,
+    "known_divergence": 792,
     "disagree": 0
   },
   "files": {
@@ -64,14 +64,14 @@
     },
     "alter_table.sql": {
       "items": 1653,
-      "skipped": 4,
+      "skipped": 5,
       "skipped_not_a_statement": 1,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 3,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 1648,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "amutils.sql": {
@@ -340,14 +340,14 @@
     },
     "copy2.sql": {
       "items": 199,
-      "skipped": 41,
+      "skipped": 42,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 41,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 157,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "copydml.sql": {
@@ -388,14 +388,14 @@
     },
     "create_am.sql": {
       "items": 142,
-      "skipped": 1,
+      "skipped": 3,
       "skipped_not_a_statement": 1,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 138,
-      "known_divergence": 3,
+      "known_divergence": 1,
       "disagree": 0
     },
     "create_cast.sql": {
@@ -436,14 +436,14 @@
     },
     "create_index.sql": {
       "items": 608,
-      "skipped": 10,
+      "skipped": 11,
       "skipped_not_a_statement": 1,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 597,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_index_spgist.sql": {
@@ -520,14 +520,14 @@
     },
     "create_table.sql": {
       "items": 327,
-      "skipped": 1,
+      "skipped": 3,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 1,
+      "skipped_parse_failed": 3,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 324,
-      "known_divergence": 2,
+      "known_divergence": 0,
       "disagree": 0
     },
     "create_table_like.sql": {
@@ -820,14 +820,14 @@
     },
     "foreign_key.sql": {
       "items": 1154,
-      "skipped": 12,
+      "skipped": 13,
       "skipped_not_a_statement": 2,
-      "skipped_parse_failed": 1,
+      "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 9,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 1141,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "functional_deps.sql": {
@@ -1480,14 +1480,14 @@
     },
     "namespace.sql": {
       "items": 42,
-      "skipped": 1,
+      "skipped": 2,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 1,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 40,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "numeric.sql": {
@@ -1804,14 +1804,14 @@
     },
     "publication.sql": {
       "items": 655,
-      "skipped": 1,
+      "skipped": 7,
       "skipped_not_a_statement": 1,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 6,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 646,
-      "known_divergence": 8,
+      "known_divergence": 2,
       "disagree": 0
     },
     "random.sql": {
@@ -1924,14 +1924,14 @@
     },
     "rowsecurity.sql": {
       "items": 774,
-      "skipped": 0,
+      "skipped": 1,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 764,
-      "known_divergence": 10,
+      "known_divergence": 9,
       "disagree": 0
     },
     "rowtypes.sql": {
@@ -2104,26 +2104,26 @@
     },
     "sqljson.sql": {
       "items": 219,
+      "skipped": 5,
+      "skipped_not_a_statement": 0,
+      "skipped_parse_failed": 5,
+      "skipped_aborted_transaction": 0,
+      "skipped_catalog_unavailable": 0,
+      "unsupported": 0,
+      "agree": 214,
+      "known_divergence": 0,
+      "disagree": 0
+    },
+    "sqljson_jsontable.sql": {
+      "items": 117,
       "skipped": 3,
       "skipped_not_a_statement": 0,
       "skipped_parse_failed": 3,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
-      "agree": 216,
-      "known_divergence": 0,
-      "disagree": 0
-    },
-    "sqljson_jsontable.sql": {
-      "items": 117,
-      "skipped": 2,
-      "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 2,
-      "skipped_aborted_transaction": 0,
-      "skipped_catalog_unavailable": 0,
-      "unsupported": 0,
       "agree": 114,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "sqljson_queryfuncs.sql": {
@@ -2164,14 +2164,14 @@
     },
     "strings.sql": {
       "items": 460,
-      "skipped": 3,
+      "skipped": 5,
       "skipped_not_a_statement": 3,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 2,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 431,
-      "known_divergence": 26,
+      "known_divergence": 24,
       "disagree": 0
     },
     "subscription.sql": {
@@ -2368,14 +2368,14 @@
     },
     "triggers.sql": {
       "items": 1046,
-      "skipped": 5,
+      "skipped": 6,
       "skipped_not_a_statement": 2,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 3,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
       "agree": 1040,
-      "known_divergence": 1,
+      "known_divergence": 0,
       "disagree": 0
     },
     "truncate.sql": {
