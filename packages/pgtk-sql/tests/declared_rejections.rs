@@ -356,7 +356,8 @@ fn an_unknown_json_encoding_is_refused_at_the_name() {
 }
 
 /// `base_yylex` refuses a `UESCAPE` string that is not one character that
-/// `check_uescapechar` admits (REL_17_11 parser.c 278; issue #55).
+/// `check_uescapechar` admits (REL_17_11 parser.c 278; issue #55). The
+/// string is any `SCONST` spelling, and its value is what is checked.
 #[test]
 fn an_invalid_uescape_character_is_refused_at_the_string() {
     for (source, span) in [
@@ -364,6 +365,9 @@ fn an_invalid_uescape_character_is_refused_at_the_string() {
         ("SELECT U&'d!0061t' UESCAPE 'ab'", "'ab'"),
         ("SELECT U&'d!0061t' UESCAPE 'a'", "'a'"),
         ("SELECT U&'d!0061t' UESCAPE '+'", "'+'"),
+        ("SELECT U&'d!0061t' UESCAPE E'!!'", "E'!!'"),
+        ("SELECT U&'d!0061t' UESCAPE $$ $$", "$$ $$"),
+        ("SELECT U&'d!0061t' UESCAPE '!'\n'!'", "'!'\n'!'"),
     ] {
         assert_declared_rejection(source, "42601", "invalid Unicode escape character", span);
     }

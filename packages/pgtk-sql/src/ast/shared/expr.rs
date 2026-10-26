@@ -3255,12 +3255,29 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// The string after `UESCAPE`. `base_yylex` (`parser.c`) reads it with
+    /// `core_yylex` and asks for an `SCONST` (REL_17_11 parser.c 268-274), so
+    /// each spelling of [`Sconst`] except the Unicode one is here: a plain, a
+    /// continued, an escape or a dollar-quoted string. A `U&'...'` string is
+    /// a `USCONST` there, and `parser.c` refuses it ("UESCAPE must be
+    /// followed by a simple string literal").
+    #[derive(Debug)]
+    pub enum UescapeString {
+        Escape(literal::EscapeStringLit),
+        Dollar(literal::DollarStringLit),
+        Sequence(literal::StringLitSequence),
+        Plain(literal::StringLit),
+    }
+}
+
+recursa::ast_node! {
     /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
     ///
-    /// `base_yylex` (`parser.c`) rejects an escape that is not one character,
-    /// or that `check_uescapechar` refuses: a hex digit, `+`, `'`, `"` or
-    /// white space (REL_17_11 parser.c 277-280; issue #55). The error is at
-    /// the escape string.
+    /// `base_yylex` (`parser.c`) rejects an escape whose value is not one
+    /// byte, or that `check_uescapechar` refuses: a hex digit, `+`, `'`, `"`
+    /// or white space (REL_17_11 parser.c 277-280; issue #55). The error is
+    /// at the escape string. The value is the value of the string, so
+    /// `UESCAPE E'\x21'` is `!` (`crate::ident::uescape_class`).
     #[classify(escape_char, fold = crate::ident::uescape_class)]
     #[reject(
         one_of(escape_char, "invalid"),
@@ -3271,7 +3288,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct UescapeSuffix {
         #[tok(UESCAPE, this)]
-        pub escape_char: literal::StringLit,
+        pub escape_char: UescapeString,
     }
 }
 
@@ -3279,7 +3296,6 @@ recursa::ast_node! {
     /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
     #[derive(Debug)]
     pub struct UnicodeStringLitWithEscape {
-        #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
         pub lit: literal::UnicodeStringLit,
         pub uescape: Option<UescapeSuffix>,
     }
@@ -4742,7 +4758,7 @@ recursa::ast_node! {
         /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
         /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
         /// as a type name followed by the string literal.
-        EscapeStringLit(#[lex(pattern = r"(?i:E)'(?:[^'\\]|\\.|'')*'")] literal::EscapeStringLit),
+        EscapeStringLit(literal::EscapeStringLit),
         /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
         TimestampLit(TimestampLit),
         /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
@@ -4882,10 +4898,10 @@ recursa::ast_node! {
         /// `BitStringLit` over `Ident`+`StringLit` only when the prefixed token
         /// is also declared first at the atom level. Without this ordering, the
         /// formatter would round-trip `B'10'` as `B '10'` (inserted space).
-        BitStringLit(#[lex(pattern = r"(?i:B)'[^']*'")] literal::BitStringLit),
+        BitStringLit(literal::BitStringLit),
         /// Hex-string literal: `X'1FF'`. Same ordering rationale as
         /// `BitStringLit` — must precede `StringLit` and any plain `Ident`.
-        HexStringLit(#[lex(pattern = r"(?i:X)'[^']*'")] literal::HexStringLit),
+        HexStringLit(literal::HexStringLit),
         /// String literal sequence: `'hello'` or `'first' 'second' ...` —
         /// Postgres concatenates adjacent string literals into one.
         StringLit(StringLitSeq0),

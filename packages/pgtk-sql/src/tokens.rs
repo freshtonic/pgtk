@@ -1145,9 +1145,17 @@ recursa::tokens! {
         // `UESCAPE SCONST` is consumed as its escape clause. The grammar
         // keeps `UESCAPE` as a bare-label keyword for every other position;
         // the LR token feed therefore marks only the clause-shaped
-        // spelling. `StringLit` is content-bearing, unlike parser.c's other
-        // fixed-token triggers.
-        UESCAPE_LA = UESCAPE before { StringLit },
+        // spelling. The triggers are content-bearing, unlike parser.c's
+        // other fixed-token triggers. They are the token kinds that
+        // `core_yylex` gives as `SCONST`: the plain, the continued, the
+        // escape and the dollar-quoted string
+        // (`crate::ast::shared::expr::UescapeString`).
+        UESCAPE_LA = UESCAPE before {
+            StringLit,
+            StringLitSequence,
+            EscapeStringLit,
+            DollarStringLit,
+        },
         // The function-style typed literal spelling `type(args) 'value'`
         // shares its argument list with an ordinary function call. Mark only
         // the closing delimiter followed by its string payload so the LR
@@ -1748,13 +1756,44 @@ pub mod literal {
             pub string_sequence: StringLitSequence,
             #[lex(pattern = r"'[^']*(?:''[^']*)*'")]
             pub string: StringLit,
-            #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
+            // scan.l `<xb,xh,xq,xe,xus>{quote}` (REL_17_11 scan.l 588-606)
+            // enters `xqs` after the closing quote of each string kind, so a
+            // `quotecontinue` continues a Unicode, an escape, a bit and a hex
+            // string too. The continued part keeps the rules of the first
+            // part: `E'a'` newline `'\''` is one escape string. Each kind is
+            // one token with all its parts, as `StringLitSequence` is. The
+            // gaps are the gaps of `StringLitSequence`, with the same version
+            // gate for the vertical tab.
+            //
+            // `xeescape` is `[\\][^0-7]`, a negated class that matches a
+            // newline, so the escape of `EscapeStringLit` is `[\s\S]`.
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:U)&'(?:[^']|'')*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^']|'')*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:U)&'(?:[^']|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^']|'')*')*")
+            )]
             pub unicode_string: UnicodeStringLit,
-            #[lex(pattern = r"(?i:E)'(?:[^'\\]|\\.|'')*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
             pub escape_string: EscapeStringLit,
-            #[lex(pattern = r"(?i:B)'[^']*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:B)'[^']*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:B)'[^']*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
             pub bit_string: BitStringLit,
-            #[lex(pattern = r"(?i:X)'[^']*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:X)'[^']*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:X)'[^']*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
             pub hex_string: HexStringLit,
             #[lex(matcher)]
             pub dollar_string: DollarStringLit,

@@ -38,7 +38,8 @@ use pgtk_sql::ast::shared::expr::{
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
     FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType,
     FlatPrecisionSqlValueFuncName, FlatSconst, FlatSqlValueFunction, FlatStringLitSeq0,
-    FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign,
+    FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign, FlatUescapeString,
+    FlatUescapeSuffix,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -1398,6 +1399,19 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 (self.text(lit).to_owned(), self.text_span(lit))
             }
         }
+    }
+
+    /// The value of the string after `UESCAPE`, in each of its spellings.
+    fn uescape_value(&self, handle: Handle<FlatUescapeSuffix>) -> String {
+        let raw = match self.get(self.get(handle).escape_char) {
+            FlatUescapeString::Escape(t) => self.text(*t),
+            FlatUescapeString::Dollar(t) => self.text(*t),
+            FlatUescapeString::Sequence(t) => self.text(*t),
+            FlatUescapeString::Plain(t) => self.text(*t),
+        };
+        pgtk_sql::ident::sconst_bytes(raw)
+            .map(|value| String::from_utf8_lossy(&value).into_owned())
+            .unwrap_or_default()
     }
 
     fn get<N>(&self, handle: Handle<N>) -> &'a N
@@ -9722,9 +9736,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     let u = self.get(*u);
                                     let FlatAliasName::Text(t) = self.get(u.name);
                                     let raw = self.text(*t);
-                                    let escape = string_literal_body(
-                                        self.text(self.get(u.uescape).escape_char),
-                                    );
+                                    let escape = self.uescape_value(u.uescape);
                                     match pgtk_sql::ident::fold_identifier_with_uescape(
                                         raw, &escape,
                                     ) {
