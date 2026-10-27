@@ -266,7 +266,7 @@ The table gives each file where the membership changed. "Pass" is the
 | `publication.sql` | 655 | 655 | 652 | 0 | 3 | 0 | 0 | 0/0 | 0 | 655 → 655 |
 | `regproc.sql` | 105 | 105 | 102 | 0 | 3 | 0 | 0 | 0/0 | 0 | 105 → 105 |
 | `reloptions.sql` | 63 | 66 | 63 | 0 | 0 | 0 | 3 | 0/0 | unbound-variable 3 | 63 → 63 |
-| `rules.sql` | 620 | 618 | 616 | 2 | 0 | 0 | 0 | 0/0 | 0 | 620 → 617 |
+| `rules.sql` | 620 | 618 | 616 | 2 | 0 | 0 | 0 | 0/0 | 0 | 620 → 618 |
 | `sqljson.sql` | 219 | 219 | 218 | 0 | 1 | 0 | 0 | 0/0 | 0 | 219 → 219 |
 | `sqljson_queryfuncs.sql` | 299 | 312 | 298 | 0 | 1 | 0 | 13 | 0/0 | 0 | 299 → 312 |
 | `stats.sql` | 364 | 446 | 358 | 0 | 0 | 6 | 82 | 0/0 | unbound-variable 82 | 364 → 364 |
@@ -294,8 +294,13 @@ The table gives each file where the membership changed. "Pass" is the
 
 Before #10 the `pg17` build checked 43,474 statements: 43,474 pass, 0 skip
 and 0 fail (the 18 frozen legacy skips all pass). After #10 it checks 44,132
-server submissions: 44,131 pass, 1 skip (an expected version gap) and 0
-fail, and it excludes 296 with a reason. The oracle rejects 173 of the
+server submissions: 44,132 pass, 0 skip and 0 fail, and it excludes 296
+with a reason. The new statement set found one grammar gap at first:
+`rules.sql` submission 571, a `BEGIN ATOMIC` body with a `MERGE` whose
+`INSERT` action names a column with a subscript, `INSERT (filling[1], id)`
+(gram.y's `merge_insert` takes an `insert_column_list`). The legacy split
+cut the body at its first `;`, so no check saw that `MERGE` before. Commit
+`c928d997` fixed the grammar and removed the gap. The oracle rejects 173 of the
 checked submissions; it rejected 353 of the legacy statements, because many
 legacy pieces were not whole statements.
 
@@ -309,11 +314,11 @@ release of that version, from `pgtk-oracle/pins.tsv`:
 | Feature | Oracle | Expected version gaps | Gaps proved by a build |
 |---|---|---|---|
 | `pg14` | `REL_14_24` | 0 | not yet (#10) |
-| `pg15` | `REL_15_19` | 0 | not yet (#10) |
+| `pg15` | `REL_15_19` | 0 | yes (after `c928d997`) |
 | `pg16` | `REL_16_15` | 0 | not yet (#10) |
-| `pg17` | `REL_17_11` | 1 | yes |
-| `pg18` | `REL_18_6` | 1 | not yet (#10) |
-| `pg19-beta` | `REL_19_STABLE` at `b73d13c` | 1 | not yet (#10) |
+| `pg17` | `REL_17_11` | 0 | yes |
+| `pg18` | `REL_18_6` | 0 | yes (after `c928d997`) |
+| `pg19-beta` | `REL_19_STABLE` at `b73d13c` | 0 | not yet (#10) |
 
 A version baseline records:
 
@@ -354,15 +359,7 @@ that a version does not have are gated with their `lookahead` and
 `nested` before 17.
 
 **Each version increment (#74 to #78) must drain the list of its version to
-empty.** The `pg17` list has one gap since #10. It is `rules.sql` submission
-571: a `BEGIN ATOMIC` body with a `MERGE` whose `INSERT` action names a
-column with a subscript, `INSERT (filling[1], id)`. gram.y's `merge_insert`
-takes an `insert_column_list`, and each `insert_column_item` is
-`ColId opt_indirection`. pgtk-sql takes no subscript there. The legacy split
-cut this body at its first `;`, so no check saw the `MERGE` before. The
-grammar fix removes the gap. The `pg18` and `pg19-beta` lists have the same
-gap; their oracles also accept the submission. The oracles of `pg14`, `pg15`
-and `pg16` reject it (`MERGE ... RETURNING` is new in 17).
+empty.** The `pg17` list is empty.
 
 Before #95 the differential check found an over-acceptance only when the
 oracle accepted the output of pgtk-sql. A statement that a version rejects is
@@ -478,8 +475,9 @@ PGTK_SEED_GAPS_FROM=pg17 cargo test -p pgtk-oracle --no-default-features \
 For #10 the `pg17` baseline comes from a full regeneration. The other five
 come from this test, with the gaps seeded from `pg17`. Their oracle outcomes
 are exact: the minimum-version corpus test of each build reads them. Their
-gap lists are not proved: no build of those versions ran over the new
-statement set. The release gate (`scripts/release-gate pgNN`) runs the
+gap lists are proved only where the table above says so: the `pg15` and
+`pg18` builds ran the differential over the new statement set after
+`c928d997`. The release gate (`scripts/release-gate pgNN`) runs the
 differential test of each version and fails on a stale or missing gap. Then
 run `regenerate_version_baseline` with that version and review the diff.
 

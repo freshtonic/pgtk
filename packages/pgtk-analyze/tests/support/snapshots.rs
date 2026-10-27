@@ -17,7 +17,7 @@ use super::replay::execute_file;
 
 /// Bump when the way files are executed changes, so old snapshots are not
 /// reused.
-const FORMAT: u32 = 2;
+const FORMAT: u32 = 3;
 
 /// The snapshot directories for one corpus commit.
 pub struct Snapshots {

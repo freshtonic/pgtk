@@ -6812,10 +6812,32 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         // resolveTargetListUnknowns
         if self.resolve_unknowns {
             let text = self.types().builtin(Builtin::Text);
-            for entry in target_list.iter_mut() {
+            for (index, entry) in target_list.iter_mut().enumerate() {
                 if self.types().is_unknown(entry.ty) {
                     entry.ty = text;
                     entry.typmod = -1;
+                    // coerce_type of a parameter of unknown type calls
+                    // variable_coerce_param_hook, which gives the parameter
+                    // the type: `SELECT $1` describes $1 as text.
+                    if let Some(FlatExpr::PositionalParam(param)) = target_exprs
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .map(|e| self.get(e))
+                        && self.get(*param).indirection.is_none()
+                        && let Ok(number) = self
+                            .text(self.get(*param).param)
+                            .trim_start_matches('$')
+                            .parse::<usize>()
+                        && number > 0
+                    {
+                        let mut params = self.coercer().params.borrow_mut();
+                        if let Some(slot) = params.get_mut(number - 1)
+                            && slot.is_none_or(|ty| self.types().is_unknown(ty))
+                        {
+                            *slot = Some(text);
+                        }
+                    }
                 }
             }
         }
