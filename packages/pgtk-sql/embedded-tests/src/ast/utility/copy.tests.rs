@@ -257,7 +257,9 @@ mod tests {
     #[test]
     fn copy_table_legacy_with_null_as() {
         // Corpus regression case: `WITH ... NULL AS '...'` chained options.
-        reparse_stable::<CopyStmt>("COPY t TO STDOUT WITH NULL AS E'\\0'");
+        // The escape string is `\\0`: `E'\0'` is a zero byte, which scan.l
+        // refuses ("invalid byte sequence for encoding").
+        reparse_stable::<CopyStmt>("COPY t TO STDOUT WITH NULL AS E'\\\\0'");
     }
 
     #[test]

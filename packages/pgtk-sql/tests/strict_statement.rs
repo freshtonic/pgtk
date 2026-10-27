@@ -2156,3 +2156,122 @@ fn a_begin_atomic_body_holds_statements_that_end_in_a_semicolon() {
         "a routine body statement ends in a `;` and is a gram.y `stmt`",
     );
 }
+
+/// Asserts that each of `sources` is a lexical error, and that the raw parser
+/// of the target version rejects it.
+fn assert_lex_errors(sources: &[&str]) {
+    for source in sources {
+        assert!(
+            lex(source).errors().next().is_some(),
+            "{source:?} must not lex"
+        );
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
+    }
+}
+
+/// scan.l `ident_start [A-Za-z\200-\377_]` and `ident_cont
+/// [A-Za-z\200-\377_0-9\$]` (REL_17_11 scan.l 346-349; REL_14_24 scan.l
+/// 344-347 has the same rules). A byte with the high bit set is an identifier
+/// character, so each non-ASCII character of a UTF-8 source is one, and `$`
+/// continues an identifier. Thus `a$$x$$` is one identifier, not an
+/// identifier and a dollar-quoted string. Found by string-agent.
+#[test]
+fn an_identifier_takes_each_character_of_scan_l() {
+    assert_accepts(&[
+        "SELECT a$b",
+        "SELECT a$b$c FROM t",
+        "SELECT _$",
+        "SELECT a$1",
+        "SELECT a$$x$$",
+        "SELECT é",
+        "SELECT naïve FROM t",
+        "SELECT 日本",
+        "SELECT a.é",
+        "SELECT é$1",
+        "SELECT 1 AS é",
+        "SELECT 1 é",
+        "SELECT U&\"x\" FROM é.ü",
+        "CREATE TABLE é (naïve int)",
+        "SELECT $1 a",
+    ]);
+}
+
+/// scan.l `dolq_start [A-Za-z\200-\377_]` and `dolq_cont
+/// [A-Za-z\200-\377_0-9]` (REL_17_11 scan.l 299-300; REL_14_24 scan.l
+/// 296-297). A tag holds no `$`. Found by string-agent.
+#[test]
+fn a_dollar_quote_tag_takes_each_character_of_scan_l() {
+    assert_accepts(&[
+        "SELECT $é$x$é$",
+        "SELECT $é$1x$é$",
+        "SELECT $a1$x$a1$",
+        "SELECT $_$x$_$",
+        "SELECT $日本$x$日本$",
+        "SELECT $a$b$x$a$b$",
+    ]);
+}
+
+/// From 15 a number or a parameter that an identifier follows directly is a
+/// lexical error (scan.l `integer_junk`, `numeric_junk`, `real_junk` and
+/// `param_junk`, REL_17_11 scan.l 435-438), and an identifier can start with
+/// a non-ASCII character. Before 15 there are no such rules, so `123é` is
+/// `123` with the alias `é` (REL_14_24 scan.l).
+#[test]
+fn a_number_before_a_non_ascii_identifier_follows_the_version() {
+    let sources = [
+        "SELECT 123é",
+        "SELECT 123日",
+        "SELECT 1.5é",
+        "SELECT 1e5é",
+        "SELECT 0x1é",
+        "SELECT $1é",
+        "SELECT $1a",
+        "SELECT $1é$x$1é$",
+    ];
+    if cfg!(feature = "since-pg15") {
+        assert_lex_errors(&sources);
+    } else {
+        assert_accepts(&sources);
+    }
+}
+
+/// scan.l verifies the value of an `E'...'` string when an octal or a
+/// hexadecimal escape gives a zero byte or a byte with the high bit set
+/// (`saw_non_ascii`, then `pg_verifymbstr` at the closing quote: REL_17_11
+/// scan.l 627-636 and 735-750; REL_14_24 scan.l 588-597). In a UTF8 database
+/// a zero byte or a byte sequence that is not UTF-8 is "invalid byte
+/// sequence for encoding". The check reads the whole value of a continued
+/// string, also the string after `UESCAPE`. Found by string-agent.
+#[test]
+fn an_escape_string_value_is_valid_utf8_without_a_zero_byte() {
+    assert_rejects(
+        &[
+            "SELECT E'\\0'",
+            "SELECT E'\\400'",
+            "SELECT E'\\777'",
+            "SELECT E'\\x00'",
+            "SELECT E'\\377'",
+            "SELECT E'\\xff'",
+            "SELECT E'\\303'",
+            "SELECT E'é\\377'",
+            "SELECT E'\\u00e9\\303'",
+            "SELECT E'a'\n'\\303'",
+            "SELECT date E'\\xff'",
+            "COMMENT ON TABLE t IS E'\\xff'",
+            "SELECT U&'x' UESCAPE E'\\0'",
+            "SELECT U&'x' UESCAPE E'\\377'",
+        ],
+        "the value is no valid UTF-8 or holds a zero byte",
+    );
+    assert_accepts(&[
+        "SELECT E'\\303\\251'",
+        "SELECT E'\\x41\\xc3\\xa9'",
+        "SELECT E'\\303'\n'\\251'",
+        "SELECT E'\\001'",
+        "SELECT E'\\é'",
+    ]);
+}

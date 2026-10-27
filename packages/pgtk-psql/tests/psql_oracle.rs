@@ -150,6 +150,12 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         ("shell/dollar-quote", "SELECT $$:v$$".into()),
         ("shell/tagged-dollar-quote", "SELECT $tag$:v$tag$".into()),
         ("shell/non-ascii-tag", "SELECT $tagé$:v$tagé$".into()),
+        ("shell/non-ascii-first-tag", "SELECT $é$ :v $é$, :v".into()),
+        // scan.l `ident_cont` takes `$` and each non-ASCII character, so an
+        // interpolation directly after such an identifier is still one.
+        ("word/dollar-continuation", "SELECT a$b:v, a$:v".into()),
+        ("word/non-ascii", "SELECT é:v, naïve :v, 日本:v".into()),
+        ("word/dollar-quote-after-word", "SELECT a$$ :v $$, :v".into()),
         ("shell/line-comment", "SELECT 1 -- :v\nSELECT 2".into()),
         ("shell/block-comment", "SELECT 1 /* :v */".into()),
         (
