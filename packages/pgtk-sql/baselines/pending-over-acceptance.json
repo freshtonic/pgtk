@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "name": "postgresql-17.9",
+  "issue": 95,
+  "description": "Temporary list. Each statement here is one that the oracle rejects and pgtk-sql accepts. The strict check of #95 found them. The differential test expects an over-acceptance failure for each one where the oracle of the build's target version rejects it. Remove an entry when the grammar fix lands. The list must become empty.",
+  "causes": {
+    "e-string-unicode-escape": "An E string with an incorrect \\u or \\U escape: too few hex digits, a code point above U+10FFFF, or a surrogate that is not in a pair (scan.l, <xeu>, {xeunicodefail}, check_unicode_value and the surrogate pair checks; 42601 or 22025).",
+    "u-string-unicode-escape": "A U& string with an incorrect Unicode escape: too few hex digits, a code point above U+10FFFF, or a surrogate that is not in a pair (parser.c, str_udeescape, called from base_yylex; 42601).",
+    "zero-length-identifier": "A zero-length delimited identifier \"\" (scan.l, <xd>{xdstop}, 'zero-length delimited identifier'; 42601).",
+    "within-group-order-by": "An aggregate call with ORDER BY in its arguments and WITHIN GROUP (gram.y, func_expr, 'cannot use multiple ORDER BY clauses with WITHIN GROUP'; 42601).",
+    "with-ties-skip-locked": "FETCH ... WITH TIES with FOR UPDATE SKIP LOCKED (gram.y, insertSelectOptions, 'SKIP LOCKED and WITH TIES options cannot be used together'; 0A000).",
+    "publication-current-schema": "CURRENT_SCHEMA as a TABLE publication object, also as a continuation of a TABLE list (gram.y, PublicationObjSpec and preprocess_pubobj_list, 'invalid table name'; 42601)."
+  },
+  "statements": [
+    {"file": "aggregates.sql", "statement_index": 325, "byte_range": "30653:30859", "cause": "within-group-order-by"},
+    {"file": "create_am.sql", "statement_index": 136, "byte_range": "14143:14182", "cause": "zero-length-identifier"},
+    {"file": "limit.sql", "statement_index": 72, "byte_range": "5008:5143", "cause": "with-ties-skip-locked"},
+    {"file": "publication.sql", "statement_index": 43, "byte_range": "3242:3327", "cause": "publication-current-schema"},
+    {"file": "publication.sql", "statement_index": 509, "byte_range": "40588:40712", "cause": "publication-current-schema"},
+    {"file": "strings.sql", "statement_index": 8, "byte_range": "667:690", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 9, "byte_range": "691:716", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 12, "byte_range": "790:814", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 13, "byte_range": "815:841", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 14, "byte_range": "842:868", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 15, "byte_range": "869:898", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 16, "byte_range": "899:934", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 17, "byte_range": "935:1025", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 20, "byte_range": "1091:1114", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 21, "byte_range": "1115:1139", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 22, "byte_range": "1140:1164", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 23, "byte_range": "1165:1191", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 24, "byte_range": "1192:1218", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 25, "byte_range": "1219:1249", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 26, "byte_range": "1250:1288", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 27, "byte_range": "1289:1317", "cause": "e-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 33, "byte_range": "1565:1588", "cause": "u-string-unicode-escape"},
+    {"file": "strings.sql", "statement_index": 34, "byte_range": "1589:1614", "cause": "u-string-unicode-escape"}
+  ]
+}

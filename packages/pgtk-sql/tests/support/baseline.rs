@@ -14,6 +14,9 @@ const PINNED_BASELINE: &str = include_str!("../../baselines/postgresql-17.9.json
 const PINNED_STATEMENTS: &str = include_str!("../../baselines/postgresql-17.9-statements.json");
 const PINNED_ACCEPTED_LEGACY_GAPS: &str =
     include_str!("../../baselines/postgresql-17.9-accepted-legacy-gaps.json");
+/// The temporary list of the over-acceptances that the strict check of #95
+/// found (`docs/differential-baseline.md`).
+const PENDING_OVER_ACCEPTANCES: &str = include_str!("../../baselines/pending-over-acceptance.json");
 /// One version baseline for each target version (`docs/differential-baseline.md`).
 const VERSION_BASELINES: &[(&str, &str)] = &[
     (
@@ -422,6 +425,117 @@ impl AcceptedLegacyGaps {
 
     pub fn entries(&self) -> &[AcceptedLegacyGap] {
         &self.entries
+    }
+}
+
+/// One statement that the oracle rejects and pgtk-sql accepts, with the
+/// cause. The grammar fix of the cause removes the entry.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingOverAcceptance {
+    pub file: String,
+    pub statement_index: usize,
+    pub byte_range: Range<usize>,
+    pub cause: String,
+}
+
+/// The temporary list of known over-acceptances (#95). Each entry applies
+/// to a target version whose oracle rejects the statement. The differential
+/// test then requires the over-acceptance failure, so a fix that is not
+/// recorded and a new over-acceptance both fail.
+#[derive(Debug)]
+pub struct PendingOverAcceptances {
+    causes: BTreeMap<String, String>,
+    entries: Vec<PendingOverAcceptance>,
+}
+
+impl PendingOverAcceptances {
+    pub fn pinned() -> &'static Self {
+        static PENDING: OnceLock<PendingOverAcceptances> = OnceLock::new();
+        PENDING.get_or_init(|| Self::load(PENDING_OVER_ACCEPTANCES))
+    }
+
+    fn load(source: &str) -> Self {
+        let document: serde_json::Value =
+            serde_json::from_str(source).expect("parse the pending over-acceptance list");
+        assert_eq!(document["schema_version"].as_u64(), Some(1));
+        assert_eq!(document["name"].as_str(), Some("postgresql-17.9"));
+        let causes = document["causes"]
+            .as_object()
+            .expect("pending over-acceptance causes")
+            .iter()
+            .map(|(name, reason)| {
+                (
+                    name.clone(),
+                    reason.as_str().expect("cause reason").to_owned(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let frozen = FrozenStatements::pinned();
+        let mut previous = None;
+        let entries = document["statements"]
+            .as_array()
+            .expect("pending over-acceptance statements")
+            .iter()
+            .map(|entry| {
+                let file = entry["file"].as_str().expect("entry file").to_owned();
+                let statement_index = as_usize(&entry["statement_index"], "entry statement index");
+                let byte_range =
+                    parse_range(entry["byte_range"].as_str().expect("entry byte range"));
+                let cause = entry["cause"].as_str().expect("entry cause").to_owned();
+                let identity = (file.clone(), statement_index);
+                assert!(
+                    previous
+                        .as_ref()
+                        .is_none_or(|previous| previous < &identity),
+                    "pending over-acceptances are not unique and in file/index order at \
+                     {file}:{statement_index}"
+                );
+                previous = Some(identity);
+                assert_eq!(
+                    frozen.file(&file).ranges().get(statement_index),
+                    Some(&byte_range),
+                    "pending over-acceptance {file}:{statement_index} byte range"
+                );
+                assert!(
+                    causes.contains_key(&cause),
+                    "pending over-acceptance {file}:{statement_index} has an unknown cause {cause:?}"
+                );
+                PendingOverAcceptance {
+                    file,
+                    statement_index,
+                    byte_range,
+                    cause,
+                }
+            })
+            .collect::<Vec<_>>();
+        let used = entries
+            .iter()
+            .map(|entry| entry.cause.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            used,
+            causes.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            "each cause of the pending over-acceptance list has an entry"
+        );
+        Self { causes, entries }
+    }
+
+    pub fn entries(&self) -> &[PendingOverAcceptance] {
+        &self.entries
+    }
+
+    /// The reason of `cause`.
+    pub fn cause(&self, cause: &str) -> &str {
+        &self.causes[cause]
+    }
+
+    /// The entries of `file`, by statement index.
+    pub fn entries_in(&self, file: &str) -> BTreeMap<usize, &PendingOverAcceptance> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.file == file)
+            .map(|entry| (entry.statement_index, entry))
+            .collect()
     }
 }
 

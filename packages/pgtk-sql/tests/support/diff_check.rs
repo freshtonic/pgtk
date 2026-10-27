@@ -142,6 +142,11 @@ pub(crate) fn pgsql_format(source: &str) -> Result<String, StrictStatementFailur
     ))
 }
 
+/// The first word of the failure of a statement that the oracle rejects and
+/// pgtk-sql accepts, when the oracle also rejects pgtk-sql's rendering.
+#[cfg(feature = "postgres-oracle")]
+pub const OVER_ACCEPTANCE: &str = "over-acceptance";
+
 #[cfg(feature = "postgres-oracle")]
 pub fn check_statement(stmt: &Stmt) -> Outcome {
     let src = &stmt.source;
@@ -170,17 +175,23 @@ pub fn check_statement(stmt: &Stmt) -> Outcome {
             Equal::ErrorLeft => unreachable!("parse_ok said the input is valid"),
         }
     } else {
-        // PostgreSQL rejects the input. pgtk-sql must not reformat it into
-        // something PostgreSQL accepts.
-        if let Ok(formatted) = pgsql_format(src)
-            && parse_ok(&formatted)
-        {
+        // PostgreSQL rejects the input. Version parity says that pgtk-sql
+        // must reject it too, so an accept is a failure, whatever the
+        // rendering is (#95). A rendering that PostgreSQL accepts is the
+        // more specific failure: pgtk-sql changed the meaning of the input.
+        let Ok(formatted) = pgsql_format(src) else {
+            return Outcome::Pass;
+        };
+        if parse_ok(&formatted) {
             return Outcome::Fail(format!(
                 "over-permissive: pgtk-sql turned PG-rejected SQL into \
                  PG-accepted SQL\n  in:  {src}\n  out: {formatted}"
             ));
         }
-        Outcome::Pass
+        Outcome::Fail(format!(
+            "{OVER_ACCEPTANCE}: PostgreSQL rejects the statement and pgtk-sql \
+             accepts it\n  in:  {src}\n  out: {formatted}"
+        ))
     }
 }
 
