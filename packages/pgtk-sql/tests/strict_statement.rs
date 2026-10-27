@@ -2275,3 +2275,29 @@ fn an_escape_string_value_is_valid_utf8_without_a_zero_byte() {
         "SELECT E'\\é'",
     ]);
 }
+
+/// gram.y `merge_insert` takes the `insert_column_list` of a plain INSERT:
+/// `insert_column_item: ColId opt_indirection` (REL_17_11 gram.y 12596;
+/// REL_15_19 gram.y 12207). Found by submission-agent (rules.sql).
+#[cfg(feature = "since-pg15")]
+#[test]
+fn a_merge_insert_column_takes_an_indirection() {
+    let merge = "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT";
+    let accepted = [
+        format!("{merge} (filling[1], id) VALUES (1, 2)"),
+        format!("{merge} (f.x, id) VALUES (1, 2)"),
+        format!("{merge} (f[1:2].x) VALUES (1)"),
+        format!("{merge} (f.*) VALUES (1)"),
+        format!("{merge} (value) VALUES (1)"),
+        format!("{merge} (a, b) VALUES (1, 2)"),
+    ];
+    assert_accepts(&accepted.iter().map(String::as_str).collect::<Vec<_>>());
+    let rejected = [
+        format!("{merge} (select) VALUES (1)"),
+        format!("{merge} (left) VALUES (1)"),
+    ];
+    assert_rejects(
+        &rejected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "a column name is a ColId",
+    );
+}

@@ -62,13 +62,17 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// gram.y `insert_column_list` in a `merge_insert`.
+    /// gram.y `insert_column_list` in a `merge_insert` (REL_17_11 gram.y
+    /// 12596; REL_15_19 gram.y 12207): the items of the plain INSERT column
+    /// list, `insert_column_item: ColId opt_indirection`. So `filling[1]` and
+    /// `f.x` are targets, and a reserved or a `type_func_name` keyword is no
+    /// column name.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
     pub struct MergeInsertColumnList(
         #[sep(COMMA)]
         #[deref]
-        pub one_or_many!(literal::AliasName),
+        pub one_or_many!(crate::ast::dml::insert::InsertColumnItem),
     );
 }
 

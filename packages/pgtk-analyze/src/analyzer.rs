@@ -6135,9 +6135,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let cols_given = columns.is_some();
                     match columns {
                         Some(c) => {
-                            let mut seen = std::collections::HashSet::new();
-                            for a in self.list1(self.get(c).0) {
-                                let (name, loc) = self.alias_name(*a)?;
+                            // checkInsertTargets, as for a plain INSERT: a
+                            // column written whole once, or in parts any
+                            // number of times.
+                            let mut wholecols = std::collections::HashSet::new();
+                            let mut partialcols = std::collections::HashSet::new();
+                            for item in self.list1(self.get(c).0) {
+                                let it = self.get(*item);
+                                let (name, loc) = self.col_id(it.name)?;
+                                let parts = self.assignment_indirection(it.indirection)?;
                                 let Some((attnum, ty, typmod)) =
                                     self.target_attnum(relation, &name, false)
                                 else {
@@ -6148,7 +6154,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     .at(loc)
                                     .into());
                                 };
-                                if !seen.insert(attnum) {
+                                let duplicate = if parts.is_empty() {
+                                    !wholecols.insert(attnum) || partialcols.contains(&attnum)
+                                } else {
+                                    partialcols.insert(attnum);
+                                    wholecols.contains(&attnum)
+                                };
+                                if duplicate {
                                     return Err(Diagnostic::new(
                                         "42701",
                                         format!("column \"{name}\" specified more than once"),
@@ -6156,7 +6168,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     .at(loc)
                                     .into());
                                 }
-                                icolumns.push((name, ty, typmod, loc, Vec::new()));
+                                icolumns.push((name, ty, typmod, loc, parts));
                                 attnums.push(attnum);
                             }
                         }
