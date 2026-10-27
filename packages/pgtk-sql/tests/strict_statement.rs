@@ -1985,3 +1985,111 @@ fn a_non_reserved_word_or_sconst_takes_each_word_and_string() {
         "a reserved keyword is no NonReservedWord",
     );
 }
+
+/// The statements that PostgreSQL rejects and that the strict differential
+/// check found accepted (issue #95), with forms near them.
+#[test]
+fn over_acceptances_of_the_strict_differential_check_are_rejected() {
+    assert_rejects(
+        &[
+            // parser.c `str_udeescape`: an incorrect escape in `U&'...'`.
+            "SELECT U&'wrong: \\061'",
+            "SELECT U&'wrong: \\+0061'",
+            "SELECT U&'wrong: \\db99'",
+            "SELECT U&'wrong: \\db99xy'",
+            "SELECT U&'wrong: \\db99\\\\'",
+            "SELECT U&'wrong: \\db99\\0061'",
+            "SELECT U&'wrong: \\+00db99\\+000061'",
+            "SELECT U&'wrong: \\+2FFFFF'",
+            "SELECT U&'wrong: \\0000'",
+            "SELECT U&'wrong: \\dc00'",
+            "SELECT U&'wrong: !061' UESCAPE '!'",
+            "SELECT U&'it''s \\061'",
+            "CREATE TABLE t (a text DEFAULT U&'\\061')",
+            "COMMENT ON TABLE t IS U&'\\061'",
+            // scan.l: an incorrect `\u` or `\U` escape in `E'...'`.
+            "SELECT E'wrong: \\u061'",
+            "SELECT E'wrong: \\U0061'",
+            "SELECT E'wrong: \\udb99'",
+            "SELECT E'wrong: \\udb99xy'",
+            "SELECT E'wrong: \\udb99\\\\'",
+            "SELECT E'wrong: \\udb99\\u0061'",
+            "SELECT E'wrong: \\U0000db99\\U00000061'",
+            "SELECT E'wrong: \\U002FFFFF'",
+            "SELECT E'wrong: \\u0000'",
+            "SELECT E'wrong: \\udc00'",
+            "SELECT E'wrong: \\udb99'''",
+            "COMMENT ON TABLE t IS E'\\u061'",
+            // gram.y `func_expr`: `WITHIN GROUP` with an argument `ORDER BY`,
+            // `DISTINCT` or `VARIADIC`.
+            "SELECT percentile_cont(p ORDER BY p) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(DISTINCT a) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(VARIADIC a) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(a, VARIADIC b) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(ALL a ORDER BY a) WITHIN GROUP (ORDER BY x) FROM t",
+            // gram.y `insertSelectOptions`: `WITH TIES` and `SKIP LOCKED`.
+            "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW WITH TIES FOR UPDATE SKIP LOCKED",
+            "SELECT a FROM t ORDER BY a FOR UPDATE SKIP LOCKED FETCH FIRST 1 ROW WITH TIES",
+            "SELECT a FROM t ORDER BY a FETCH FIRST ROW WITH TIES FOR SHARE FOR UPDATE SKIP LOCKED",
+            "(SELECT a FROM t FOR UPDATE SKIP LOCKED) ORDER BY a FETCH FIRST 1 ROW WITH TIES",
+            // `CURRENT_SCHEMA` is no `ColId`.
+            "CREATE PUBLICATION p FOR TABLE CURRENT_SCHEMA",
+            "DROP TABLE current_schema",
+        ],
+        "PostgreSQL rejects it",
+    );
+    #[cfg(feature = "since-pg15")]
+    assert_rejects(
+        &[
+            "CREATE PUBLICATION p FOR TABLE s.t, CURRENT_SCHEMA",
+            "ALTER PUBLICATION p ADD TABLE t, current_schema",
+        ],
+        "a table object is no CURRENT_SCHEMA",
+    );
+    assert_accepts(&[
+        "SELECT U&'d\\0061t\\+000061'",
+        "SELECT U&'d!0061t\\+000061' UESCAPE '!'",
+        "SELECT U&'\\061' UESCAPE '!'",
+        "SELECT U&'\\d83d\\de00'",
+        "SELECT U&'it''s'",
+        "SELECT E'd\\u0061t\\U00000061'",
+        "SELECT E'\\ud83d\\ude00'",
+        "SELECT E'\\\\u061'",
+        "SELECT E'\\''",
+        "SELECT E'\\x41\\101\\n'",
+        "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x) FROM t",
+        "SELECT f(ALL a) WITHIN GROUP (ORDER BY x) FROM t",
+        "SELECT string_agg(a, ',' ORDER BY a) FROM t",
+        "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW WITH TIES FOR UPDATE NOWAIT",
+        "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW ONLY FOR UPDATE SKIP LOCKED",
+        "SELECT a FROM t ORDER BY a LIMIT 1 FOR UPDATE SKIP LOCKED",
+        "SELECT current_schema",
+        "SELECT current_schema()",
+        "SELECT * FROM \"current_schema\".t",
+        "SELECT * FROM current_schema()",
+        "DROP TABLE \"current_schema\"",
+    ]);
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&[
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA CURRENT_SCHEMA",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, CURRENT_SCHEMA",
+        "CREATE PUBLICATION p FOR TABLE t, \"current_schema\"",
+    ]);
+    // scan.l: a zero-length delimited identifier is a lexical error.
+    for source in [
+        "CREATE TABLE i_am_a_failure() USING \"\"",
+        "SELECT 1 AS \"\"",
+        "SELECT 1 AS U&\"\"",
+    ] {
+        assert!(
+            lex(source).errors().next().is_some(),
+            "{source:?} must not lex"
+        );
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
+    }
+    assert_accepts(&["SELECT 1 AS \"\"\"\"", "SELECT 1 AS \"a\"\"\""]);
+}

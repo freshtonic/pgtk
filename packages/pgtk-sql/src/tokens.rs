@@ -1437,12 +1437,17 @@ recursa::tokens! {
 // spellings. Keep that as one canonical content base; the generated admission
 // types below differ only in which fixed keyword kinds each grammar position
 // may reclaim.
+//
+// A quoted identifier holds at least one character: scan.l refuses `""` and
+// `U&""` with "zero-length delimited identifier" (REL_17_11 scan.l 818 and
+// 828; issue #95). So no identifier pattern matches them, and they are a
+// lexical error.
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
     pub enum ColId {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(ColId)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1476,7 +1481,7 @@ recursa::ast_node! {
     pub enum ColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(ColLabel)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1508,7 +1513,7 @@ recursa::ast_node! {
     pub enum NonReservedWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(NonReservedWord)
             )]
             NonReservedWordText,
@@ -1537,7 +1542,7 @@ recursa::ast_node! {
     pub enum RoleSpecWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(RoleSpecWord)
             )]
             RoleSpecWordText,
@@ -1559,7 +1564,7 @@ recursa::ast_node! {
     pub enum type_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(type_function_name)
             )]
             TypeFunctionNameText,
@@ -1589,7 +1594,7 @@ recursa::ast_node! {
     pub enum table_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(TableFunctionName)
             )]
             TableFunctionNameText,
@@ -1609,7 +1614,7 @@ recursa::ast_node! {
     pub enum type_name_ident {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(TypeNameIdent)
             )]
             TypeNameIdentText,
@@ -1630,7 +1635,7 @@ recursa::ast_node! {
     pub enum BareColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(BareColLabel)
             )]
             BareColLabelText,
@@ -1664,7 +1669,7 @@ recursa::ast_node! {
     pub enum RoleRevokeOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(RoleRevokeOptionWord)
             )]
             RoleRevokeOptionWordText,
@@ -1693,7 +1698,7 @@ recursa::ast_node! {
     pub enum RoleGrantOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                 admits(RoleGrantOptionWord)
             )]
             RoleGrantOptionWordText,
@@ -1902,7 +1907,7 @@ pub mod literal {
         pub enum Ident {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(UnquotedIdent)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1940,7 +1945,7 @@ pub mod literal {
         pub enum CreateDbOptWord {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(CreateDbOptWord)
                 )]
                 CreateDbOptWordText,
@@ -1983,7 +1988,7 @@ pub mod literal {
             Format,
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(UtilityOptionName)
                 )]
                 UtilityOptionNameText,
@@ -2011,7 +2016,7 @@ pub mod literal {
         pub enum IdentOnly {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(IdentOnly)
                 )]
                 IdentOnlyText,
@@ -2038,7 +2043,7 @@ pub mod literal {
         pub enum RelationAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(RelationAliasName)
                 )]
                 RelationAliasNameText,
@@ -2066,7 +2071,7 @@ pub mod literal {
         pub enum SelectBareAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(SelectBareAliasName)
                 )]
                 SelectBareAliasNameText,
@@ -2094,7 +2099,7 @@ pub mod literal {
         pub enum WindowRefNameIdent {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(WindowRefName)
                 )]
                 WindowRefNameText,
@@ -2111,7 +2116,7 @@ pub mod literal {
         pub enum AliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_]*"#,
                     admits(BareAliasName)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_ident_str`) produces realistic random
