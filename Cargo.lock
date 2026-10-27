@@ -905,9 +905,9 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "recursa"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9474e0f538f9d379fef961ebb7182e7d9e267afd8b2693111be228834b887b4a"
+checksum = "c9b1f9d7c2cc10d757804aca95758da27c2fe6237fb4041880509b66d9f96c85"
 dependencies = [
  "recursa-core",
  "recursa-macros",
@@ -915,9 +915,9 @@ dependencies = [
 
 [[package]]
 name = "recursa-codegen"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6802af1c9dabdc58e2ef3544019da7cf22c47d04565686743302adb379d4f165"
+checksum = "3897fc3e79c45d7eba437ae5a70801fd89c079d4295ac80a9e413d7d3a9a8782"
 dependencies = [
  "phf_codegen",
  "prettyplease",
@@ -932,9 +932,9 @@ dependencies = [
 
 [[package]]
 name = "recursa-core"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26ebfeba3288780ff2744e44d3f86a9414a120b451feac0548418fa8dab12495"
+checksum = "43eb2465ed9d59e667688ac01510978bc551255ec83780936caf633b439cda01"
 dependencies = [
  "arbitrary",
  "bumpalo",
@@ -946,18 +946,18 @@ dependencies = [
 
 [[package]]
 name = "recursa-diagrams"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "471ca586ee61ba54f603548a6a6817e6ebdd03460d5ce098631ff58be331c41e"
+checksum = "cfa1aff450a59b35a21c22f7491b0dd07e1c48c09cc80047ef073d94e9506986"
 dependencies = [
  "railroad",
 ]
 
 [[package]]
 name = "recursa-macros"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "899ef6987eb9c7b0dfecd795ac5d4eec5d96925bbf4e08caf449e79a284382ce"
+checksum = "5b6db2d3690aa8f8a88d8f99b83c3dce88d9c20cb87022ca24b99b7e7940338d"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
