@@ -1164,11 +1164,22 @@ recursa::tokens! {
         // reduce/reduce conflict (the two `lr_conflict` declarations in
         // `crate::ast::shared::expr`).
         //
+        // The triggers are the token kinds of gram.y `Sconst`
+        // (`crate::ast::shared::expr::Sconst`): the plain string, the
+        // continued string, the escape string, the dollar-quoted string and
+        // the Unicode string, which parser.c makes an `SCONST` (issue #93).
+        //
         // The substitution is absolute: each rule whose `)` can stand before a
         // string literal must name the merged kind too. These rules are
         // `TypeModifierClose`, `FunctionCallClose` and `DecoratedOperator`
         // (`OPERATOR(+) '2'`, issue #89).
-        RPAREN_TYPED_LA = RPAREN before { StringLit },
+        RPAREN_TYPED_LA = RPAREN before {
+            StringLit,
+            StringLitSequence,
+            EscapeStringLit,
+            DollarStringLit,
+            UnicodeStringLit,
+        },
         // There is no filter for a `)` before a set operator. parser.c has
         // none: gram.y makes `select_with_parens` its own nonterminal
         // (REL_17_11 gram.y 12658-12663, second production at 12685), so the

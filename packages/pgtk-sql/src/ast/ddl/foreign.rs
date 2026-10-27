@@ -3,11 +3,11 @@
 
 use crate::ast::ddl::table::{AlterTableCmds, CreateGenericOptions};
 use crate::ast::ddl::view::RenameColumnClause;
+use crate::ast::shared::expr::Sconst;
 use crate::ast::shared::expr::*;
 use crate::ast::shared::flags::*;
 use crate::ast::shared::names::*;
 use crate::ast::shared::numbers::*;
-use crate::ast::utility::copy::CopySconst;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
@@ -67,7 +67,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ServerTypeClause {
         #[tok(TYPE, this)]
-        pub value: CopySconst,
+        pub value: Sconst,
     }
 }
 
@@ -77,7 +77,7 @@ recursa::ast_node! {
     pub enum ServerVersionValue {
         #[tok(NULL)]
         Null,
-        String(CopySconst),
+        String(Sconst),
     }
 }
 

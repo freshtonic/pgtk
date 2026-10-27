@@ -59,7 +59,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct PrepareTransactionBody {
         #[tok(TRANSACTION, this)]
-        pub gid: literal::StringLit,
+        pub gid: crate::ast::shared::expr::Sconst,
     }
 }
 

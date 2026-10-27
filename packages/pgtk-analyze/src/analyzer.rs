@@ -37,8 +37,8 @@ use pgtk_sql::ast::shared::expr::{
     FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFloatPrecision, FlatFuncArg,
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
     FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType,
-    FlatPrecisionSqlValueFuncName, FlatSqlValueFunction, FlatStringLitSeq0, FlatTimeZoneQualifier,
-    FlatTypeCastFunc, FlatTypeModifierSign,
+    FlatPrecisionSqlValueFuncName, FlatSconst, FlatSqlValueFunction, FlatStringLitSeq0,
+    FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign,
 };
 #[cfg(feature = "since-pg16")]
 use pgtk_sql::ast::shared::expr::{
@@ -1382,6 +1382,22 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
 
     fn text_span<K>(&self, handle: Text<K>) -> std::ops::Range<usize> {
         self.ast.text_span(handle).map_or(0..0, span_range)
+    }
+
+    /// The value and the span of a gram.y `Sconst`. A plain or a continued
+    /// string gives its body; the other spellings are returned as written, as
+    /// the string constants of an expression are.
+    fn sconst(&self, handle: Handle<FlatSconst>) -> (String, std::ops::Range<usize>) {
+        match self.get(handle) {
+            FlatSconst::Plain(t) => (string_literal_body(self.text(*t)), self.text_span(*t)),
+            FlatSconst::Sequence(t) => (string_literal_body(self.text(*t)), self.text_span(*t)),
+            FlatSconst::Escape(t) => (self.text(*t).to_owned(), self.text_span(*t)),
+            FlatSconst::Dollar(t) => (self.text(*t).to_owned(), self.text_span(*t)),
+            FlatSconst::Unicode(u) => {
+                let lit = self.get(*u).lit;
+                (self.text(lit).to_owned(), self.text_span(lit))
+            }
+        }
     }
 
     fn get<N>(&self, handle: Handle<N>) -> &'a N
@@ -6263,7 +6279,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
                 let value = match opt.value.map(|v| self.get(v)) {
                     Some(FlatExplainOptValue::Ident(c)) => self.col_id(*c)?.0,
-                    Some(FlatExplainOptValue::String(t)) => string_literal_body(self.text(*t)),
+                    Some(FlatExplainOptValue::String(t)) => self.sconst(*t).0,
                     _ => String::new(),
                 };
                 result_type = match value.as_str() {
@@ -13539,10 +13555,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Extract(e) => {
                 let inner = self.get(self.get(*e).inner);
                 let field = match self.get(inner.field) {
-                    FlatExtractField::StringLit(s) => match self.get(*s) {
-                        FlatStringLitSeq0::Single(t) => string_literal_body(self.text(*t)),
-                        FlatStringLitSeq0::Sequence(t) => string_literal_body(self.text(*t)),
-                    },
+                    FlatExtractField::StringLit(s) => self.sconst(*s).0,
                     FlatExtractField::Ident(i) => {
                         let FlatAliasName::Text(t) = self.get(*i);
                         let raw = self.text(*t);
@@ -16876,8 +16889,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 )
             }
         };
-        let string_span = self.text_span(value);
-        let text = string_literal_body(self.text(value));
+        let (text, string_span) = self.sconst(value);
         let arg = make_const(self.types(), LiteralKind::String, &text, string_span.start);
         let (target, target_typmod) = self.typenames.resolve(&tn)?;
         match self.coercer().coerce_to_target_type(
@@ -16909,11 +16921,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         &mut self,
         handle: Handle<FlatExpr>,
         tn: TypeName,
-        value: Text<impl Sized>,
+        value: Handle<FlatSconst>,
         cast_location: usize,
     ) -> Result<Typed> {
-        let string_span = self.text_span(value);
-        let text = string_literal_body(self.text(value));
+        let (text, string_span) = self.sconst(value);
         let arg = make_const(self.types(), LiteralKind::String, &text, string_span.start);
         let (target, target_typmod) = self.typenames.resolve(&tn)?;
         match self.coercer().coerce_to_target_type(

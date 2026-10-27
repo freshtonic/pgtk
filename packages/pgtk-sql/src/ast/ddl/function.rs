@@ -39,7 +39,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum LanguageName {
         Ident(literal::AliasName),
-        String(literal::StringLit),
+        String(Sconst),
     }
 }
 
@@ -52,31 +52,19 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Function body: either a single-quoted or a dollar-quoted string, which is
-    /// gram.y's `func_as: Sconst | Sconst ',' Sconst` payload.
+    /// Full function body — `AS body [, symbol]`, gram.y's `func_as: Sconst |
+    /// Sconst ',' Sconst`. The second comma-separated form is used for
+    /// C-language functions where the first part names the shared object file
+    /// and the second names the exported C symbol.
     ///
     /// psql's `AS :'regresslib'` is not a form of this: psql substitutes the
     /// variable before the server lexes, so what reaches gram.y is an ordinary
     /// `Sconst`. Render such a script through the `pgtk-psql` crate first.
-    ///
-    /// Variant ordering: dollar-quoted before single-quoted (different first
-    /// chars).
-    #[derive(Debug)]
-    pub enum FuncBodyPart {
-        Dollar(literal::DollarStringLit),
-        String(literal::StringLit),
-    }
-}
-
-recursa::ast_node! {
-    /// Full function body — `AS body [, symbol]`. The second comma-separated
-    /// form is used for C-language functions where the first part names the
-    /// shared object file and the second names the exported C symbol.
     #[derive(Debug)]
     pub struct FuncBody {
-        pub obj_file: FuncBodyPart,
+        pub obj_file: Sconst,
         #[tok(COMMA, this)]
-        pub symbol: Option<FuncBodyPart>,
+        pub symbol: Option<Sconst>,
     }
 }
 
@@ -663,7 +651,7 @@ impl<'input> CreateFunctionStmt<'input> {
         let lang = self.options.iter().find_map(|opt| match opt {
             FuncOption::Language(l) => Some(match &l.name {
                 LanguageName::Ident(id) => id.text(),
-                LanguageName::String(s) => strip_quotes(s.text()),
+                LanguageName::String(s) => strip_body_delimiters(s),
             }),
             _ => None,
         })?;
@@ -681,10 +669,16 @@ fn strip_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn strip_body_delimiters<'a>(part: &'a FuncBodyPart<'a>) -> &'a str {
+/// The text of an `Sconst` without its delimiters. The escapes of an
+/// `E'...'` or a `U&'...'` string and the quotes inside a continued string
+/// stay as written.
+fn strip_body_delimiters<'a>(part: &'a Sconst<'a>) -> &'a str {
     match part {
-        FuncBodyPart::Dollar(d) => strip_dollar_quotes(d.text()),
-        FuncBodyPart::String(s) => strip_quotes(s.text()),
+        Sconst::Dollar(d) => strip_dollar_quotes(d.text()),
+        Sconst::Plain(s) => strip_quotes(s.text()),
+        Sconst::Sequence(s) => strip_quotes(s.text()),
+        Sconst::Escape(s) => strip_quotes(&s.text()[1..]),
+        Sconst::Unicode(u) => strip_quotes(&u.lit.text()[2..]),
     }
 }
 

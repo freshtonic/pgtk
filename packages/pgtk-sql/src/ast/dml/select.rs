@@ -584,7 +584,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTableColumnPath {
         #[tok(PATH, this)]
-        pub path_str: literal::StringLit,
+        pub path_str: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -713,7 +713,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTableNestedColumn {
         #[tok(NESTED, optional(PATH), this)]
-        pub path_str: literal::StringLit,
+        pub path_str: crate::ast::shared::expr::Sconst,
         pub as_name: Option<JsonTablePathName>,
         pub columns: JsonTableColumnList,
     }

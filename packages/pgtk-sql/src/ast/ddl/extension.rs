@@ -1,11 +1,11 @@
 //! EXTENSION DDL statements (CREATE/ALTER/DROP).
 #![allow(unused_imports)]
 
+use crate::ast::shared::expr::Sconst;
 use crate::ast::shared::expr::*;
 use crate::ast::shared::flags::*;
 use crate::ast::shared::names::*;
 use crate::ast::shared::numbers::*;
-use crate::ast::utility::copy::CopySconst;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
@@ -22,7 +22,7 @@ recursa::ast_node! {
     /// `NonReservedWord_or_Sconst` allows either a quoted string or a bareword.
     #[derive(Debug)]
     pub enum ExtensionVersionValue {
-        String(CopySconst),
+        String(Sconst),
         /// Any bareword (incl. soft keywords) — `NonReservedWord`.
         Word(literal::AliasName),
     }
@@ -84,7 +84,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterExtensionUpdateTo {
         #[tok(TO, this)]
-        pub version: literal::StringLit,
+        pub version: crate::ast::shared::expr::Sconst,
     }
 }
 

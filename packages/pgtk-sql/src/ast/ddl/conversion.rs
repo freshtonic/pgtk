@@ -16,9 +16,9 @@ recursa::ast_node! {
         pub default: bool,
         pub name: crate::ast::shared::names::AnyName,
         #[tok(FOR, this)]
-        pub src_encoding: literal::StringLit,
+        pub src_encoding: crate::ast::shared::expr::Sconst,
         #[tok(TO, this)]
-        pub dest_encoding: literal::StringLit,
+        pub dest_encoding: crate::ast::shared::expr::Sconst,
         #[tok(FROM, this)]
         pub func_name: crate::ast::shared::names::AnyName,
     }
