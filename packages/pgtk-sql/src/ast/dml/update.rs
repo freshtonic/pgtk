@@ -103,13 +103,16 @@ recursa::ast_node! {
 #[cfg(feature = "since-pg18")]
 recursa::ast_node! {
     /// gram.y `returning_with_clause: WITH '(' returning_options ')'`: new
-    /// names for the `old` and `new` row qualifiers.
+    /// names for the `old` and `new` row qualifiers. The target list follows
+    /// the `)`, so the close names the merged kind of a `)` before a string
+    /// literal too (`TargetListClose`, issue #107).
     #[derive(Debug, derive_more :: Deref)]
-    #[tok(WITH, LPAREN, this, RPAREN)]
+    #[tok(WITH, LPAREN, this)]
     pub struct ReturningWithClause(
         #[sep(COMMA)]
         #[deref]
         pub one_or_many!(ReturningOption),
+        pub crate::ast::dml::select::TargetListClose,
     );
 }
 
