@@ -2319,11 +2319,30 @@ pub enum SelectDistinctRef<'view, 'input> {
 }
 
 recursa::ast_node! {
+    /// The closing `)` of a parenthesized list that a target list follows:
+    /// `DISTINCT ON (a)` and, from 18, `RETURNING WITH (OLD AS o)`.
+    ///
+    /// A target list can start with a string literal, and the lexer makes a
+    /// `)` before a string literal pgtk-sql's own merged kind
+    /// `RPAREN_TYPED_LA` (`crate::tokens`). The substitution is absolute, so
+    /// this rule names the merged kind too: `SELECT DISTINCT ON (a) 'x'`
+    /// (issue #107). Each arm renders `)`.
+    #[derive(Debug, PartialEq, Eq)]
+    pub enum TargetListClose {
+        #[tok(RPAREN)]
+        Value,
+        #[tok(RPAREN_TYPED_LA)]
+        MergedTyped,
+    }
+}
+
+recursa::ast_node! {
     #[derive(Debug)]
-    #[tok(DISTINCT, ON, LPAREN, this, RPAREN)]
+    #[tok(DISTINCT, ON, LPAREN, this)]
     pub struct SelectDistinctOn {
         #[sep(COMMA)]
         pub exprs: one_or_many!(crate::ast::shared::expr::Expr),
+        pub close: TargetListClose,
     }
 }
 
