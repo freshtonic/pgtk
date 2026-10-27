@@ -380,6 +380,24 @@ pub(crate) fn unicode_string_error(raw: &str, uescape: Option<&str>) -> Option<F
     decode_escapes(std::str::from_utf8(&value).ok()?, escape).err()
 }
 
+/// The first Unicode escape error of a `U&"..."` identifier, which
+/// `str_udeescape` (`parser.c`, `base_yylex` `case UIDENT`) reports, or
+/// `None` when the identifier is correct or is no `U&"..."` identifier.
+///
+/// `raw` is the source text of the identifier token, and `uescape` is the
+/// source text of the string after `UESCAPE`, if there is one. The check is
+/// the check of [`unicode_string_error`] for a `U&'...'` string. An escape
+/// character that `check_uescapechar` refuses gives `None`: the `UESCAPE`
+/// clause has its own rejection for it.
+pub(crate) fn unicode_identifier_error(raw: &str, uescape: Option<&str>) -> Option<FoldError> {
+    let inner = unicode_delimited(raw)?;
+    let escape = match uescape {
+        Some(uescape) => escape_byte(&sconst_bytes(uescape)?).ok()?,
+        None => b'\\',
+    };
+    decode_escapes(&unquote(inner), escape).err()
+}
+
 /// The first escape error of an `E'...'` string constant, which `scan.l`
 /// reports, or `None` when the string is correct.
 ///

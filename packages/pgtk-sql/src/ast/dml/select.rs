@@ -82,7 +82,8 @@ recursa::ast_node! {
     /// as an escape clause only after a Unicode identifier (`UIDENT`) or a
     /// Unicode string, so after any other name `UESCAPE` is a syntax error
     /// (issue #59). pgtk-sql lexes each identifier spelling as one token, so
-    /// the rule refuses the name by its text.
+    /// the rule refuses the name by its text. The validation hook refuses an
+    /// incorrect escape of the name (`str_udeescape`).
     #[classify(name, fold = crate::ident::unicode_identifier_class)]
     #[reject(
         one_of(name, "plain"),
@@ -90,9 +91,12 @@ recursa::ast_node! {
         message = "syntax error at or near \"UESCAPE\"",
         cite = "REL_17_11 parser.c base_yylex, UIDENT UESCAPE",
     )]
+    #[validate(crate::ast::validation::uescaped_alias_name, flat = crate::ast::validation::uescaped_alias_name_flat)]
     #[derive(Debug)]
     pub struct UescapedAliasName {
-        pub name: literal::AliasName,
+        /// The name, which `parser.c` decodes with the escape character of
+        /// the clause, so it has no escape check of its own.
+        pub name: crate::tokens::UidentName,
         pub uescape: crate::ast::shared::expr::UescapeSuffix,
     }
 }

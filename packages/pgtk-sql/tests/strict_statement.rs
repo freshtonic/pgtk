@@ -2301,3 +2301,35 @@ fn a_merge_insert_column_takes_an_indirection() {
         "a column name is a ColId",
     );
 }
+
+/// `base_yylex` (`parser.c`) decodes each `U&"..."` identifier with
+/// `str_udeescape`, with the escape character of its `UESCAPE` clause or `\`
+/// (REL_17_11 parser.c 315-343; REL_14_24 has the same rules), and refuses an
+/// incorrect Unicode escape in each identifier position. The check is the
+/// check of a `U&'...'` string. Found by diff-agent.
+#[test]
+fn a_unicode_identifier_with_an_incorrect_escape_is_refused() {
+    assert_rejects(
+        &[
+            "SELECT U&\"\\061\" FROM t",
+            "SELECT a FROM U&\"\\061\"",
+            "CREATE TABLE U&\"\\db99\" (a int)",
+            "SELECT 1 AS U&\"\\0000\"",
+            "SELECT 1 U&\"\\+2FFFFF\"",
+            "SELECT U&\"\\dc00\"()",
+            "SELECT x::U&\"\\061\"",
+            "SELECT t.U&\"\\061\" FROM t",
+            "GRANT r TO U&\"\\061\"",
+            "SELECT 1 AS U&\"!061\" UESCAPE '!'",
+        ],
+        "str_udeescape refuses the escape",
+    );
+    assert_accepts(&[
+        "SELECT U&\"\\0061\" FROM U&\"\\+000074\"",
+        "SELECT U&\"\\d83d\\de00\"",
+        "SELECT U&\"a\\\\b\"",
+        "SELECT 1 AS U&\"\\\" UESCAPE '!'",
+        "SELECT 1 AS U&\"\\061\" UESCAPE '!'",
+        "SELECT 1 AS U&\"d!0061t\" UESCAPE '!'",
+    ]);
+}

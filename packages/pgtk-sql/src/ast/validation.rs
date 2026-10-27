@@ -30,6 +30,7 @@ use crate::ast::dml::select::{
     FlatForUpdateWait, FlatLimitLockingClause, FlatLimitOffsetClause, FlatLimitingClause,
     ForLockingClause, ForUpdateWait, LimitLockingClause, LimitOffsetClause, LimitingClause,
 };
+use crate::ast::dml::select::{FlatUescapedAliasName, UescapedAliasName};
 use crate::ast::dml::values::{
     FlatQueryBody, FlatSelectClause, FlatSubquery, QueryBody, SelectClause, Subquery,
 };
@@ -37,10 +38,28 @@ use crate::ast::shared::expr::{
     Expr, FlatExpr, FlatFuncArg, FlatFunctionCallBody, FlatFunctionCallSuffix,
     FlatFunctionTypedLiteralTail, FlatRow, FlatSconst, FlatUescapeString,
     FlatUnicodeStringLitWithEscape, FuncArg, FunctionCallBody, FunctionCallSuffix,
-    FunctionTypedLiteralTail, Row, Sconst, UescapeString, UnicodeStringLitWithEscape,
+    FunctionTypedLiteralTail, Row, Sconst, UnicodeStringLitWithEscape,
 };
 use crate::ast::shared::with_clause::{FlatWithBody, FlatWithStatement, WithBody, WithStatement};
-use crate::ident::{FoldError, escape_string_error, unicode_string_error};
+use crate::ident::{
+    FoldError, escape_string_error, unicode_identifier_error, unicode_string_error,
+};
+use crate::tokens::literal::{
+    AliasName, CreateDbOptWord, FlatAliasName, FlatCreateDbOptWord, FlatIdent, FlatIdentOnly,
+    FlatRelationAliasName, FlatSelectBareAliasName, FlatUtilityOptionName, FlatWindowRefNameIdent,
+    Ident, IdentOnly, RelationAliasName, SelectBareAliasName, UtilityOptionName,
+    WindowRefNameIdent,
+};
+use crate::tokens::{
+    BareColLabel, ColId, ColLabel, FlatBareColLabel, FlatColId, FlatColLabel, FlatNonReservedWord,
+    FlatRoleSpecWord, FlatUidentName, Flattable_function_name, Flattype_function_name,
+    Flattype_name_ident, NonReservedWord, RoleSpecWord, table_function_name, type_function_name,
+    type_name_ident,
+};
+#[cfg(feature = "since-pg16")]
+use crate::tokens::{
+    FlatRoleGrantOptionWord, FlatRoleRevokeOptionWord, RoleGrantOptionWord, RoleRevokeOptionWord,
+};
 
 /// `wrong number of parameters on left side of OVERLAPS expression`.
 pub static OVERLAPS_LEFT: RejectionNote = RejectionNote::new(
@@ -854,13 +873,29 @@ pub static ESCAPE_STRING_PAIR: RejectionNote = RejectionNote::new(
 
 /// The refusal of a `U&'...'` string with the escape error `error`.
 fn unicode_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
+    unicode_refusal(
+        error,
+        [
+            &UNICODE_STRING_ESCAPE,
+            &UNICODE_STRING_VALUE,
+            &UNICODE_STRING_PAIR,
+        ],
+    )
+}
+
+/// The refusal for the `str_udeescape` error `error`, with the notes of one
+/// site: the incorrect escape, the incorrect value and the surrogate pair.
+fn unicode_refusal(
+    error: Option<FoldError>,
+    [escape, value, pair]: [&'static RejectionNote; 3],
+) -> Result<(), Refusal> {
     let note = match error {
         None => return Ok(()),
-        Some(FoldError::InvalidEscapeValue) => &UNICODE_STRING_VALUE,
-        Some(FoldError::InvalidSurrogatePair) => &UNICODE_STRING_PAIR,
-        Some(_) => &UNICODE_STRING_ESCAPE,
+        Some(FoldError::InvalidEscapeValue) => value,
+        Some(FoldError::InvalidSurrogatePair) => pair,
+        Some(_) => escape,
     };
-    // The error is at the string, field 0.
+    // The error is at the string or the name, field 0.
     Err(Refusal::new(note).at_field(0))
 }
 
@@ -885,16 +920,6 @@ fn escape_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
     Err(Refusal::new(note))
 }
 
-/// The source text of the string after `UESCAPE`.
-fn uescape_text<'a>(string: &'a UescapeString<'_>) -> &'a str {
-    match string {
-        UescapeString::Escape(string) => string.text(),
-        UescapeString::Dollar(string) => string.text(),
-        UescapeString::Sequence(string) => string.text(),
-        UescapeString::Plain(string) => string.text(),
-    }
-}
-
 /// The flat form of [`uescape_text`].
 fn flat_uescape_text<'a, R: recursa::__private::FlatNode>(
     string: FlatUescapeString,
@@ -915,7 +940,7 @@ pub fn unicode_string(string: &UnicodeStringLitWithEscape<'_>) -> Result<(), Ref
     let uescape = string
         .uescape
         .as_ref()
-        .map(|uescape| uescape_text(&uescape.escape_char));
+        .map(|uescape| uescape.escape_char.text());
     unicode_string_refusal(unicode_string_error(string.lit.text(), uescape))
 }
 
@@ -965,4 +990,124 @@ pub fn escape_expr_flat(expr: &FlatExpr, ast: &FlatAst<'_, FlatExpr>) -> Result<
         return Ok(());
     };
     escape_string_refusal(escape_string_error(ast[*string].as_str()))
+}
+
+// --- Unicode escapes in identifiers ---
+
+/// `invalid Unicode escape` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_ESCAPE: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\XXXX or \\+XXXXXX."),
+    "parser.c REL_17_11 494, str_udeescape",
+);
+
+/// `invalid Unicode escape value` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_VALUE: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "parser.c REL_17_11 347, check_unicode_value",
+);
+
+/// `invalid Unicode surrogate pair` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_PAIR: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "parser.c REL_17_11 523, str_udeescape",
+);
+
+/// The notes of a `U&"..."` identifier.
+const UNICODE_IDENT_NOTES: [&RejectionNote; 3] = [
+    &UNICODE_IDENT_ESCAPE,
+    &UNICODE_IDENT_VALUE,
+    &UNICODE_IDENT_PAIR,
+];
+
+/// The refusal of the identifier with the source text `raw` and no `UESCAPE`
+/// clause: `base_yylex` decodes a `U&"..."` name with `str_udeescape` and the
+/// escape character `\` (REL_17_11 parser.c 315-343; the same in REL_14_24).
+fn identifier_refusal(raw: &str) -> Result<(), Refusal> {
+    unicode_refusal(unicode_identifier_error(raw, None), UNICODE_IDENT_NOTES)
+}
+
+/// `parser.c` decodes the name of `AS U&"..." UESCAPE 'c'` with the escape
+/// character of the clause and refuses an incorrect escape.
+pub fn uescaped_alias_name(name: &UescapedAliasName<'_>) -> Result<(), Refusal> {
+    unicode_refusal(
+        unicode_identifier_error(name.name.text(), Some(name.uescape.escape_char.text())),
+        UNICODE_IDENT_NOTES,
+    )
+}
+
+/// The flat form of [`uescaped_alias_name`].
+pub fn uescaped_alias_name_flat(
+    name: &FlatUescapedAliasName,
+    ast: &FlatAst<'_, FlatUescapedAliasName>,
+) -> Result<(), Refusal> {
+    let FlatUidentName::Text(text) = ast[name.name];
+    let uescape = flat_uescape_text(ast[ast[name.uescape].escape_char], ast);
+    unicode_refusal(
+        unicode_identifier_error(ast[text].as_str(), Some(uescape)),
+        UNICODE_IDENT_NOTES,
+    )
+}
+
+/// The hooks of the identifier types: a `U&"..."` name is checked with the
+/// escape character `\` ([`identifier_refusal`]). Each type holds one token;
+/// a `UESCAPE` clause is part of no identifier type (only of
+/// `UescapedAliasName`).
+macro_rules! identifier_hooks {
+    ($($(#[$meta:meta])* $hook:ident, $hook_flat:ident, $ty:ident, $flat:ident;)*) => {$(
+        $(#[$meta])*
+        #[doc = concat!("The `str_udeescape` check of a `", stringify!($ty), "`.")]
+        pub fn $hook(name: &$ty<'_>) -> Result<(), Refusal> {
+            identifier_refusal(name.text())
+        }
+
+        $(#[$meta])*
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(name: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            match name {
+                $flat::Text(text) => identifier_refusal(ast[*text].as_str()),
+                #[allow(unreachable_patterns)]
+                _ => Ok(()),
+            }
+        }
+    )*};
+}
+
+identifier_hooks! {
+    ident_col_id, ident_col_id_flat, ColId, FlatColId;
+    ident_col_label, ident_col_label_flat, ColLabel, FlatColLabel;
+    ident_non_reserved_word, ident_non_reserved_word_flat, NonReservedWord, FlatNonReservedWord;
+    ident_role_spec_word, ident_role_spec_word_flat, RoleSpecWord, FlatRoleSpecWord;
+    ident_type_function_name, ident_type_function_name_flat, type_function_name,
+        Flattype_function_name;
+    ident_table_function_name, ident_table_function_name_flat, table_function_name,
+        Flattable_function_name;
+    ident_type_name_ident, ident_type_name_ident_flat, type_name_ident, Flattype_name_ident;
+    ident_bare_col_label, ident_bare_col_label_flat, BareColLabel, FlatBareColLabel;
+    #[cfg(feature = "since-pg16")]
+    ident_role_revoke_option_word, ident_role_revoke_option_word_flat, RoleRevokeOptionWord,
+        FlatRoleRevokeOptionWord;
+    #[cfg(feature = "since-pg16")]
+    ident_role_grant_option_word, ident_role_grant_option_word_flat, RoleGrantOptionWord,
+        FlatRoleGrantOptionWord;
+    ident_ident, ident_ident_flat, Ident, FlatIdent;
+    ident_create_db_opt_word, ident_create_db_opt_word_flat, CreateDbOptWord, FlatCreateDbOptWord;
+    ident_utility_option_name, ident_utility_option_name_flat, UtilityOptionName,
+        FlatUtilityOptionName;
+    ident_ident_only, ident_ident_only_flat, IdentOnly, FlatIdentOnly;
+    ident_relation_alias_name, ident_relation_alias_name_flat, RelationAliasName,
+        FlatRelationAliasName;
+    ident_select_bare_alias_name, ident_select_bare_alias_name_flat, SelectBareAliasName,
+        FlatSelectBareAliasName;
+    ident_window_ref_name_ident, ident_window_ref_name_ident_flat, WindowRefNameIdent,
+        FlatWindowRefNameIdent;
+    ident_alias_name, ident_alias_name_flat, AliasName, FlatAliasName;
 }
