@@ -3321,6 +3321,26 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         Ok(())
     }
 
+    /// The expression of a CYCLE mark value. A typed literal with a
+    /// function name (`pg_catalog.int4 '1'`, `t(3) 'x'`) has no expression
+    /// node.
+    fn cycle_mark_value(
+        &self,
+        v: Handle<pgtk_sql::ast::shared::with_clause::FlatCycleMarkValue>,
+    ) -> Result<Handle<FlatExpr>> {
+        use pgtk_sql::ast::shared::with_clause::FlatCycleMarkValue;
+        match self.get(v) {
+            FlatCycleMarkValue::Const(e) => Ok(*e),
+            FlatCycleMarkValue::Qualified(_) | FlatCycleMarkValue::Call(_) => {
+                let at = self.span(v).start;
+                Err(unsupported(
+                    "typed literal with a function name in CYCLE",
+                    Some(at..at),
+                ))
+            }
+        }
+    }
+
     /// analyzeCTE for a CYCLE clause: the mark's type from its TO and
     /// DEFAULT values, which must have an equality operator.
     fn cycle_mark(
@@ -3333,10 +3353,12 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             return Ok((self.types().builtin(Builtin::Bool), -1));
         };
         let td = self.get(td);
+        let to_handle = self.cycle_mark_value(td.to_value)?;
+        let default_handle = self.cycle_mark_value(td.default_value)?;
         let saved = self.expr_kind;
         self.expr_kind = ExprKind::CycleMark;
-        let to_value = self.expr(scope, td.to_value)?;
-        let default_value = self.expr(scope, td.default_value)?;
+        let to_value = self.expr(scope, to_handle)?;
+        let default_value = self.expr(scope, default_handle)?;
         self.expr_kind = saved;
         let ty = match self.coercer().common_type(&[to_value.ty, default_value.ty]) {
             Ok(t) => t,
@@ -3357,7 +3379,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 .into());
             }
         };
-        for (h, t) in [(td.to_value, &to_value), (td.default_value, &default_value)] {
+        for (h, t) in [(to_handle, &to_value), (default_handle, &default_value)] {
             if t.ty != ty
                 && let Some((_, steps)) =
                     self.coercer()
@@ -4735,7 +4757,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 for item in self.list1(self.get(c.columns).items) {
                     let it = self.get(*item);
                     let (name, loc) = self.col_id(it.name)?;
-                    let parts = self.list(it.indirection).to_vec();
+                    let parts = self.assignment_indirection(it.indirection)?;
                     let Some((attnum, ty, typmod)) = self.target_attnum(relation, &name, false)
                     else {
                         return Err(Diagnostic::new(
@@ -5877,7 +5899,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     };
                     for (target, value) in targets.into_iter().zip(sources) {
                         let target = self.get(target);
-                        values.push((target.column, self.list(target.indirection).to_vec(), value));
+                        values.push((
+                            target.column,
+                            self.assignment_indirection(target.indirection)?,
+                            value,
+                        ));
                     }
                 }
                 FlatSetAssignment::Single(single) => {
@@ -5887,7 +5913,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     } else {
                         InsertValue::Expr(single.value, self.expr(scope, single.value)?)
                     };
-                    values.push((single.column, self.list(single.indirection).to_vec(), value));
+                    values.push((
+                        single.column,
+                        self.assignment_indirection(single.indirection)?,
+                        value,
+                    ));
                 }
             }
         }
@@ -6921,7 +6951,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let location = self.span(expr).start;
         if let FlatExpr::ColumnRef(c) = self.get(expr) {
             let c = self.get(*c);
-            if self.list(c.subscripts).is_empty() {
+            if c.indirection.is_none() {
                 let (name, _) = self.col_id(c.name)?;
                 // In GROUP BY a name that is a column of the FROM clause is
                 // not matched against output names.
@@ -7049,7 +7079,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // A subscripted or field-selected reference is compared as
                 // written.
                 let indirect = |w: &Self, h: Handle<FlatExpr>| match w.get(h) {
-                    FlatExpr::ColumnRef(c) => !w.list(w.get(*c).subscripts).is_empty(),
+                    FlatExpr::ColumnRef(c) => w.get(*c).indirection.is_some(),
                     FlatExpr::QualRef(q) => w.qref_indirect(*q),
                     _ => false,
                 };
@@ -9625,6 +9655,23 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let at = self.span(e.expr).start;
                     return Err(unsupported("row expansion of a subquery", Some(at..at)));
                 }
+                // `a[1].*` and `$1.*`: ExpandIndirectionStar.
+                if e.alias.is_none() {
+                    let parts = match self.get(e.expr) {
+                        FlatExpr::ColumnRef(c) => self.column_ref_parts(self.get(*c).indirection),
+                        FlatExpr::PositionalParam(p) => {
+                            self.opt_indirection_parts(self.get(*p).indirection)
+                        }
+                        _ => Vec::new(),
+                    };
+                    if let Some(IndirPart::Star) = parts.last() {
+                        let at = self.span(e.expr).start;
+                        return Err(unsupported(
+                            "row expansion of a subscripted column or a parameter",
+                            Some(at..at),
+                        ));
+                    }
+                }
                 // `(expr).*`: ExpandRowReference.
                 if e.alias.is_none()
                     && let FlatExpr::Parenthesized(p) = self.get(e.expr)
@@ -12057,6 +12104,43 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
+    /// The elements of the indirection of an assignment target: `SET a[1].b
+    /// = ...`, `INSERT INTO t (a[1].b)`. `transformAssignmentIndirection`
+    /// refuses a `.*`.
+    fn assignment_indirection(
+        &self,
+        i: Option<Handle<pgtk_sql::ast::shared::expr::FlatIndirection>>,
+    ) -> Result<Vec<Handle<FlatIndirectionEl>>> {
+        use pgtk_sql::ast::shared::expr::FlatIndirection;
+        let Some(i) = i else {
+            return Ok(Vec::new());
+        };
+        match self.get(i) {
+            FlatIndirection::Elements(list) => Ok(self.list1(*list).to_vec()),
+            FlatIndirection::Star(_) | FlatIndirection::ElementsStar(..) => Err(Diagnostic::new(
+                "0A000",
+                "row expansion via \"*\" is not supported here",
+            )
+            .at(self.span(i).start)
+            .into()),
+        }
+    }
+
+    /// The parts of the indirection of an unqualified column reference:
+    /// its subscript and the elements after it.
+    fn column_ref_parts(
+        &self,
+        i: Option<Handle<pgtk_sql::ast::shared::expr::FlatSubscriptedIndirection>>,
+    ) -> Vec<IndirPart> {
+        let Some(i) = i else {
+            return Vec::new();
+        };
+        let i = self.get(i);
+        let mut parts = vec![IndirPart::Subscript(i.subscript)];
+        parts.extend(self.opt_indirection_parts(i.rest));
+        parts
+    }
+
     /// The parts of an optional indirection chain; none when it is absent.
     fn opt_indirection_parts(
         &self,
@@ -12075,12 +12159,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
                 // A_Indirection: the last field name after a subscript.
-                let mut name = None;
-                for si in self.list(c.subscripts) {
-                    for f in self.list(self.get(*si).fields) {
-                        name = self.alias_name(self.get(*f).name).ok().map(|(n, _)| n);
-                    }
-                }
+                let mut name = self.last_field_name(&self.column_ref_parts(c.indirection));
                 if name.is_none() {
                     name = self.col_id(c.name).ok().map(|(n, _)| n);
                 }
@@ -12785,7 +12864,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
-                if self.list(c.subscripts).is_empty() {
+                if c.indirection.is_none() {
                     Some(TypmodArg::Ident(self.col_id(c.name)?.0))
                 } else {
                     None
@@ -12997,9 +13076,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             )
             .at(location)
             .into()),
-            FlatExpr::PositionalParam(p) if !self.list(self.get(*p).subscripts).is_empty() => Err(
-                unsupported("subscripted parameter", Some(location..location)),
-            ),
+            FlatExpr::PositionalParam(p) if self.get(*p).indirection.is_some() => Err(unsupported(
+                "parameter with indirection",
+                Some(location..location),
+            )),
             FlatExpr::PositionalParam(p) => {
                 let p = self.get(*p);
                 let text = self.text(p.param);
@@ -13049,35 +13129,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
-                if !self.list(c.subscripts).is_empty() {
+                if c.indirection.is_some() {
                     let (name, _) = self.col_id(c.name)?;
-                    let mut base = self.column_ref(scope, handle, &[name], location)?;
-                    let mut base_handle = Some(handle);
-                    let mut subs: Vec<Handle<FlatBracketSubscript>> = Vec::new();
-                    for si in self.list(c.subscripts).to_vec() {
-                        let si = self.get(si);
-                        subs.push(si.subscript);
-                        for f in self.list(si.fields).to_vec() {
-                            base = self.subscripts(scope, &base, &subs, location)?;
-                            subs.clear();
-                            let (fname, _) = self.alias_name(self.get(f).name)?;
-                            base = self.field_select(
-                                scope,
-                                handle,
-                                &base,
-                                base_handle,
-                                None,
-                                &fname,
-                                location,
-                            )?;
-                            base_handle = None;
-                        }
-                    }
-                    if !subs.is_empty() {
-                        base = self.subscripts(scope, &base, &subs, location)?;
-                    }
-                    let _ = base_handle;
-                    return Ok(base);
+                    let base = self.column_ref(scope, handle, &[name], location)?;
+                    let parts = self.column_ref_parts(c.indirection);
+                    return self.indirection(scope, handle, base, Some(handle), &parts, location);
                 }
                 let FlatColId::Text(raw) = self.get(c.name);
                 let raw = self.text(*raw);
