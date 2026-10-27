@@ -30,10 +30,8 @@
 //! source order. On text that the strict parse accepts, the two give the same
 //! statements.
 
-use std::cell::RefCell;
 use std::fmt;
 
-use recursa::__private::{TokenRecord, TriviaRecord};
 use recursa::framing::ArenaCompleteFrame;
 use recursa::{ArenaParsed, Span};
 
@@ -311,8 +309,7 @@ pub struct SqlRejection<'input>(FrameRejection<'input>);
 /// assert!(spans[0].ends_with("END;"));
 /// ```
 pub fn parse_sql_recovering(source: &str) -> Result<RecoveredDocument<'_>, FrameError<'_>> {
-    let (records, trivia) =
-        recursa::__private::lex_into_parts(crate::__recursa_lexical::__recursa_frame_lex(source));
+    let records = document_records(source);
     let mut entries = Vec::new();
     // The first record of the next window, and the first byte that the
     // windows before it do not own.
@@ -325,12 +322,7 @@ pub fn parse_sql_recovering(source: &str) -> Result<RecoveredDocument<'_>, Frame
         } else {
             records[end - 1].span.end() as usize
         };
-        let window = Window {
-            records: &records[index..end],
-            trivia: trivia.as_deref(),
-            bytes: byte..window_end_byte,
-        };
-        match frame_window(source, &window) {
+        match SqlDocumentItem::frame_window(source, byte..window_end_byte) {
             Ok(frame) => entries.push(Entry::Accepted(frame)),
             Err(FrameFailure::Fatal(fatal)) => return Err(fatal),
             Err(FrameFailure::Rejected(rejection)) => {
@@ -341,14 +333,7 @@ pub fn parse_sql_recovering(source: &str) -> Result<RecoveredDocument<'_>, Frame
                     // rejected one in this window. It keeps no partial
                     // partition, so frame the statements before the rejection
                     // again. The same records give the same islands.
-                    let prefix_end =
-                        records.partition_point(|record| (record.span.start() as usize) < start);
-                    let prefix = Window {
-                        records: &records[index..prefix_end],
-                        trivia: trivia.as_deref(),
-                        bytes: byte..start,
-                    };
-                    match frame_window(source, &prefix) {
+                    match SqlDocumentItem::frame_window(source, byte..start) {
                         Ok(frame) => entries.push(Entry::Accepted(frame)),
                         Err(FrameFailure::Fatal(fatal)) => return Err(fatal),
                         // Not expected. Keep the window as one rejection.
@@ -356,9 +341,11 @@ pub fn parse_sql_recovering(source: &str) -> Result<RecoveredDocument<'_>, Frame
                     }
                 }
                 // The strict extent ends at the first `;` token at or after
-                // the failure. That `;` is in this window, but take the
-                // larger extent so that no two items overlap.
-                let rejected_end = window_end_byte.max(rejection.island().end() as usize);
+                // the failure, and never after the end of the window. Take
+                // the complete window, so that the extent ends at the
+                // boundary even when the strict extent ends at a `;` that
+                // is not a boundary.
+                let rejected_end = window_end_byte;
                 let span = Span::new(start, rejected_end)
                     .expect("a rejection extent is a valid span of the source");
                 entries.push(Entry::Rejected(RecoveredRejection {
@@ -384,16 +371,15 @@ pub fn parse_sql_recovering(source: &str) -> Result<RecoveredDocument<'_>, Frame
 /// the number of records when no boundary follows.
 ///
 /// See "Statement boundaries" in [`parse_sql_recovering`].
-fn window_end(source: &str, records: &[TokenRecord], start: usize) -> usize {
-    let kind = |record: &TokenRecord| crate::__recursa_lexical::__recursa_typed_kind(record.kind);
+fn window_end(source: &str, records: &[Record], start: usize) -> usize {
     let creates = records
         .get(start)
-        .is_some_and(|record| kind(record) == TokenKind::CREATE);
+        .is_some_and(|record| record.kind == TokenKind::CREATE);
     let mut parentheses = 0_usize;
     let mut bodies = 0_usize;
     let mut previous = None;
     for (index, record) in records.iter().enumerate().skip(start) {
-        let current = kind(record);
+        let current = record.kind;
         match current {
             TokenKind::LPAREN => parentheses += 1,
             // psqlscan.l also ignores a `)` that closes nothing.
@@ -426,58 +412,37 @@ fn window_end(source: &str, records: &[TokenRecord], start: usize) -> usize {
     records.len()
 }
 
-/// The records of one statement window, and the bytes that its frame owns.
-struct Window<'records> {
-    records: &'records [TokenRecord],
-    trivia: Option<&'records [TriviaRecord]>,
-    bytes: std::ops::Range<usize>,
+/// One token of the document, or one lexical error, at its position in the
+/// complete source.
+#[derive(Clone, Copy)]
+struct Record {
+    /// The token kind. A lexical error is [`TokenKind::LexicalError`].
+    kind: TokenKind,
+    /// The span of the token in the complete source.
+    span: Span,
 }
 
-/// The token records and the trivia records of one window.
-type WindowRecords = (Vec<TokenRecord>, Option<Vec<TriviaRecord>>);
-
-thread_local! {
-    /// The records that the next call of [`windowed_lex`] gives.
-    static WINDOW: RefCell<Option<WindowRecords>> =
-        const { RefCell::new(None) };
-}
-
-/// The lexer of a window frame: the records of the window, at their
-/// positions in the complete source, and no other record.
+/// Lexes the complete document, and gives its tokens and its lexical errors
+/// in source order.
 ///
-/// The framing interpreter takes a plain `fn`, so the window comes through
-/// [`WINDOW`]. With no window set, this is the lexer of the strict parse.
-fn windowed_lex(source: &str) -> recursa::__private::LexResult<'_> {
-    match WINDOW.with(|window| window.borrow_mut().take()) {
-        Some((records, trivia)) => recursa::__private::LexResult::new(source, records, trivia),
-        None => crate::__recursa_lexical::__recursa_frame_lex(source),
-    }
-}
-
-/// Runs the strict framing of the document over the records of one window.
-///
-/// The frame owns the complete source, and its spans are spans in the
-/// complete source. The text out of the window has no records, so the frame
-/// gives it as gaps, and no island starts there.
-fn frame_window<'input>(
-    source: &'input str,
-    window: &Window<'_>,
-) -> Result<ArenaCompleteFrame<'input, SqlDocumentItemFamily>, FrameFailure<'input>> {
-    let trivia = window.trivia.map(|trivia| {
-        let first =
-            trivia.partition_point(|record| (record.span.start() as usize) < window.bytes.start);
-        let last =
-            trivia.partition_point(|record| (record.span.end() as usize) <= window.bytes.end);
-        trivia[first..last.max(first)].to_vec()
-    });
-    WINDOW.with(|cell| *cell.borrow_mut() = Some((window.records.to_vec(), trivia)));
-    let frame = recursa::__private::frame_arena_document::<SqlDocumentItem<'_>>(
-        source,
-        windowed_lex,
-        &crate::__RECURSA_FRAMING_PLAN,
-    );
-    WINDOW.with(|cell| cell.borrow_mut().take());
-    frame
+/// This lex finds only the statement windows. Each window frame lexes the
+/// text of its window again, with the same tokens, because each window
+/// starts and ends at a token boundary.
+fn document_records(source: &str) -> Vec<Record> {
+    let lexed = crate::lex(source);
+    let mut records = lexed
+        .tokens()
+        .map(|token| Record {
+            kind: token.kind(),
+            span: token.span(),
+        })
+        .chain(lexed.errors().map(|error| Record {
+            kind: TokenKind::LexicalError,
+            span: error.span(),
+        }))
+        .collect::<Vec<_>>();
+    records.sort_by_key(|record| record.span.start());
+    records
 }
 
 /// The result of a recovering parse: each statement or each rejection of a
