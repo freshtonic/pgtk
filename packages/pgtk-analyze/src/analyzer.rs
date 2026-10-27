@@ -42,9 +42,8 @@ use pgtk_sql::ast::shared::expr::{
     FlatUescapeSuffix,
 };
 #[cfg(feature = "since-pg16")]
-use pgtk_sql::ast::shared::expr::{
-    FlatCastType, FlatIntervalLitForm, FlatJsonEncoding, FlatTypeArray,
-};
+use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
+use pgtk_sql::ast::shared::expr::{FlatIntervalLitForm, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
 use pgtk_sql::tokens::FlatColId;
