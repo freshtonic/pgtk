@@ -41,10 +41,7 @@ impl<'input> DeleteTableAlias<'input> {
     /// Returns the alias name regardless of variant.
     pub fn name(&self) -> &str {
         match self {
-            DeleteTableAlias::WithAs(alias) => {
-                let crate::tokens::ColId::Text(text) = &alias.name;
-                text.text()
-            }
+            DeleteTableAlias::WithAs(alias) => alias.name.text(),
             DeleteTableAlias::Bare(name) => name.text(),
         }
     }

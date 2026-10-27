@@ -1115,8 +1115,7 @@ recursa::tokens! {
         // a column-name closure beside the parameter closure of the new
         // syntax, and LALR merged that state with the target list's.
         IdentOnly = AllWordKinds - AllWordKinds,
-        // The `U&"..."` name of `crate::ast::dml::select::UescapedAliasName`:
-        // no keyword.
+        // The `U&"..."` name of `crate::tokens::UnicodeIdent`: no keyword.
         UescapedName = AllWordKinds - AllWordKinds,
     }
     // Lookahead filters, one per case of PostgreSQL's `base_yylex`
@@ -1438,9 +1437,9 @@ recursa::tokens! {
         // unreserved keyword, so `uescape 'x'` is a typed literal. (A
         // lookahead filter `UESCAPE_LA = UESCAPE before { strings }` was here
         // before; it changed each `UESCAPE` before a string, so it refused
-        // `SELECT uescape 'x'`.) A `U&"..."` identifier lexes as each other
-        // identifier spelling, so only `UescapedAliasName` reads a clause
-        // after one.
+        // `SELECT uescape 'x'`.) A `U&"..."` identifier is a lexical kind of its
+        // own (`UidentName`), and `UnicodeIdent` ends with `UNICODE_END` in
+        // the same way, so after it `UESCAPE` is always the clause too.
         nonassoc(bp = 240) { UESCAPE },
     }
 }
@@ -1462,12 +1461,12 @@ recursa::tokens! {
 // non-ASCII character, so the patterns take each such character, and `$`
 // continues an identifier: `a$$x$$` is one identifier.
 recursa::ast_node! {
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_col_id, flat = crate::ast::validation::ident_col_id_flat)]
     pub enum ColId {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(ColId)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1477,33 +1476,92 @@ recursa::ast_node! {
             #[node(omit(Arbitrary))]
             ColIdText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(UnicodeIdent)),
     }
 }
 
 impl ColId<'_> {
+    /// The source text of the identifier token, without a `UESCAPE` clause.
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 
     /// The name PostgreSQL's scanner gives this identifier: see
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        crate::ident::fold_identifier(self.text())
+        match self {
+            Self::Text(text) => crate::ident::fold_identifier(text.text()),
+            Self::Unicode(ident) => ident.folded(),
+        }
     }
 }
 
 recursa::ast_node! {
-    /// The `U&"..."` identifier before a `UESCAPE` clause
-    /// (`crate::ast::dml::select::UescapedAliasName`). It admits no keyword,
-    /// and it has no escape check of its own: the escape character is the
-    /// one of the clause.
+    /// A Unicode identifier, `U&"d\0061t"`, with an optional escape clause:
+    /// `U&"d!0061t" UESCAPE '!'`.
+    ///
+    /// scan.l lexes `U&"..."` as a `UIDENT` of its own, and `parser.c`
+    /// (`base_yylex`) reads a `UESCAPE` clause after it, decodes the name
+    /// with `str_udeescape` and the escape character of the clause (`\`
+    /// without one), and returns an `IDENT` (REL_17_11 parser.c 238-343). So
+    /// each grammar position that takes an identifier takes this form, and
+    /// `UIDENT` has its own lexical kind here too ([`UidentName`]): after a
+    /// plain identifier, `UESCAPE` is a keyword. After the name, a `UESCAPE`
+    /// is always the clause (`UNICODE_END`), as after a `U&'...'` string. The
+    /// validation hook refuses an incorrect escape of the name.
+    #[parse(prec = UNICODE_END)]
+    #[validate(crate::ast::validation::unicode_ident, flat = crate::ast::validation::unicode_ident_flat)]
+    // A declared classification that reads an identifier reads this form as
+    // the name it decodes to (Recursa `#[classify(via ...)]`): the spelling
+    // is the decoded name as a quoted identifier, which each fold reads as a
+    // name, as `base_yylex` returns an `IDENT`.
+    #[classify(via(name, uescape), spell = crate::ident::unicode_spelling)]
+    #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub struct UnicodeIdent {
+        pub name: UidentName,
+        pub uescape: Option<crate::ast::shared::expr::UescapeSuffix>,
+    }
+}
+
+impl UnicodeIdent<'_> {
+    /// The source text of the escape string of the clause, if there is one.
+    pub fn uescape_text(&self) -> Option<&str> {
+        self.uescape
+            .as_ref()
+            .map(|uescape| uescape.escape_char.text())
+    }
+
+    /// The name PostgreSQL's scanner gives this identifier: the name decoded
+    /// with the escape character of the `UESCAPE` clause, or `\`.
+    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
+        match self.uescape_text() {
+            None => crate::ident::fold_identifier(self.name.text()),
+            Some(uescape) => {
+                let escape = crate::ident::sconst_bytes(uescape)
+                    .and_then(|value| String::from_utf8(value).ok())
+                    .ok_or(crate::ident::FoldError::InvalidEscapeCharacter)?;
+                crate::ident::fold_identifier_with_uescape(self.name.text(), &escape)
+            }
+        }
+    }
+}
+
+recursa::ast_node! {
+    /// The `U&"..."` identifier of a [`UnicodeIdent`] (scan.l `UIDENT`), a
+    /// lexical kind of its own. It admits no keyword, and it has no escape
+    /// check of its own: the escape character is the one of the clause.
     #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub enum UidentName {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+""#,
                 admits(UescapedName)
             )]
             UidentNameText,
@@ -1523,12 +1581,12 @@ impl UidentName<'_> {
 // gram.y `ColLabel`: every keyword class, the `attr_name` after a dot in
 // `qualified_name` and `func_name` indirection.
 recursa::ast_node! {
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_col_label, flat = crate::ast::validation::ident_col_label_flat)]
     pub enum ColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(ColLabel)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1538,6 +1596,11 @@ recursa::ast_node! {
             #[node(omit(Arbitrary))]
             ColLabelText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1545,27 +1608,36 @@ impl ColLabel<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 
     /// The name PostgreSQL's scanner gives this identifier: see
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        crate::ident::fold_identifier(self.text())
+        match self {
+            Self::Text(text) => crate::ident::fold_identifier(text.text()),
+            Self::Unicode(ident) => ident.folded(),
+        }
     }
 }
 
 recursa::ast_node! {
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_non_reserved_word, flat = crate::ast::validation::ident_non_reserved_word_flat)]
     pub enum NonReservedWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(NonReservedWord)
             )]
             NonReservedWordText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1573,29 +1645,38 @@ impl NonReservedWord<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 
     /// The name PostgreSQL's scanner gives this identifier: see
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        crate::ident::fold_identifier(self.text())
+        match self {
+            Self::Text(text) => crate::ident::fold_identifier(text.text()),
+            Self::Unicode(ident) => ident.folded(),
+        }
     }
 }
 
 recursa::ast_node! {
     /// gram.y `RoleSpec` as one word: a `NonReservedWord`, or one of the
     /// reserved keywords `CURRENT_ROLE`, `CURRENT_USER` and `SESSION_USER`.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_role_spec_word, flat = crate::ast::validation::ident_role_spec_word_flat)]
     pub enum RoleSpecWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleSpecWord)
             )]
             RoleSpecWordText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1603,22 +1684,28 @@ impl RoleSpecWord<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 }
 
 recursa::ast_node! {
     #[allow(non_camel_case_types)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     #[validate(crate::ast::validation::ident_type_function_name, flat = crate::ast::validation::ident_type_function_name_flat)]
     pub enum type_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(type_function_name)
             )]
             TypeFunctionNameText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1626,13 +1713,17 @@ impl type_function_name<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 
     /// The name PostgreSQL's scanner gives this identifier: see
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        crate::ident::fold_identifier(self.text())
+        match self {
+            Self::Text(text) => crate::ident::fold_identifier(text.text()),
+            Self::Unicode(ident) => ident.folded(),
+        }
     }
 }
 
@@ -1640,24 +1731,30 @@ recursa::ast_node! {
     /// Unqualified function/table name after reserving `COLLATION FOR (...)` for
     /// its dedicated SQL-standard table-expression production.
     #[allow(non_camel_case_types)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     #[validate(crate::ast::validation::ident_table_function_name, flat = crate::ast::validation::ident_table_function_name_flat)]
     pub enum table_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(TableFunctionName)
             )]
             TableFunctionNameText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
 impl table_function_name<'_> {
-    /// The source text of the identifier token.
+    /// The source text of the identifier token, without a `UESCAPE` clause.
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 }
@@ -1670,16 +1767,21 @@ recursa::ast_node! {
     /// identifier-spelled type: gram.y's `JsonType` takes it, with no type
     /// modifiers.
     #[allow(non_camel_case_types)]
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     #[validate(crate::ast::validation::ident_type_name_ident, flat = crate::ast::validation::ident_type_name_ident_flat)]
     pub enum type_name_ident {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(TypeNameIdent)
             )]
             TypeNameIdentText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1687,21 +1789,27 @@ impl type_name_ident<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 }
 
 recursa::ast_node! {
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     #[validate(crate::ast::validation::ident_bare_col_label, flat = crate::ast::validation::ident_bare_col_label_flat)]
     pub enum BareColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(BareColLabel)
             )]
             BareColLabelText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1709,13 +1817,17 @@ impl BareColLabel<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 
     /// The name PostgreSQL's scanner gives this identifier: see
     /// [`crate::ident::fold_identifier`].
     pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        crate::ident::fold_identifier(self.text())
+        match self {
+            Self::Text(text) => crate::ident::fold_identifier(text.text()),
+            Self::Unicode(ident) => ident.folded(),
+        }
     }
 }
 
@@ -1727,16 +1839,21 @@ recursa::ast_node! {
     /// Every `ColId` spelling of a role-revoke option name except the bare
     /// `ADMIN` keyword, which `crate::ast::utility::grant::RevokeRoleOptionName`
     /// keeps as its own variant so the gate can name the spellings 16 adds.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_role_revoke_option_word, flat = crate::ast::validation::ident_role_revoke_option_word_flat)]
     pub enum RoleRevokeOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleRevokeOptionWord)
             )]
             RoleRevokeOptionWordText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1745,6 +1862,7 @@ impl RoleRevokeOptionWord<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 }
@@ -1757,16 +1875,21 @@ recursa::ast_node! {
     /// Every `ColLabel` spelling of a role-grant option name except the bare
     /// `ADMIN` keyword, which `crate::ast::utility::grant::GrantRoleOptionName`
     /// keeps as its own variant.
-    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[derive(Debug, PartialEq, Eq, Hash)]
     #[validate(crate::ast::validation::ident_role_grant_option_word, flat = crate::ast::validation::ident_role_grant_option_word_flat)]
     pub enum RoleGrantOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleGrantOptionWord)
             )]
             RoleGrantOptionWordText,
         ),
+        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+        /// Sampling never chooses it: few sampled escape strings name a
+        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+        #[omit(Arbitrary)]
+        Unicode(boxed!(crate::tokens::UnicodeIdent)),
     }
 }
 
@@ -1775,6 +1898,7 @@ impl RoleGrantOptionWord<'_> {
     pub fn text(&self) -> &str {
         match self {
             Self::Text(text) => text.text(),
+            Self::Unicode(ident) => ident.name.text(),
         }
     }
 }
@@ -1967,12 +2091,12 @@ pub mod literal {
         /// SQL identifier admitted by PostgreSQL's `IDENT` / non-reserved-word
         /// production. Quoted and unquoted spellings share one lexical base; the
         /// named admission set controls which fixed keywords may occupy it.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_ident, flat = crate::ast::validation::ident_ident_flat)]
         pub enum Ident {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(UnquotedIdent)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1982,6 +2106,11 @@ pub mod literal {
                 #[node(omit(Arbitrary))]
                 IdentText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -1990,13 +2119,17 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 Ident::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
 
         /// The name PostgreSQL's scanner gives this identifier: see
         /// [`crate::ident::fold_identifier`].
         pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-            crate::ident::fold_identifier(self.text())
+            match self {
+                Self::Text(text) => crate::ident::fold_identifier(text.text()),
+                Self::Unicode(ident) => ident.folded(),
+            }
         }
     }
 
@@ -2006,16 +2139,21 @@ pub mod literal {
         /// keywords `ENCODING`, `LOCATION`, `OWNER`, `TABLESPACE` and
         /// `TEMPLATE`. Every other keyword (`WITH`, `SET`, `REFRESH`, ...) is
         /// the statement's own syntax and must not be reclaimed here.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_create_db_opt_word, flat = crate::ast::validation::ident_create_db_opt_word_flat)]
         pub enum CreateDbOptWord {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(CreateDbOptWord)
                 )]
                 CreateDbOptWordText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2024,6 +2162,7 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 CreateDbOptWord::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
@@ -2035,7 +2174,7 @@ pub mod literal {
         /// identifier). Reserved words such as `SELECT`, `TABLE` and
         /// `WITH` stay the statement's own syntax, so `EXPLAIN (SELECT 1)` is a
         /// parenthesized statement and not an option list.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_utility_option_name, flat = crate::ast::validation::ident_utility_option_name_flat)]
         pub enum UtilityOptionName {
             /// `FORMAT` immediately before `JSON`, which `base_yylex` reads as
@@ -2055,11 +2194,16 @@ pub mod literal {
             Format,
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(UtilityOptionName)
                 )]
                 UtilityOptionNameText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2073,30 +2217,37 @@ pub mod literal {
                 #[cfg(feature = "since-pg16")]
                 UtilityOptionName::Format => "format",
                 UtilityOptionName::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
 
     recursa::ast_node! {
         /// gram.y `IDENT`: an identifier that is not a keyword.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_ident_only, flat = crate::ast::validation::ident_ident_only_flat)]
         pub enum IdentOnly {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(IdentOnly)
                 )]
                 IdentOnlyText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
     impl<'input> IdentOnly<'input> {
-        /// The raw text of the identifier.
+        /// The raw text of the identifier, without a `UESCAPE` clause.
         pub fn text(&self) -> &str {
             match self {
                 IdentOnly::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
@@ -2107,16 +2258,21 @@ pub mod literal {
         /// PostgreSQL's `relation_expr_opt_alias` gives the following `SET`
         /// keyword precedence over interpreting it as a bare alias. Quoted
         /// identifiers and every other `ColId` spelling remain available.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_relation_alias_name, flat = crate::ast::validation::ident_relation_alias_name_flat)]
         pub enum RelationAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(RelationAliasName)
                 )]
                 RelationAliasNameText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2125,6 +2281,7 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 RelationAliasName::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
@@ -2136,16 +2293,21 @@ pub mod literal {
         /// parser shifts those continuations before reducing a bare alias; this
         /// admission set encodes that precedence while explicit `AS is` and quoted
         /// `"is"` aliases remain available.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_select_bare_alias_name, flat = crate::ast::validation::ident_select_bare_alias_name_flat)]
         pub enum SelectBareAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(SelectBareAliasName)
                 )]
                 SelectBareAliasNameText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2154,6 +2316,7 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 SelectBareAliasName::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
@@ -2165,16 +2328,21 @@ pub mod literal {
         ///
         /// Modeled as a single-variant enum to preserve the legacy wrapper while
         /// the generated content matcher enforces the named admission set.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_window_ref_name_ident, flat = crate::ast::validation::ident_window_ref_name_ident_flat)]
         pub enum WindowRefNameIdent {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(WindowRefName)
                 )]
                 WindowRefNameText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2183,6 +2351,7 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 WindowRefNameIdent::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }
@@ -2192,12 +2361,12 @@ pub mod literal {
     recursa::ast_node! {
         /// Alias name, including PostgreSQL keywords admitted in bare-label
         /// positions. Quoted and unquoted spellings share the identifier base.
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
         #[validate(crate::ast::validation::ident_alias_name, flat = crate::ast::validation::ident_alias_name_flat)]
         pub enum AliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                    pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(BareAliasName)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_ident_str`) produces realistic random
@@ -2207,6 +2376,11 @@ pub mod literal {
                 #[node(omit(Arbitrary))]
                 AliasNameText,
             ),
+            /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
+            /// Sampling never chooses it: few sampled escape strings name a
+            /// correct escape character (Recursa `#[omit(Arbitrary)]`).
+            #[omit(Arbitrary)]
+            Unicode(boxed!(crate::tokens::UnicodeIdent)),
         }
     }
 
@@ -2215,6 +2389,7 @@ pub mod literal {
         pub fn text(&self) -> &str {
             match self {
                 AliasName::Text(text) => text.text(),
+                Self::Unicode(ident) => ident.name.text(),
             }
         }
     }

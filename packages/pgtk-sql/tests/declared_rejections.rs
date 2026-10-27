@@ -577,3 +577,74 @@ fn a_frame_bound_is_refused_at_its_bound() {
         "SELECT sum(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
     );
 }
+
+/// A declared classification reads `U&"..." UESCAPE 'c'` as the name it
+/// decodes to, as gram.y reads the `IDENT` that `base_yylex` returns: the
+/// role name `none`, an XMLTABLE `path` option, a partitioning strategy and
+/// a JSON encoding (Recursa `#[classify(via ...)]`).
+#[test]
+fn a_classification_reads_a_unicode_identifier_as_its_decoded_name() {
+    assert_postgres_rejection(
+        "GRANT g TO U&\"n!006fne\" UESCAPE '!'",
+        "42939",
+        "role name \"none\" is reserved",
+        "U&\"n!006fne\" UESCAPE '!'",
+    );
+    assert_postgres_rejection(
+        "CREATE ROLE U&\"publi!0063\" UESCAPE '!'",
+        "42939",
+        "role name \"public\" is reserved",
+        "U&\"publi!0063\" UESCAPE '!'",
+    );
+    assert_postgres_rejection(
+        "CREATE ROLE U&\"publi\\0063\"",
+        "42939",
+        "role name \"public\" is reserved",
+        "U&\"publi\\0063\"",
+    );
+    // A decoded `CURRENT_USER` is a name, not the keyword.
+    assert_postgres_accepts("CREATE ROLE U&\"CURRENT_USER\" UESCAPE '!'");
+    assert_postgres_accepts("GRANT g TO U&\"n!006f\" UESCAPE '!'");
+    assert_postgres_rejection(
+        "SELECT * FROM XMLTABLE('/r' PASSING x COLUMNS a int PATH 'a' U&\"p!0061th\" UESCAPE '!' 'b')",
+        "42601",
+        "only one PATH value per column is allowed",
+        "U&\"p!0061th\" UESCAPE '!' 'b'",
+    );
+    // PostgreSQL's message names the option; the rule's static message does
+    // not (`XmlTableColumnOption`).
+    let unrecognized =
+        "SELECT * FROM XMLTABLE('/r' PASSING x COLUMNS a int U&\"p!0061x\" UESCAPE '!' 'b')";
+    assert_declared_rejection(
+        unrecognized,
+        "42601",
+        "unrecognized column option",
+        "U&\"p!0061x\" UESCAPE '!' 'b'",
+    );
+    #[cfg(feature = "postgres-oracle")]
+    assert_eq!(
+        pgtk_oracle::parse_error(unrecognized).as_deref(),
+        Some("unrecognized column option \"pax\""),
+    );
+    #[cfg(feature = "since-pg16")]
+    {
+        assert_postgres_accepts(
+            "CREATE TABLE t (a int) PARTITION BY U&\"l!0069st\" UESCAPE '!' (a)",
+        );
+        let unrecognized = "CREATE TABLE t (a int) PARTITION BY U&\"l!0069\" UESCAPE '!' (a)";
+        assert_declared_rejection(
+            unrecognized,
+            "22023",
+            "unrecognized partitioning strategy",
+            "U&\"l!0069\" UESCAPE '!'",
+        );
+        #[cfg(feature = "postgres-oracle")]
+        assert_eq!(
+            pgtk_oracle::parse_error(unrecognized).as_deref(),
+            Some("unrecognized partitioning strategy \"li\""),
+        );
+        assert_postgres_accepts(
+            "SELECT JSON_OBJECT('a' : 1 RETURNING bytea FORMAT JSON ENCODING U&\"utf!0038\" UESCAPE '!')",
+        );
+    }
+}
