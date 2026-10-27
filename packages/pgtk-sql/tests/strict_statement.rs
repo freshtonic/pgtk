@@ -1018,17 +1018,46 @@ fn narrow_places_keep_the_forms_of_gram_y() {
         "SELECT XMLEXISTS(('a' || 'b') PASSING x)",
         "SELECT JSON_OBJECT(a, b)",
         "SELECT JSON_OBJECT(a => 1)",
+        "SELECT ARRAY[[1], [2]]",
+        "SELECT ARRAY[[], []]",
+        "SELECT ARRAY[]",
+    ]);
+    // Added in 16 (REL_16_15 gram.y `json_object_constructor`): the SQL/JSON
+    // `JSON_OBJECT` and `JSON_OBJECTAGG`. REL_15_19 gram.y has no SQL/JSON.
+    #[cfg(feature = "since-pg16")]
+    assert_accepts(&[
         "SELECT JSON_OBJECT(a : b RETURNING text)",
         "SELECT JSON_OBJECT(DEFAULT : 1)",
         "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
         "SELECT JSON_OBJECTAGG(a VALUE 1)",
-        "SELECT ARRAY[[1], [2]]",
-        "SELECT ARRAY[[], []]",
-        "SELECT ARRAY[]",
+    ]);
+    #[cfg(not(feature = "since-pg16"))]
+    assert_rejects(
+        &[
+            "SELECT JSON_OBJECT(a : b RETURNING text)",
+            "SELECT JSON_OBJECT(DEFAULT : 1)",
+            "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
+            "SELECT JSON_OBJECTAGG(a VALUE 1)",
+        ],
+        "the syntax is added in 16",
+    );
+    // Added in 17 (REL_17_11 gram.y `JSON_QUERY`, `JSON_EXISTS` and
+    // `JSON_TABLE`). REL_16_15 gram.y has none of them.
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&[
         "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
         "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
         "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
     ]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &[
+            "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
+            "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
+        ],
+        "the syntax is added in 17",
+    );
 }
 
 /// A `)` before a set operator closes each form that can end a
@@ -1077,7 +1106,6 @@ fn each_construct_that_ends_in_a_close_can_end_a_set_operand() {
         "SELECT 1 FROM ROWS FROM (f(1)) UNION SELECT 2",
         "SELECT 1 FROM XMLTABLE('/a' PASSING x COLUMNS a int) UNION SELECT 2",
         "SELECT XMLELEMENT(NAME a) UNION SELECT 2",
-        "SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2",
         "SELECT JSON_OBJECT() UNION SELECT 2",
         // The forms that a parenthesized query takes, which gram.y reads
         // through `select_with_parens` (REL_17_11 gram.y 12652-12686).
@@ -1088,6 +1116,15 @@ fn each_construct_that_ends_in_a_close_can_end_a_set_operand() {
         "SELECT * FROM ((SELECT 1) UNION SELECT 2) s",
         "INSERT INTO t (a) (SELECT 1) UNION SELECT 2",
     ]);
+    // Added in 17 (REL_17_11 gram.y `JSON_QUERY`, `JSON_EXISTS` and
+    // `JSON_TABLE`). REL_16_15 gram.y has none of them.
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&["SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2"]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &["SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2"],
+        "the syntax is added in 17",
+    );
 }
 
 /// gram.y `Sconst` is `SCONST`, which scan.l gives for a dollar-quoted
@@ -1180,15 +1217,11 @@ fn statements_that_a_gram_y_action_rejects() {
         "COPY t FROM STDIN WHERE a > 1",
         "COPY (SELECT 1) TO STDOUT",
         "CREATE ROLE r ENCRYPTED PASSWORD 'x'",
-        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
         "CREATE TABLE t (a int REFERENCES p ON UPDATE NO ACTION ON DELETE SET DEFAULT)",
         "CREATE RECURSIVE VIEW v (a) AS SELECT 1",
         "CREATE VIEW v AS SELECT 1 WITH CASCADED CHECK OPTION",
         "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
         "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 1, MODULUS 2)",
-        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
-        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
-        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
         "CREATE TRIGGER t AFTER INSERT OR UPDATE OF a OR DELETE OR TRUNCATE ON x EXECUTE FUNCTION f()",
         "CREATE POLICY p ON t AS PERMISSIVE",
         "CREATE POLICY p ON t AS \"restrictive\"",
@@ -1196,6 +1229,26 @@ fn statements_that_a_gram_y_action_rejects() {
         "ALTER INDEX i ALTER 32767 SET STATISTICS 100",
         "SELECT U&'d!0061t' UESCAPE '!'",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&[
+        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+    ]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &[
+            "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+            "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+            "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+        ],
+        "the syntax is added in 15",
+    );
 }
 
 /// CREATE statement forms that gram.y does not have (issue #57).
@@ -1268,7 +1321,6 @@ fn create_statements_keep_the_forms_of_gram_y() {
         "CREATE RECURSIVE VIEW v (a) WITH (security_barrier) AS SELECT 1",
         "CREATE OR REPLACE TEMP VIEW v (a) AS SELECT 1",
         "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT)",
-        "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))",
         "ALTER TABLE t ADD UNIQUE USING INDEX i",
         "CREATE SCHEMA s CREATE TABLE t (a int) CREATE VIEW v AS SELECT 1",
         "SELECT 1 INTO TEMP TABLE t",
@@ -1279,6 +1331,16 @@ fn create_statements_keep_the_forms_of_gram_y() {
         "CREATE ROLE r LOGIN",
         "CREATE USER u WITH LOGIN SUPERUSER",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&["CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))"]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &["CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))"],
+        "the syntax is added in 15",
+    );
 }
 
 /// ALTER and utility statement forms that gram.y does not have (issue #58).
@@ -1363,7 +1425,6 @@ fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
         "CLUSTER (VERBOSE) t USING i",
         "INSERT INTO t DEFAULT VALUES",
         "INSERT INTO t (a) OVERRIDING USER VALUE VALUES (1)",
-        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s",
         "ALTER INDEX i ALTER 1 SET STATISTICS 100",
         "ALTER INDEX i ALTER a SET (fillfactor = 70)",
         "ALTER TABLE t ALTER a DROP NOT NULL",
@@ -1372,6 +1433,16 @@ fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
         "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
         "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c DO NOTHING",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&["CREATE PUBLICATION p FOR TABLES IN SCHEMA s"]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &["CREATE PUBLICATION p FOR TABLES IN SCHEMA s"],
+        "the syntax is added in 15",
+    );
 }
 
 /// `ALTER TYPE ... SET (...)` takes gram.y `operator_def_list`, whose value is
