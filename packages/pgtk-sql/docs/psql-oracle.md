@@ -17,6 +17,7 @@ crate does.
 | `src/fe_utils/psqlscan.c` | The psql SQL lexer: text runs, interpolation, `;` and the backslash boundary. |
 | `src/bin/psql/psqlscanslash.c` | `psql_scan_slash_command`, the one authority on where a command name ends. |
 | `src/fe_utils/conditional.c` | The `\if` stack that `psqlscanslash.c` refers to. |
+| `src/bin/psql/stringutils.c` | `strtokx`, which reads the arguments of `\copy` as `parse_slash_copy` does. |
 | `src/interfaces/libpq/libpq.a` | `PQExpBuffer` and the multibyte helpers. |
 | `src/common/libpgcommon.a`, `src/port/libpgport.a` | The frontend runtime. |
 
@@ -25,7 +26,8 @@ crate does.
 each interpolation, one for each `;` that submits the query buffer, one for
 each backslash command with the name `psqlscanslash.l` read and the extent and
 value of each of its arguments, one for each inactive `\if` branch whose query
-text psql discards, and whether the document ended with a complete buffer.
+text psql discards, one for each block of COPY data that psql reads from the
+script, and whether the document ended with a complete buffer.
 
 The shim reads the arguments of each command as `HandleSlashCmds` and
 `exec_command` in `command.c` read them: with the same `psql_scan_slash_option`
@@ -40,6 +42,41 @@ branch, and saves and restores the query length and the lexer state as
 `save_query_text_state` and `discard_query_text` do. It runs no other command.
 The passthrough of the lexer is a conditional stack whose only entry is
 inactive, so `psqlscanslash.l` never runs a backquoted shell command.
+
+The shim resets the lexer state (`psql_scan_reset`) where `MainLoop` and
+`command.c` reset it: after a `;` that sends the buffer, after a command that
+ends the buffer, and at `\r` and `\watch`, each in an active branch only. The
+parenthesis depth and the `BEGIN` depth of `psqlscan.l` then start again for
+the next buffer, as in psql.
+
+### COPY data
+
+When psql sends a buffer, it counts the `COPY ... FROM STDIN` commands of the
+buffer: `MainLoop` asks `psql_scan_count_copy_from_stdin` after a `;`, and
+`ExecQueryAndProcessResults` scans the buffer text again after a send command
+such as `\g`. `do_copy` reads one block for `\copy ... from stdin`. For each
+COPY, `handleCopyIn` (`src/bin/psql/copy.c`) reads lines from the script itself,
+not from the lexer: from the line after the line that sent the buffer, up to a
+line that is exactly `\.` and LF or CRLF, or to end of input. psql reads the
+data even when the server refuses the COPY, so that the script stays in step.
+The rest of the line that sent the buffer is SQL text again after the data.
+The rules are the same in each target version.
+
+The shim does the same, with psql's own counts: it reports each block, it lexes
+the rest of the line, and then it continues after the data. These limits
+apply to both sides:
+
+- psql reads a binary COPY (`PQbinaryTuples`) to end of input. The format
+  comes from the server, so both sides read every COPY as text, as psql does
+  when the server refuses the COPY.
+- `\watch` runs the query again and again, and reads the data each time. Both
+  sides read it once.
+- psql reads no data in pipeline mode (from 18). Neither side models pipeline
+  mode, but `\sendpipeline` reads no data.
+- psql reads the rest of the line after the data, with the lexer state at the
+  end of that line, so a string that is open there continues after the data.
+  pgtk-psql lexes each segment between two data regions alone, so the string
+  ends at the data. No document of the corpus has this.
 
 The interpolation events come from psql's own `get_variable` callback. That
 matters: the oracle reports what the scanner recognised, not what a second
@@ -126,14 +163,16 @@ rather than by a written expectation.
 
 ### What is compared
 
-Five facts, for each document, unbound and then with every variable psql
+Six facts, for each document, unbound and then with every variable psql
 recognised bound to an inert value:
 
 - the text forwarded to the server;
 - the extent and name of each interpolation in SQL text;
-- the extent of each query-buffer boundary;
-- the extent of each backslash command and of each of its arguments; and
-- whether the document ends with a complete buffer.
+- the extent of each query-buffer boundary (pgtk-psql's
+  `Rendered::boundaries`);
+- the extent of each backslash command and of each of its arguments;
+- the extent of the rows and of the `\.` line of each block of COPY data; and
+- whether the document ends with a complete buffer (`Rendered::is_complete`).
 
 The oracle's text is composed the way pgtk-psql composes its own: a send command
 becomes the `;` that separates the two statements it stands between, a
@@ -166,42 +205,53 @@ that fits none of them is `unclassified`, which fails the test.
 
 | Class | Why |
 |---|---|
-| `copy-data` | The document holds `COPY ... FROM STDIN` or `\copy ... from stdin`, and an unknown command. psql reads the data lines after the command itself, up to `\.`. Neither side reads them as data: both read them as psql text, where `\N` and `\.` are unknown commands, and the two read an unknown command differently (the next class). |
 | `unknown-command` | The document holds a name that is not a command of the target version. psql reports an error and drops the rest of the line. pgtk-psql keeps the name only, as `MetaCommand::Unknown`, and forwards it, so that the server SQL shows the error. Before 15 `\getenv` is unknown, so each corpus file that uses it is here. |
-| `boundary-suppressed-by-nesting` | psql suppresses the `;` boundary inside parentheses and inside a tracked `BEGIN ... END` block of a `CREATE FUNCTION` (`psqlscan.l` 650, `psqlscan_is_create_routine`). pgtk-psql tracks neither, because it renders one string for the whole document rather than splitting it into submissions, so it only ever has more boundaries than psql. The forwarded text is the same. |
-| `open-lexical-region` | The document reaches end of input inside a string, a quoted identifier, a dollar-quoted body or a comment. psql asks for another line. pgtk-psql runs each such region to end of input as one opaque token, so the forwarded text and the interpolations agree, but it has no notion of an open query buffer (freshtonic/pg-sql#11), so every one of these documents disagrees on `complete` only. See "What the oracle found" (ADR 0007, freshtonic/recursa#131, freshtonic/pg-sql#89). |
 | `refused` | pgtk-psql refuses a document for any other reason. The list is empty at every target version. |
 
 The classes `unmodelled-meta-command` and `send-command-arguments` are gone.
 pgtk-psql reads every meta-command with its arguments now (freshtonic/pgtk#42,
-ADR 0013).
+ADR 0013). The classes `boundary-suppressed-by-nesting`, `open-lexical-region`
+and `copy-data` are gone too. pgtk-psql keeps psqlscan.l's parenthesis and
+`BEGIN` depths and tells where the buffer is open at end of input
+(freshtonic/pgtk#6), and it reads the COPY data as psql does
+(freshtonic/pgtk#9).
 
 ### Outcomes by target version
 
-| Feature | Documents | Agree | `copy-data` | `unknown-command` | `boundary-suppressed-by-nesting` | `open-lexical-region` |
-|---|---|---|---|---|---|---|
-| `pg14` | 327 | 266 | 22 | 25 | 8 | 6 |
-| `pg15` | 327 | 287 | 22 | 6 | 8 | 4 |
-| `pg16` | 327 | 287 | 22 | 6 | 8 | 4 |
-| `pg17` | 327 | 288 | 22 | 5 | 8 | 4 |
-| `pg18` | 336 | 297 | 22 | 5 | 8 | 4 |
-| `pg19-beta` | 336 | 297 | 22 | 5 | 8 | 4 |
+| Feature | Documents | Agree | `unknown-command` |
+|---|---|---|---|
+| `pg14` | 364 | 332 | 32 |
+| `pg15` | 364 | 356 | 8 |
+| `pg16` | 364 | 356 | 8 |
+| `pg17` | 364 | 357 | 7 |
+| `pg18` | 373 | 366 | 7 |
+| `pg19-beta` | 373 | 366 | 7 |
 
 Before freshtonic/pgtk#42, 104 or 105 documents of each version were
-`unmodelled-meta-command` gaps and 182 documents agreed at `pg17`.
+`unmodelled-meta-command` gaps and 182 documents agreed at `pg17`. Before
+freshtonic/pgtk#6 and freshtonic/pgtk#9, each version had 22 `copy-data`
+gaps, 8 `boundary-suppressed-by-nesting` gaps and 4 `open-lexical-region` gaps
+(6 at `pg14`), with 327 documents (336 from 18).
+
+Two corpus files were `copy-data` gaps and are `unknown-command` gaps now.
+`copyselect.sql` line 44 is `copy (select * from test1) from stdin;`, which
+the server refuses. psqlscan.l reads words, not grammar, so psql reads the
+lines after it as COPY data, up to the first `\.` line, at line 92. The second
+data block of line 90 is then psql text, where `\.` is an unknown command.
+`psql.sql` holds `\lo` with arguments, which is an unknown command.
 
 These differences across the six have a cause:
 
 - `pg18` and `pg19-beta` have nine more documents, the pipeline and
   prepared-statement commands of 18. All nine agree.
+- 37 shaped documents test the query-buffer boundaries and the COPY data of
+  freshtonic/pgtk#6 and freshtonic/pgtk#9. All of them agree at each version.
 - Before 17 a vertical tab does not end a command name in `psqlscanslash.l`,
   so `\g<VT>x` is one unknown command rather than `\g` with an argument
   (`docs/research/psql-14-19-syntax-changes.md`, item A4). The shaped document
   `name/vertical-tab` is an `unknown-command` gap before 17 and agrees from 17.
 - `pg14` has no `\getenv` (added in 15), so 18 corpus files that use it (and
   hold no COPY data) and `shaped/name/getenv` are `unknown-command` gaps.
-- `pg14` has two more `open-lexical-region` documents: `number/exponent-string`
-  and `number/param-junk`. See below.
 
 ## What the oracle found
 
@@ -233,16 +283,25 @@ at end of input, which is exactly psqlscan.l's `<<EOF>>` case
 result as closed matchers with `unterminated = to_end_of_input`
 (freshtonic/recursa#131).
 
-So every `open-lexical-region` document now disagrees on `complete` only:
-`shaped/open/string`, `shaped/open/quoted-identifier`,
-`shaped/open/dollar-quote` and `shaped/open/block-comment` at every version,
-and `shaped/number/exponent-string` and `shaped/number/param-junk` at `pg14`.
-From 15 the two number documents agree, because `1e` is one trailing-junk
-token in both and no escape string is opened.
+So the documents that end inside an open region disagreed on `complete`
+only. `Rendered::is_complete` now tells that the buffer is open there, and
+they agree (freshtonic/pgtk#6).
 
-The rest of the gaps are the documented limits: at `pg17`, 22 documents hold
-COPY data, 5 hold an unknown command, 8 hold a `;` psql suppresses inside
-parentheses or a `BEGIN ... END` block, and 4 end inside an open region.
+**A `;` in parentheses or in a `BEGIN ... END` body was a boundary, and is not
+now.** psqlscan.l ends the buffer at a `;` only when its parenthesis depth and
+its `BEGIN` depth are zero, and it counts `BEGIN`, `CASE` and `END` only in a
+`CREATE [OR REPLACE] {FUNCTION|PROCEDURE}` (`psqlscan_track_identifier`).
+`pgtk-psql/src/scan_state.rs` keeps the same state over the tokens, and
+`Rendered::boundaries` gives only the boundaries that psql has. Eight
+documents of each version disagreed for this reason (freshtonic/pgtk#6).
+
+**COPY data was read as psql text, and is not now.** Both sides read the
+lines after a `COPY ... FROM STDIN` as SQL text, where `\N` and `\.` are
+unknown commands. 22 documents of each version disagreed for this reason. Both
+sides now read the data as psql does (freshtonic/pgtk#9).
+
+The rest of the gaps are the documented limit: at `pg17`, 7 documents hold an
+unknown command.
 
 **Arguments were read to the end of the line, and are not now.** The oracle
 used to resume SQL lexing at the line break after a command name. That was

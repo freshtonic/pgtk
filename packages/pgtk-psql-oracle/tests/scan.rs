@@ -279,12 +279,38 @@ fn an_open_lexical_region_leaves_the_buffer_incomplete() {
 }
 
 #[test]
-fn copy_from_stdin_is_counted() {
+fn copy_data_is_read_from_the_script_and_not_lexed() {
+    // The data starts on the line after the `;`, and the rest of that line is
+    // SQL text again after the data.
+    let source = "COPY t FROM STDIN; SELECT 1;\n1\t:v\n\\.\nSELECT 2;";
+    let scanned = scan(source, &[]);
     assert_eq!(
-        scan("COPY t FROM STDIN;\n1\n\\.\n", &[]).copy_from_stdin(),
-        1
+        scanned.copy_data().collect::<Vec<_>>(),
+        [(29..34, Some(34..37))]
     );
-    assert_eq!(scan("SELECT 1;", &[]).copy_from_stdin(), 0);
+    assert_eq!(scanned.sql(), "COPY t FROM STDIN; SELECT 1;\nSELECT 2;");
+    assert!(
+        !scanned
+            .events()
+            .iter()
+            .any(|event| matches!(event, Event::Interpolation { .. }))
+    );
+
+    // `\copy ... from stdin` reads its data in the same way.
+    let scanned = scan("\\copy t from stdin\n1\n\\.\nSELECT 2;", &[]);
+    assert_eq!(
+        scanned.copy_data().collect::<Vec<_>>(),
+        [(19..21, Some(21..24))]
+    );
+
+    // With no `\.` line, the data runs to the end of input.
+    let scanned = scan("COPY t FROM STDIN;\n1\n \\.\n\\.", &[]);
+    assert_eq!(scanned.copy_data().collect::<Vec<_>>(), [(19..27, None)]);
+
+    // COPY TO and COPY FROM a file read no data.
+    for source in ["COPY t TO STDOUT;\n1\n", "COPY t FROM 'f';\n1\n"] {
+        assert_eq!(scan(source, &[]).copy_data().count(), 0, "{source:?}");
+    }
 }
 
 #[test]

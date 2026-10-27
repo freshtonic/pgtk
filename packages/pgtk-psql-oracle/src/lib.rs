@@ -26,7 +26,9 @@
 //!   `psqlscanslash.l` reads it, and the extent and value of each argument
 //!   that `psql_scan_slash_option` reads for it;
 //! - one event each time psql discards the query text of an inactive `\if`
-//!   branch; and
+//!   branch;
+//! - one event for each block of COPY data that psql reads from the script
+//!   after a `COPY ... FROM STDIN` or a `\copy ... from stdin`; and
 //! - a final event saying whether the document ended with a complete query
 //!   buffer, and if not, which lexical state was still open.
 //!
@@ -41,8 +43,10 @@
 //! psql reads one line at a time and resets the query buffer after every
 //! submission. pgtk-psql renders one buffer for a whole document. The shim
 //! therefore scans the SQL text of the whole document as one input and never
-//! resets the buffer, so that the two texts are comparable. `csrc/psql_oracle.c`
-//! documents both, and `docs/psql-oracle.md` records what each one costs.
+//! resets the buffer, so that the two texts are comparable. It resets the
+//! lexer state where psql resets it, and it reads COPY data from the script
+//! and not with the lexer, as psql does. `csrc/psql_oracle.c` documents these
+//! changes, and `docs/psql-oracle.md` records what each one costs.
 
 #[cfg(feature = "scanner")]
 use std::ffi::CStr;
@@ -79,7 +83,6 @@ struct RawScan {
     capacity: c_int,
     sql: *mut c_char,
     sql_len: c_int,
-    copy_from_stdin: c_int,
 }
 
 #[cfg(feature = "scanner")]
@@ -146,12 +149,9 @@ impl Prompt {
     /// Whether the document ended inside a string, a comment, a dollar-quoted
     /// body or a quoted identifier.
     ///
-    /// psql tolerates this and asks for another line. pgtk-psql has no notion
-    /// of an open query buffer at all (ADR 0007, freshtonic/recursa#131): a
-    /// comment or a dollar-quoted body now runs its closed matcher to end of
-    /// input instead, and a string or a quoted identifier still refuses the
-    /// document. Either way this is the oracle's side of that deliberate
-    /// divergence.
+    /// psql tolerates this and asks for another line. pgtk-psql runs such a
+    /// region to end of input as one token, and `Rendered::is_complete` tells
+    /// that the buffer is open (ADR 0007).
     pub fn is_open_lexical_region(self) -> bool {
         matches!(
             self,
@@ -273,6 +273,15 @@ pub enum Event {
         /// Each argument that `psql_scan_slash_option` read, in order.
         options: Vec<SlashOption>,
     },
+    /// A block of COPY data, which psql reads from the script itself
+    /// (`handleCopyIn` in `src/bin/psql/copy.c`) and does not lex.
+    CopyData {
+        /// The data lines, line endings included.
+        rows: Range<usize>,
+        /// The `\.` line and its line ending. `None` when the data runs to
+        /// the end of the document.
+        end: Option<Range<usize>>,
+    },
     /// psql discarded the query text of an inactive `\if` branch
     /// (`discard_query_text` in `command.c`). The oracle keeps that text in
     /// [`Scan::sql`], so that the offsets of the other events stay valid;
@@ -302,7 +311,6 @@ pub struct SlashOption {
 pub struct Scan {
     sql: String,
     events: Vec<Event>,
-    copy_from_stdin: usize,
 }
 
 impl Scan {
@@ -321,11 +329,12 @@ impl Scan {
         &self.events
     }
 
-    /// How many `COPY ... FROM STDIN` commands psqlscan.l counted. psql reads
-    /// the data lines that follow one of these itself; this oracle and
-    /// pgtk-psql both lex them as ordinary text.
-    pub fn copy_from_stdin(&self) -> usize {
-        self.copy_from_stdin
+    /// The blocks of COPY data, as `(rows, end)` pairs in document order.
+    pub fn copy_data(&self) -> impl Iterator<Item = (Range<usize>, Option<Range<usize>>)> + '_ {
+        self.events.iter().filter_map(|event| match event {
+            Event::CopyData { rows, end } => Some((rows.clone(), end.clone())),
+            _ => None,
+        })
     }
 
     /// Whether the document ended with a complete query buffer.
@@ -431,11 +440,7 @@ unsafe fn read_scan(raw: &RawScan, source_len: usize) -> Scan {
         events.push(read_event(raw, source_len));
     }
 
-    Scan {
-        sql,
-        events,
-        copy_from_stdin: raw.copy_from_stdin as usize,
-    }
+    Scan { sql, events }
 }
 
 #[cfg(feature = "scanner")]
@@ -507,6 +512,10 @@ fn read_event(event: &RawEvent, source_len: usize) -> Event {
                 options: Vec::new(),
             }
         }
+        8 => Event::CopyData {
+            rows: source(event.source_start, event.source_end),
+            end: (event.output_start >= 0).then(|| source(event.output_start, event.output_end)),
+        },
         7 => Event::Discard {
             output: (event.output_start as usize)..(event.output_end as usize),
         },
