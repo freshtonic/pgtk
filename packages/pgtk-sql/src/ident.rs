@@ -92,7 +92,7 @@ pub fn fold_identifier_with_uescape<'a>(
     raw: &'a str,
     uescape: &str,
 ) -> Result<Folded<'a>, FoldError> {
-    let escape = escape_byte(uescape)?;
+    let escape = escape_byte(uescape.as_bytes())?;
     let name = if let Some(inner) = delimited(raw, 0) {
         if inner.is_empty() {
             return Err(FoldError::ZeroLength);
@@ -183,23 +183,165 @@ pub fn fold_keyword(kind: crate::TokenKind) -> Option<Folded<'static>> {
 }
 
 /// Classify the source text of the string after `UESCAPE` for the
-/// `UESCAPE` rule of `parser.c` (`base_yylex`): `"valid"` when the string is
-/// one character that `check_uescapechar` admits, else `"invalid"`.
+/// `UESCAPE` rule of `parser.c` (`base_yylex`): `"valid"` when the value of
+/// the string is one byte that `check_uescapechar` admits, else `"invalid"`.
 ///
-/// The text is a plain `'...'` string, in which `''` stands for one `'`.
+/// The text is a spelling of `crate::ast::shared::expr::UescapeString`; its
+/// value is [`sconst_bytes`].
 pub fn uescape_class(raw: &str) -> Option<&'static str> {
-    let inner = raw.strip_prefix('\'')?.strip_suffix('\'')?;
-    let value = inner.replace("''", "'");
-    Some(if escape_byte(&value).is_ok() {
-        "valid"
-    } else {
-        "invalid"
-    })
+    let valid = sconst_bytes(raw).is_some_and(|value| escape_byte(&value).is_ok());
+    Some(if valid { "valid" } else { "invalid" })
+}
+
+/// The value of an `SCONST` token as `scan.l` builds it, in bytes.
+///
+/// The spellings are the plain `'...'` string, a continued string
+/// (`quotecontinue`: more `'...'` parts after a newline), an `E'...'` string
+/// (also continued, with the escapes of `xe` in each part) and a
+/// dollar-quoted string. The result is `None` for another spelling, and for
+/// an `E'...'` escape that `scan.l` refuses (`xeunicodefail`, a code point
+/// that is not valid, or a surrogate that is not in a pair).
+///
+/// pgtk-sql lexes as if `standard_conforming_strings` is on, so a backslash
+/// in a plain string is an ordinary character.
+pub fn sconst_bytes(raw: &str) -> Option<Vec<u8>> {
+    match raw.as_bytes().first()? {
+        b'\'' => quoted_parts(raw.as_bytes(), false),
+        b'E' | b'e' => quoted_parts(&raw.as_bytes()[1..], true),
+        b'$' => {
+            let close = raw[1..].find('$')? + 1;
+            let tag = &raw[..=close];
+            let body = raw[close + 1..].strip_suffix(tag)?;
+            Some(body.as_bytes().to_vec())
+        }
+        _ => None,
+    }
+}
+
+/// The parts of a (continued) quoted string, joined. `escapes` selects the
+/// `xe` rules (`E'...'`); else `''` is the one escape (`xq`).
+fn quoted_parts(bytes: &[u8], escapes: bool) -> Option<Vec<u8>> {
+    let mut value = Vec::new();
+    let mut at = 0;
+    loop {
+        if bytes.get(at) != Some(&b'\'') {
+            return None;
+        }
+        at += 1;
+        loop {
+            match *bytes.get(at)? {
+                b'\'' if bytes.get(at + 1) == Some(&b'\'') => {
+                    value.push(b'\'');
+                    at += 2;
+                }
+                b'\'' => {
+                    at += 1;
+                    break;
+                }
+                b'\\' if escapes => at = escape(bytes, at, &mut value)?,
+                byte => {
+                    value.push(byte);
+                    at += 1;
+                }
+            }
+        }
+        // The gap before a continuation: white space and `--` comments. The
+        // lexer has already found that it holds a newline.
+        while at < bytes.len() && bytes[at] != b'\'' {
+            if bytes[at..].starts_with(b"--") {
+                while at < bytes.len() && !matches!(bytes[at], b'\n' | b'\r') {
+                    at += 1;
+                }
+            } else if is_scanner_space(bytes[at]) {
+                at += 1;
+            } else {
+                return None;
+            }
+        }
+        if at == bytes.len() {
+            return Some(value);
+        }
+    }
+}
+
+/// One `xe` escape at `bytes[at]` (a backslash): `xeoctesc`, `xehexesc`,
+/// `xeunicode` or `xeescape` (`unescape_single_char`). Returns the offset
+/// after it.
+fn escape(bytes: &[u8], at: usize, value: &mut Vec<u8>) -> Option<usize> {
+    let next = *bytes.get(at + 1)?;
+    let digits = |from: usize, max: usize, radix: u32| {
+        bytes[from..]
+            .iter()
+            .take(max)
+            .take_while(|byte| char::from(**byte).is_digit(radix))
+            .count()
+    };
+    let number = |from: usize, len: usize, radix: u32| {
+        u32::from_str_radix(std::str::from_utf8(&bytes[from..from + len]).ok()?, radix).ok()
+    };
+    match next {
+        b'0'..=b'7' => {
+            let len = digits(at + 1, 3, 8);
+            // `unsigned char c = strtoul(...)`: the value is cut to one byte.
+            value.push(number(at + 1, len, 8)? as u8);
+            Some(at + 1 + len)
+        }
+        b'x' if digits(at + 2, 2, 16) > 0 => {
+            let len = digits(at + 2, 2, 16);
+            value.push(number(at + 2, len, 16)? as u8);
+            Some(at + 2 + len)
+        }
+        b'u' | b'U' => {
+            let len = if next == b'u' { 4 } else { 8 };
+            if digits(at + 2, len, 16) != len {
+                return None; // `xeunicodefail`
+            }
+            let mut code = number(at + 2, len, 16)?;
+            let mut end = at + 2 + len;
+            if (0xD800..0xDC00).contains(&code) {
+                // `xeunicode` in state `xeu`: a low surrogate must follow.
+                if bytes.get(end) != Some(&b'\\') {
+                    return None;
+                }
+                let len = match bytes.get(end + 1)? {
+                    b'u' => 4,
+                    b'U' => 8,
+                    _ => return None,
+                };
+                if digits(end + 2, len, 16) != len {
+                    return None;
+                }
+                let low = number(end + 2, len, 16)?;
+                if !(0xDC00..0xE000).contains(&low) {
+                    return None;
+                }
+                code = 0x10000 + ((code - 0xD800) << 10) + (low - 0xDC00);
+                end += 2 + len;
+            }
+            let character = char::from_u32(code).filter(|c| *c != '\0')?;
+            value.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+            Some(end)
+        }
+        _ => {
+            // `unescape_single_char`. `\v` is an escape from 17 (REL_17_11
+            // scan.l 1420; REL_16_15 scan.l has no `case 'v'`).
+            value.push(match next {
+                b'b' => 0x08,
+                b'f' => 0x0c,
+                b'n' => b'\n',
+                b'r' => b'\r',
+                b't' => b'\t',
+                b'v' if cfg!(feature = "since-pg17") => 0x0b,
+                other => other,
+            });
+            Some(at + 2)
+        }
+    }
 }
 
 /// `check_uescapechar` (`parser.c`), after `strlen(escstr) != 1`.
-fn escape_byte(uescape: &str) -> Result<u8, FoldError> {
-    match uescape.as_bytes() {
+fn escape_byte(uescape: &[u8]) -> Result<u8, FoldError> {
+    match uescape {
         [byte]
             if !(byte.is_ascii_hexdigit()
                 || matches!(byte, b'+' | b'\'' | b'"')

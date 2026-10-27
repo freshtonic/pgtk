@@ -1874,3 +1874,114 @@ fn a_createdb_option_number_takes_a_float_from_15() {
         assert_rejects(&wide, "a createdb option number is a SignedIconst at 14");
     }
 }
+
+/// scan.l `<xb,xh,xq,xe,xus>{quote}` (REL_17_11 scan.l 588-606) looks for a
+/// `quotecontinue` after each string kind, so an escape, a bit, a hex and a
+/// Unicode string continue over a newline as one constant, as a plain string
+/// does. The continued part keeps the rules of the first part: in
+/// `E'a'` newline `'\''` the `\'` is an escaped quote. A continuation needs a
+/// newline, takes no block comment, and starts with a plain quote.
+#[test]
+fn each_string_kind_continues_over_a_newline() {
+    assert_accepts(&[
+        "SELECT E'a'\n'b'",
+        "SELECT E'a'\n'\\''",
+        "SELECT E'a' -- c\n  'b'\n'c'",
+        "SELECT E'\\\n'",
+        "SELECT B'1'\n'0'",
+        "SELECT B'1'\n'0'\n'1'",
+        "SELECT X'1'\n'F'",
+        "SELECT U&'a'\n'b'",
+        "SELECT U&'a'\n'!0061' UESCAPE '!'",
+        "SELECT date E'a'\n'b'",
+        "SELECT f(3) E'x'\n'y'",
+        "COPY t FROM E'a'\n'b'",
+        "SELECT X'1'\n'F' :: int",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT 'a'\nE'b'",
+            "SELECT E'a' /* c */\n'b'",
+            "SELECT B'1' '0'",
+            "SELECT E'a' 'b'",
+            "SELECT U&'a'\nU&'b'",
+        ],
+        "a continuation needs a newline and a plain quote",
+    );
+}
+
+/// `base_yylex` (`parser.c`) reads the string after `UESCAPE` with
+/// `core_yylex` and asks for an `SCONST` (REL_17_11 parser.c 268-274): a
+/// plain, a continued, an escape or a dollar-quoted string. The escape
+/// character is the value of the string.
+#[test]
+fn uescape_takes_each_simple_string_spelling() {
+    assert_accepts(&[
+        "SELECT U&'x' UESCAPE E'!'",
+        "SELECT U&'x' UESCAPE $$!$$",
+        "SELECT U&'x' UESCAPE $t$!$t$",
+        "SELECT U&'x' UESCAPE E'\\x21'",
+        "SELECT U&'x' UESCAPE E'\\041'",
+        "SELECT U&'x' UESCAPE E'\\u0021'",
+        "SELECT U&'x' UESCAPE ''\n'!'",
+        "SELECT 1 AS U&\"x\" UESCAPE E'!'",
+        "SELECT 1 AS U&\"x\" UESCAPE $$!$$",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT U&'x' UESCAPE U&'!'",
+            "SELECT U&'x' UESCAPE B'1'",
+            "SELECT U&'x' UESCAPE E'!!'",
+            "SELECT U&'x' UESCAPE '!'\n'!'",
+            "SELECT U&'x' UESCAPE E'\\''",
+            "SELECT U&'x' UESCAPE $$ $$",
+        ],
+        "the UESCAPE string is no SCONST, or its value is no escape character",
+    );
+}
+
+/// `\v` is an escape of `E'...'` from 17 (REL_17_11 scan.l 1420; REL_16_15
+/// scan.l `unescape_single_char` has no `case 'v'`). Before 17 it is `v`,
+/// which is a valid escape character; from 17 it is a vertical tab, which
+/// is white space.
+#[test]
+fn the_v_escape_of_an_escape_string_follows_the_version() {
+    let source = "SELECT U&'x' UESCAPE E'\\v'";
+    if cfg!(feature = "since-pg17") {
+        assert_rejects(&[source], "a vertical tab is no escape character");
+    } else {
+        assert_accepts(&[source]);
+    }
+}
+
+/// gram.y `NonReservedWord_or_Sconst` (REL_17_11 gram.y 1885) is a string
+/// constant or a word that is not a reserved keyword. `ALTER EXTENSION ...
+/// UPDATE TO`, `CREATE EXTENSION ... VERSION` and the `FOR` provider of
+/// `SECURITY LABEL` take it (`alter_extension_opt_item`,
+/// `create_extension_opt_item`, `opt_provider`).
+#[test]
+fn a_non_reserved_word_or_sconst_takes_each_word_and_string() {
+    assert_accepts(&[
+        "ALTER EXTENSION e UPDATE TO v2",
+        "ALTER EXTENSION e UPDATE TO \"2.0\"",
+        "ALTER EXTENSION e UPDATE TO int",
+        "ALTER EXTENSION e UPDATE TO E'2'",
+        "CREATE EXTENSION e VERSION v2",
+        "CREATE EXTENSION e VERSION int",
+        "SECURITY LABEL FOR selinux ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR \"p\" ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR int ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR left ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR E'p' ON TABLE t IS 'x'",
+    ]);
+    assert_rejects(
+        &[
+            "ALTER EXTENSION e UPDATE TO select",
+            "CREATE EXTENSION e VERSION select",
+            "CREATE EXTENSION e VERSION table",
+            "SECURITY LABEL FOR select ON TABLE t IS 'x'",
+            "SECURITY LABEL FOR 1 ON TABLE t IS 'x'",
+        ],
+        "a reserved keyword is no NonReservedWord",
+    );
+}

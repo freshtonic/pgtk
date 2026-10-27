@@ -18,13 +18,14 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// `VERSION { sconst | ident }` option on `CREATE EXTENSION`. Postgres'
-    /// `NonReservedWord_or_Sconst` allows either a quoted string or a bareword.
+    /// An extension version: gram.y `NonReservedWord_or_Sconst`, a string
+    /// constant or a word that is not a reserved keyword (REL_17_11 gram.y
+    /// 1885). `CREATE EXTENSION ... VERSION` and `ALTER EXTENSION ... UPDATE
+    /// TO` take it (`create_extension_opt_item`, `alter_extension_opt_item`).
     #[derive(Debug)]
     pub enum ExtensionVersionValue {
         String(Sconst),
-        /// Any bareword (incl. soft keywords) — `NonReservedWord`.
-        Word(literal::AliasName),
+        Word(crate::tokens::NonReservedWord),
     }
 }
 
@@ -77,14 +78,12 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// `TO version` (`NonReservedWord_or_Sconst`) — the version target on
-    /// `ALTER EXTENSION name UPDATE`. Postgres' `alter_extension_opt_item`.
-    ///
-    /// pgtk-sql accepts `TO sconst` (a string literal); the bare-identifier
-    /// form is not exercised by the corpus.
+    /// `ALTER EXTENSION name UPDATE`. Postgres' `alter_extension_opt_item`
+    /// (REL_17_11 gram.y 5183).
     #[derive(Debug)]
     pub struct AlterExtensionUpdateTo {
         #[tok(TO, this)]
-        pub version: crate::ast::shared::expr::Sconst,
+        pub version: ExtensionVersionValue,
     }
 }
 
