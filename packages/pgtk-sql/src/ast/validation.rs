@@ -1174,6 +1174,50 @@ current_schema_hooks! {
     current_schema_update_table_alias_with_as, current_schema_update_table_alias_with_as_flat, crate::ast::dml::update::UpdateTableAliasWithAs, crate::ast::dml::update::FlatUpdateTableAliasWithAs, name, 0;
     current_schema_insert_column_item, current_schema_insert_column_item_flat, crate::ast::dml::insert::InsertColumnItem, crate::ast::dml::insert::FlatInsertColumnItem, name, 0;
     current_schema_column_def, current_schema_column_def_flat, crate::ast::ddl::table::ColumnDef, crate::ast::ddl::table::FlatColumnDef, name, 0;
+    current_schema_func_table_column_def, current_schema_func_table_column_def_flat, crate::ast::dml::select::FuncTableColumnDef, crate::ast::dml::select::FlatFuncTableColumnDef, name, 0;
+    current_schema_cte_definition, current_schema_cte_definition_flat, crate::ast::shared::with_clause::CteDefinition, crate::ast::shared::with_clause::FlatCteDefinition, name, 0;
+    current_schema_join_using_alias, current_schema_join_using_alias_flat, crate::ast::dml::select::JoinUsingAlias, crate::ast::dml::select::FlatJoinUsingAlias, name, 0;
+}
+
+/// The source text of a flat `AliasName`.
+fn flat_alias_name_text<'a, R: recursa::__private::FlatNode>(
+    name: FlatAliasName,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    let FlatAliasName::Text(text) = name;
+    ast[text].as_str()
+}
+
+/// The column names of a table alias, a CTE, a view, a materialized view, a
+/// CREATE TABLE AS and a JOIN USING are gram.y `name_list` and `columnList`,
+/// lists of `ColId` (REL_17_11 gram.y `alias_clause`, `opt_name_list`,
+/// `opt_column_list`, `join_qual`), so each refuses an unquoted
+/// `CURRENT_SCHEMA` (`AS x (current_schema)`).
+macro_rules! current_schema_list_hooks {
+    ($($hook:ident, $hook_flat:ident, $ty:path, $flat:path, $field:tt, $text:ident;)*) => {$(
+        #[doc = concat!("`CURRENT_SCHEMA` is no `ColId` in `", stringify!($ty), "`.")]
+        pub fn $hook(list: &$ty) -> Result<(), Refusal> {
+            list.$field
+                .iter()
+                .try_for_each(|name| current_schema_refusal(name.text(), 0))
+        }
+
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(list: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            ast[list.$field]
+                .iter()
+                .try_for_each(|&name| current_schema_refusal($text(ast[name], ast), 0))
+        }
+    )*};
+}
+
+current_schema_list_hooks! {
+    current_schema_table_alias_columns, current_schema_table_alias_columns_flat, crate::ast::dml::select::TableAliasColumnList, crate::ast::dml::select::FlatTableAliasColumnList, 0, flat_col_id_text;
+    current_schema_cte_columns, current_schema_cte_columns_flat, crate::ast::shared::with_clause::CteColumnList, crate::ast::shared::with_clause::FlatCteColumnList, 0, flat_alias_name_text;
+    current_schema_view_columns, current_schema_view_columns_flat, crate::ast::ddl::view::CreateViewColumnList, crate::ast::ddl::view::FlatCreateViewColumnList, 0, flat_alias_name_text;
+    current_schema_mat_view_columns, current_schema_mat_view_columns_flat, crate::ast::ddl::materialized_view::CreateMatViewColumnList, crate::ast::ddl::materialized_view::FlatCreateMatViewColumnList, 0, flat_col_id_text;
+    current_schema_ctas_columns, current_schema_ctas_columns_flat, crate::ast::ddl::table::CtasColumnList, crate::ast::ddl::table::FlatCtasColumnList, columns, flat_col_id_text;
+    current_schema_join_using_columns, current_schema_join_using_columns_flat, crate::ast::dml::select::JoinUsingColumns, crate::ast::dml::select::FlatJoinUsingColumns, 0, flat_col_id_text;
 }
 
 /// A bare `current_schema` is gram.y `SQLValueFunction`, which takes no
@@ -1239,6 +1283,36 @@ pub fn current_schema_named_table_ref_flat(
             current_schema_refusal(raw, 0)
         }
         _ => Ok(()),
+    }
+}
+
+/// The column names of a function table alias (gram.y `alias_clause:
+/// ... '(' name_list ')'`) are `ColId`s, so each refuses an unquoted
+/// `CURRENT_SCHEMA`. The column definitions refuse it in
+/// [`current_schema_func_table_column_def`].
+pub fn current_schema_func_table_alias_columns(
+    list: &crate::ast::dml::select::FuncTableAliasColumnList<'_>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::FuncTableAliasColumnList;
+    match list {
+        FuncTableAliasColumnList::Names(names) => names
+            .iter()
+            .try_for_each(|name| current_schema_refusal(name.text(), 0)),
+        FuncTableAliasColumnList::Definitions(_) => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_func_table_alias_columns`].
+pub fn current_schema_func_table_alias_columns_flat(
+    list: &crate::ast::dml::select::FlatFuncTableAliasColumnList,
+    ast: &FlatAst<'_, crate::ast::dml::select::FlatFuncTableAliasColumnList>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::FlatFuncTableAliasColumnList;
+    match list {
+        FlatFuncTableAliasColumnList::Names(names) => ast[*names]
+            .iter()
+            .try_for_each(|&name| current_schema_refusal(flat_col_id_text(ast[name], ast), 0)),
+        FlatFuncTableAliasColumnList::Definitions(_) => Ok(()),
     }
 }
 

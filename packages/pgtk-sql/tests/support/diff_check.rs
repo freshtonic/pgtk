@@ -320,13 +320,15 @@ mod tests {
     }
 
     // PostgreSQL rejects the statement and its rendering, and pgtk-sql
-    // accepts it: an over-acceptance (#95). `current_schema` is no `ColId`,
-    // and the column names of a table alias in pgtk-sql still admit it.
-    // Replace the example when that is fixed.
+    // accepts it: an over-acceptance (#95). parser.c reads a `UESCAPE` after
+    // a `U&"..."` identifier as its escape clause, so a `UESCAPE` with no
+    // string after it is an error; pgtk-sql lexes each identifier spelling as
+    // one token, and takes `uescape` as the table alias. Replace the example
+    // when that is fixed.
     #[cfg(feature = "postgres-oracle")]
     #[test]
     fn pg_rejected_input_fails_when_pgsql_accepts() {
-        match check("SELECT * FROM t AS x (current_schema)") {
+        match check("SELECT * FROM U&\"t\" uescape") {
             Outcome::Fail(reason) => assert!(reason.starts_with(OVER_ACCEPTANCE), "{reason}"),
             other => panic!("expected an over-acceptance, got {other:?}"),
         }
