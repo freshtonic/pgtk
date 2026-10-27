@@ -3269,7 +3269,7 @@ recursa::ast_node! {
     /// continued, an escape or a dollar-quoted string. A `U&'...'` string is
     /// a `USCONST` there, and `parser.c` refuses it ("UESCAPE must be
     /// followed by a simple string literal").
-    #[derive(Debug)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub enum UescapeString {
         Escape(literal::EscapeStringLit),
         Dollar(literal::DollarStringLit),
@@ -3305,7 +3305,10 @@ recursa::ast_node! {
         message = "invalid Unicode escape character",
         cite = "REL_17_11 parser.c 278, base_yylex",
     )]
-    #[derive(Debug)]
+    // A classification of a `crate::tokens::UnicodeIdent` reads the escape
+    // string (Recursa `#[classify(via ...)]`).
+    #[classify(via = escape_char)]
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub struct UescapeSuffix {
         #[tok(UESCAPE, this)]
         pub escape_char: UescapeString,

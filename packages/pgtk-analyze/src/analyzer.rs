@@ -85,9 +85,6 @@ use pgtk_sql::ast::dml::merge::{
     FlatNotMatchedAction, FlatUpdateAction, FlatWhenClause,
 };
 use pgtk_sql::ast::dml::select::{
-    FlatAsAliasName, FlatValuesRow, FlatWhereClause, FlatWhereOrCurrentClause,
-};
-use pgtk_sql::ast::dml::select::{
     FlatCubeItem, FlatFetchFirstBody, FlatFetchFirstClause, FlatFetchMode, FlatForUpdateWait,
     FlatGroupByModifier, FlatOnlyRelationName, FlatRollupItem, FlatSortOrder, FlatUsingClause,
     FlatUsingOp,
@@ -109,6 +106,7 @@ use pgtk_sql::ast::dml::select::{
     FlatTableAlias, FlatXmlNamespaceItem, FlatXmlTableColumnKind, FlatXmlTableColumnOption,
     FlatXmlTableRef,
 };
+use pgtk_sql::ast::dml::select::{FlatValuesRow, FlatWhereClause, FlatWhereOrCurrentClause};
 use pgtk_sql::ast::dml::update::{
     FlatReturningClause, FlatSetAssignment, FlatUpdateStmt, FlatUpdateTableAlias,
 };
@@ -1443,23 +1441,84 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
+    /// The word of an identifier token.
+    fn plain_word<K>(&self, handle: Text<K>) -> Word<'a> {
+        Word {
+            raw: self.text(handle),
+            start: self.text_span(handle).start,
+            uescape: None,
+        }
+    }
+
+    /// The word of a `U&"..."` identifier, with its `UESCAPE` clause.
+    fn unicode_word(&self, handle: Handle<pgtk_sql::tokens::FlatUnicodeIdent>) -> Word<'a> {
+        let ident = self.get(handle);
+        let pgtk_sql::tokens::FlatUidentName::Text(t) = self.get(ident.name);
+        Word {
+            uescape: ident.uescape,
+            ..self.plain_word(*t)
+        }
+    }
+
+    /// The name PostgreSQL's scanner gives a word.
+    fn fold_word_name(&self, word: Word<'a>) -> std::result::Result<String, String> {
+        let folded = match word.uescape {
+            None => pgtk_sql::ident::fold_identifier(word.raw),
+            Some(uescape) => pgtk_sql::ident::fold_identifier_with_uescape(
+                word.raw,
+                &self.uescape_value(uescape),
+            ),
+        };
+        folded
+            .map(|folded| folded.name.into_owned())
+            .map_err(|error| format!("identifier {:?}: {error}", word.raw))
+    }
+
+    /// Fold a word, as [`Self::fold`] folds an identifier's spelling.
+    fn fold_word(&self, word: Word<'a>, location: usize) -> Result<String> {
+        self.fold_word_name(word)
+            .map_err(|message| unsupported(message, Some(location..location)))
+    }
+
+    fn col_id_word(&self, handle: Handle<FlatColId>) -> Word<'a> {
+        match self.get(handle) {
+            FlatColId::Text(t) => self.plain_word(*t),
+            FlatColId::Unicode(u) => self.unicode_word(*u),
+        }
+    }
+
     fn col_id(&self, handle: Handle<FlatColId>) -> Result<(String, usize)> {
-        let FlatColId::Text(t) = self.get(handle);
-        let span = self.text_span(*t);
-        Ok((self.fold(self.text(*t), span.start)?, span.start))
+        let word = self.col_id_word(handle);
+        Ok((self.fold_word(word, word.start)?, word.start))
     }
 
     /// The bare alias of a DELETE, UPDATE or MERGE target.
     fn relation_alias_name(&self, handle: Handle<FlatRelationAliasName>) -> Result<String> {
-        let FlatRelationAliasName::Text(t) = self.get(handle);
-        let span = self.text_span(*t);
-        self.fold(self.text(*t), span.start)
+        let word = match self.get(handle) {
+            FlatRelationAliasName::Text(t) => self.plain_word(*t),
+            FlatRelationAliasName::Unicode(u) => self.unicode_word(*u),
+        };
+        self.fold_word(word, word.start)
+    }
+
+    fn alias_name_word(&self, handle: Handle<FlatAliasName>) -> Word<'a> {
+        match self.get(handle) {
+            FlatAliasName::Text(t) => self.plain_word(*t),
+            FlatAliasName::Unicode(u) => self.unicode_word(*u),
+        }
     }
 
     fn alias_name(&self, handle: Handle<FlatAliasName>) -> Result<(String, usize)> {
-        let FlatAliasName::Text(t) = self.get(handle);
-        let span = self.text_span(*t);
-        Ok((self.fold(self.text(*t), span.start)?, span.start))
+        let word = self.alias_name_word(handle);
+        Ok((self.fold_word(word, word.start)?, word.start))
+    }
+
+    /// The word of a `type_function_name`.
+    fn type_function_word(&self, handle: Handle<Flattype_function_name>) -> Word<'a> {
+        match self.get(handle) {
+            Flattype_function_name::Text(t) => self.plain_word(*t),
+            Flattype_function_name::Unicode(u) => self.unicode_word(*u),
+        }
     }
 
     fn record_type(&mut self, handle: Handle<FlatExpr>, typed: &Typed) {
@@ -2433,9 +2492,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
 
     /// An identifier token, folded.
     fn ident(&self, handle: Handle<pgtk_sql::tokens::literal::FlatIdent>) -> Result<String> {
-        let pgtk_sql::tokens::literal::FlatIdent::Text(t) = self.get(handle);
-        let span = self.text_span(*t);
-        self.fold(self.text(*t), span.start)
+        let word = match self.get(handle) {
+            pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
+            pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
+        };
+        self.fold_word(word, word.start)
     }
 
     /// `UtilityTupleDescriptor` for an EXECUTE: the Result Descriptor of
@@ -2775,9 +2836,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     FlatFuncArg::Plain(e) => arg_handles.push(*e),
                     FlatFuncArg::Named(n) => {
                         let n = self.get(*n);
-                        let Flattype_function_name::Text(t) = self.get(n.name);
-                        let span = self.text_span(*t);
-                        argnames.push(self.fold(self.text(*t), span.start)?);
+                        let word = self.type_function_word(n.name);
+                        argnames.push(self.fold_word(word, word.start)?);
                         arg_handles.push(n.value);
                     }
                 }
@@ -6295,6 +6355,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let opt = self.get(*opt);
                 let is_format = match self.get(opt.name) {
                     FlatUtilityOptionName::Text(t) => self.text(*t).eq_ignore_ascii_case("format"),
+                    FlatUtilityOptionName::Unicode(_) => false,
                     // `FORMAT` before `JSON` is the merged kind `FORMAT_LA`.
                     #[cfg(feature = "since-pg16")]
                     FlatUtilityOptionName::Format => true,
@@ -8174,11 +8235,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<ObjectName> {
         Ok(match self.get(name) {
             FlatFuncCallName::Name(n) => {
-                let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(*n);
-                let span = self.text_span(*t);
+                let word = self.type_function_word(*n);
                 ObjectName {
                     schema: None,
-                    name: self.fold(self.text(*t), span.start)?,
+                    name: self.fold_word(word, word.start)?,
                 }
             }
             FlatFuncCallName::Qualified(q) => {
@@ -9391,9 +9451,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let named = self.get(*named);
                     let (schema, name) = match self.get(named.name) {
                         FlatTableFunctionName::Name(n) => {
-                            let pgtk_sql::tokens::Flattable_function_name::Text(t) = self.get(*n);
-                            let span = self.text_span(*t);
-                            (None, self.fold(self.text(*t), span.start)?)
+                            let word = match self.get(*n) {
+                                pgtk_sql::tokens::Flattable_function_name::Text(t) => {
+                                    self.plain_word(*t)
+                                }
+                                pgtk_sql::tokens::Flattable_function_name::Unicode(u) => {
+                                    self.unicode_word(*u)
+                                }
+                            };
+                            (None, self.fold_word(word, word.start)?)
                         }
                         FlatTableFunctionName::Qualified(q) => {
                             let q = self.get(*q);
@@ -9635,8 +9701,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 FlatXmlTableColumnOption::Default(e) => (false, *e),
                 FlatXmlTableColumnOption::Named(n) => {
                     let n = self.get(*n);
-                    let pgtk_sql::tokens::literal::FlatIdentOnly::Text(t) = self.get(n.name);
-                    let name = pgtk_sql::ident::fold_name(self.text(*t));
+                    let word = match self.get(n.name) {
+                        pgtk_sql::tokens::literal::FlatIdentOnly::Text(t) => self.plain_word(*t),
+                        pgtk_sql::tokens::literal::FlatIdentOnly::Unicode(u) => {
+                            self.unicode_word(*u)
+                        }
+                    };
+                    let name = self.fold_word_name(word).ok();
                     (name.as_deref() == Some("path"), n.value)
                 }
                 FlatXmlTableColumnOption::NotNull | FlatXmlTableColumnOption::Null => {
@@ -9668,9 +9739,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     }
 
     fn col_label(&self, handle: Handle<pgtk_sql::tokens::FlatColLabel>) -> Result<String> {
-        let pgtk_sql::tokens::FlatColLabel::Text(t) = self.get(handle);
-        let span = self.text_span(*t);
-        self.fold(self.text(*t), span.start)
+        let word = match self.get(handle) {
+            pgtk_sql::tokens::FlatColLabel::Text(t) => self.plain_word(*t),
+            pgtk_sql::tokens::FlatColLabel::Unicode(u) => self.unicode_word(*u),
+        };
+        self.fold_word(word, word.start)
     }
 
     // ----- target list -----
@@ -9763,33 +9836,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     Some(alias) => match self.get(alias) {
                         FlatAlias::WithAs(w) => {
                             let w = self.get(*w);
-                            match self.get(w.name) {
-                                FlatAsAliasName::Plain(name) => self.alias_name(*name)?.0,
-                                FlatAsAliasName::Uescaped(u) => {
-                                    let u = self.get(*u);
-                                    let pgtk_sql::tokens::FlatUidentName::Text(t) =
-                                        self.get(u.name);
-                                    let raw = self.text(*t);
-                                    let escape = self.uescape_value(u.uescape);
-                                    match pgtk_sql::ident::fold_identifier_with_uescape(
-                                        raw, &escape,
-                                    ) {
-                                        Ok(folded) => folded.name.into_owned(),
-                                        Err(error) => {
-                                            return Err(unsupported(
-                                                format!("identifier {raw:?}: {error}"),
-                                                None,
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
+                            self.alias_name(w.name)?.0
                         }
                         FlatAlias::Bare(b) => {
-                            let pgtk_sql::tokens::literal::FlatSelectBareAliasName::Text(t) =
-                                self.get(*b);
-                            let span = self.text_span(*t);
-                            self.fold(self.text(*t), span.start)?
+                            use pgtk_sql::tokens::literal::FlatSelectBareAliasName;
+                            let word = match self.get(*b) {
+                                FlatSelectBareAliasName::Text(t) => self.plain_word(*t),
+                                FlatSelectBareAliasName::Unicode(u) => self.unicode_word(*u),
+                            };
+                            self.fold_word(word, word.start)?
                         }
                     },
                     None => self
@@ -12353,10 +12408,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             },
             FlatExpr::Func(f) => {
                 let f = self.get(*f);
-                let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(f.name);
-                let name = pgtk_sql::ident::fold_identifier(self.text(*t))
-                    .ok()
-                    .map(|f| f.name.into_owned());
+                let name = self.fold_word_name(self.type_function_word(f.name)).ok();
                 Colname { name, strength: 2 }
             }
             FlatExpr::NullIf(_) => Colname {
@@ -12590,10 +12642,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatTypeCastFunc::Json(_) => Some("json".to_owned()),
             FlatTypeCastFunc::Named(named) => {
                 let named = self.get(*named);
-                let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(named.type_name);
-                pgtk_sql::ident::fold_identifier(self.text(*t))
+                self.fold_word_name(self.type_function_word(named.type_name))
                     .ok()
-                    .map(|f| f.name.into_owned())
             }
         }
     }
@@ -12652,8 +12702,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     FlatGenericTypeName::Unknown => (Some("pg_catalog"), "unknown".to_owned()),
                     FlatGenericTypeName::Ident(ident) => {
                         let ident = self.get(*ident);
-                        let pgtk_sql::tokens::Flattype_name_ident::Text(t) = self.get(ident.first);
-                        let mut parts = vec![self.fold(self.text(*t), self.text_span(*t).start)?];
+                        let word = match self.get(ident.first) {
+                            pgtk_sql::tokens::Flattype_name_ident::Text(t) => self.plain_word(*t),
+                            pgtk_sql::tokens::Flattype_name_ident::Unicode(u) => {
+                                self.unicode_word(*u)
+                            }
+                        };
+                        let mut parts = vec![self.fold_word(word, word.start)?];
                         for attr in self.list(ident.rest) {
                             parts.push(self.col_label(self.get(*attr).name)?);
                         }
@@ -13198,12 +13253,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let parts = self.column_ref_parts(c.indirection);
                     return self.indirection(scope, handle, base, Some(handle), &parts, location);
                 }
-                let FlatColId::Text(raw) = self.get(c.name);
-                let raw = self.text(*raw);
+                let word = self.col_id_word(c.name);
                 let (name, _) = self.col_id(c.name)?;
                 // gram.y turns these unquoted keywords into SQLValueFunction
-                // nodes before any column lookup.
-                if !raw.starts_with('"')
+                // nodes before any column lookup. A quoted or a `U&"..."`
+                // name is never a keyword.
+                if !word.raw.starts_with('"')
+                    && !matches!(self.get(c.name), FlatColId::Unicode(_))
                     && let Some(ty) = self.sql_value_function(&name)
                 {
                     return Ok(Typed {
@@ -13286,10 +13342,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             }
             FlatExpr::Func(f) => {
                 let f = self.get(*f);
-                let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(f.name);
+                let word = self.type_function_word(f.name);
                 let name = ObjectName {
                     schema: None,
-                    name: self.fold(self.text(*t), location)?,
+                    name: self.fold_word(word, location)?,
                 };
                 self.func_call(scope, handle, name, f.tail, location)
             }
@@ -13603,14 +13659,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let field = match self.get(inner.field) {
                     FlatExtractField::StringLit(s) => self.sconst(*s).0,
                     FlatExtractField::Ident(i) => {
-                        let FlatAliasName::Text(t) = self.get(*i);
-                        let raw = self.text(*t);
+                        let word = self.alias_name_word(*i);
                         // extract_arg: IDENT keeps its spelling; the keywords
                         // arrive lower-cased.
-                        if raw.starts_with('"') {
-                            self.fold(raw, location)?
+                        if word.raw.starts_with('"')
+                            || matches!(self.get(*i), FlatAliasName::Unicode(_))
+                        {
+                            self.fold_word(word, location)?
                         } else {
-                            raw.to_owned()
+                            word.raw.to_owned()
                         }
                     }
                 };
@@ -14703,9 +14760,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let mut parts = Vec::new();
                 for prefix in std::iter::once(q.first).chain(self.list(q.rest).iter().copied()) {
                     let prefix = self.get(prefix);
-                    let pgtk_sql::tokens::literal::FlatIdent::Text(t) = self.get(prefix.name);
-                    let span = self.text_span(*t);
-                    parts.push(self.fold(self.text(*t), span.start)?);
+                    let word = match self.get(prefix.name) {
+                        pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
+                        pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
+                    };
+                    parts.push(self.fold_word(word, word.start)?);
                 }
                 if parts.len() > 1 {
                     return Err(unsupported(
@@ -15309,10 +15368,9 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     }
                     FlatFuncArg::Named(n) => {
                         let n = self.get(*n);
-                        let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(n.name);
-                        let at = self.text_span(*t).start;
+                        let word = self.type_function_word(n.name);
                         arg_handles.push(n.value);
-                        arg_names.push(Some((self.fold(self.text(*t), at)?, at)));
+                        arg_names.push(Some((self.fold_word(word, word.start)?, word.start)));
                     }
                 }
             }
@@ -15606,9 +15664,11 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let s = self.get(spec);
         let refname = match s.ref_name {
             Some(r) => {
-                let FlatWindowRefNameIdent::Text(t) = self.get(r);
-                let span = self.text_span(*t);
-                Some(self.fold(self.text(*t), span.start)?)
+                let word = match self.get(r) {
+                    FlatWindowRefNameIdent::Text(t) => self.plain_word(*t),
+                    FlatWindowRefNameIdent::Unicode(u) => self.unicode_word(*u),
+                };
+                Some(self.fold_word(word, word.start)?)
             }
             None => None,
         };
@@ -16921,8 +16981,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             ),
             FlatTypeCastFunc::Named(named) => {
                 let named = self.get(*named);
-                let pgtk_sql::tokens::Flattype_function_name::Text(t) = self.get(named.type_name);
-                let name = self.fold(self.text(*t), location)?;
+                let word = self.type_function_word(named.type_name);
+                let name = self.fold_word(word, location)?;
                 (
                     TypeName {
                         schema: None,
@@ -17611,4 +17671,16 @@ fn result_columns(target_list: &[TargetEntry]) -> Vec<ResultColumn> {
             origin: t.origin,
         })
         .collect()
+}
+
+/// One identifier as the analyzer reads it: the source text of its token,
+/// where the token starts, and the `UESCAPE` clause of a `U&"..."` name.
+#[derive(Clone, Copy)]
+struct Word<'a> {
+    /// The source text of the identifier token.
+    raw: &'a str,
+    /// The offset where the token starts.
+    start: usize,
+    /// The `UESCAPE` clause of a `U&"..."` name, if it has one.
+    uescape: Option<Handle<FlatUescapeSuffix>>,
 }

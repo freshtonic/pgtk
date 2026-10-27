@@ -2518,3 +2518,78 @@ fn current_schema_is_no_column_name_of_a_list() {
         "SELECT * FROM t JOIN u USING (a) AS j",
     ]);
 }
+
+/// scan.l lexes `U&"..."` as a `UIDENT`, and `parser.c` (`base_yylex`) makes
+/// one `IDENT` of it and an optional `UESCAPE 'c'` clause (REL_17_11 parser.c
+/// 238-343), so each identifier position takes `U&"x" UESCAPE '!'`. After a
+/// plain identifier, `UESCAPE` stays an unreserved keyword.
+#[test]
+fn a_unicode_identifier_takes_a_uescape_clause_in_each_identifier_position() {
+    assert_accepts(&[
+        // A column, and an attribute after a dot.
+        "SELECT U&\"d!0061t\" UESCAPE '!' FROM t",
+        "SELECT t.U&\"d!0061t\" UESCAPE '!' FROM t",
+        "SELECT U&\"t\" UESCAPE '!'.U&\"c\" UESCAPE '!' FROM t",
+        "SELECT * FROM t WHERE U&\"a\" UESCAPE '#' = 1",
+        "UPDATE t SET U&\"c\" UESCAPE '!' = 1",
+        // A table.
+        "SELECT * FROM U&\"t!0061b\" UESCAPE '!'",
+        "SELECT * FROM s.U&\"t\" UESCAPE '!'",
+        "INSERT INTO U&\"t\" UESCAPE '!' (U&\"c\" UESCAPE '!') VALUES (1)",
+        "CREATE TABLE U&\"t\" UESCAPE '!' (U&\"c\" UESCAPE '!' int)",
+        "DROP TABLE U&\"t\" UESCAPE '!'",
+        // An alias: with AS, bare, of a table, and of its columns.
+        "SELECT 1 AS U&\"a\" UESCAPE '!'",
+        "SELECT 1 U&\"a\" UESCAPE '!'",
+        "SELECT * FROM t U&\"x\" UESCAPE '!'",
+        "SELECT * FROM t AS U&\"x\" UESCAPE '!' (U&\"c\" UESCAPE '!')",
+        "WITH U&\"w\" UESCAPE '!' AS (SELECT 1) SELECT * FROM U&\"w\" UESCAPE '!'",
+        // A type.
+        "CREATE TABLE t (a U&\"int!0034\" UESCAPE '!')",
+        "SELECT CAST(1 AS U&\"int4\" UESCAPE '!')",
+        "SELECT 1::U&\"int4\" UESCAPE '!'",
+        "SELECT 1::s.U&\"t\" UESCAPE '!'",
+        // A role.
+        "CREATE ROLE U&\"r\" UESCAPE '!'",
+        "GRANT SELECT ON t TO U&\"r\" UESCAPE '!'",
+        "GRANT U&\"g\" UESCAPE '!' TO U&\"r\" UESCAPE '!'",
+        "ALTER TABLE t OWNER TO U&\"r\" UESCAPE '!'",
+        "SET ROLE U&\"r\" UESCAPE '!'",
+        // A function name.
+        "SELECT U&\"f\" UESCAPE '!'(1)",
+        "SELECT s.U&\"f\" UESCAPE '!'(1)",
+        "SELECT * FROM U&\"f\" UESCAPE '!'(1)",
+        "CREATE FUNCTION U&\"f\" UESCAPE '!'() RETURNS int LANGUAGE sql AS 'SELECT 1'",
+        // An option name, a window name and an XMLTABLE option.
+        "EXPLAIN (U&\"verbose\" UESCAPE '!') SELECT 1",
+        "SELECT count(*) OVER U&\"w\" UESCAPE '!' FROM t WINDOW U&\"w\" UESCAPE '!' AS ()",
+        "SELECT * FROM XMLTABLE('/r' PASSING x COLUMNS a int U&\"p!0061th\" UESCAPE '!' 'b')",
+        // Each simple string after `UESCAPE`, and a name without a clause.
+        "SELECT U&\"x\" UESCAPE E'!' FROM t",
+        "SELECT U&\"x\" UESCAPE $$!$$ FROM t",
+        "SELECT U&\"d\\0061t\" FROM t",
+        "SELECT U&\"d\\0061t\" AS U&\"x\" FROM U&\"t\"",
+        // After a plain identifier, `UESCAPE` is a keyword: a label, a type,
+        // an alias.
+        "SELECT a uescape FROM t",
+        "CREATE TABLE t (a uescape)",
+        "SELECT * FROM t uescape",
+        "EXPLAIN (verbose uescape) SELECT 1",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT U&\"x\" UESCAPE FROM t",
+            "SELECT U&\"x\" UESCAPE 1",
+            "SELECT U&\"x\" UESCAPE U&'!'",
+            "SELECT * FROM U&\"t\" UESCAPE",
+            "CREATE TABLE t (a U&\"x\" UESCAPE)",
+            // An escape character that `check_uescapechar` refuses, and an
+            // incorrect escape.
+            "SELECT U&\"x\" UESCAPE '+' FROM t",
+            "SELECT * FROM U&\"t\" UESCAPE 'ab'",
+            "SELECT U&\"d!00zz\" UESCAPE '!' FROM t",
+            "CREATE ROLE U&\"!D83D\" UESCAPE '!'",
+        ],
+        "after a U&\"...\" identifier, UESCAPE is a clause with a correct escape",
+    );
+}
