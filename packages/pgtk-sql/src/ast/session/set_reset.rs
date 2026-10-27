@@ -19,7 +19,7 @@ recursa::ast_node! {
         False,
         #[tok(TRUE)]
         True,
-        StringLit(literal::StringLit),
+        StringLit(crate::ast::shared::expr::Sconst),
         SignedNumeric(SignedNumericLit),
         NumericLit(literal::NumericLit),
         IntegerLit(literal::IntegerLit),
@@ -156,7 +156,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum SetRoleTarget {
         Role(crate::tokens::NonReservedWord),
-        String(crate::ast::utility::copy::CopySconst),
+        String(crate::ast::shared::expr::Sconst),
     }
 }
 
@@ -179,7 +179,7 @@ recursa::ast_node! {
     pub enum SetSessionAuthTarget {
         #[tok(DEFAULT)]
         Default,
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         Role(crate::tokens::ColId),
     }
 }
@@ -211,7 +211,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ZoneIntervalValue {
         #[tok(INTERVAL, this)]
-        pub value: literal::StringLit,
+        pub value: crate::ast::shared::expr::Sconst,
         pub qualifier: Option<ZoneIntervalQualifier>,
     }
 }
@@ -239,7 +239,7 @@ recursa::ast_node! {
     pub struct ZoneIntervalPrecisionValue {
         #[tok(INTERVAL, LPAREN, this, RPAREN)]
         pub precision: literal::IntegerLit,
-        pub value: literal::StringLit,
+        pub value: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -262,7 +262,7 @@ recursa::ast_node! {
         IntervalPrecision(ZoneIntervalPrecisionValue),
         Interval(ZoneIntervalValue),
         Number(crate::ast::shared::numbers::NumericOnly),
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         Ident(literal::IdentOnly),
     }
 }
@@ -286,7 +286,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SetSchemaStmt {
         #[tok(SCHEMA, this)]
-        pub name: literal::StringLit,
+        pub name: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -296,7 +296,7 @@ recursa::ast_node! {
     pub enum SetNamesEncoding {
         #[tok(DEFAULT)]
         Default,
-        Name(literal::StringLit),
+        Name(crate::ast::shared::expr::Sconst),
     }
 }
 
@@ -362,7 +362,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SetTransactionSnapshot {
         #[tok(TRANSACTION, SNAPSHOT, this)]
-        pub id: literal::StringLit,
+        pub id: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -559,6 +559,6 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LoadStmt {
         #[tok(LOAD, this)]
-        pub filename: literal::StringLit,
+        pub filename: crate::ast::shared::expr::Sconst,
     }
 }

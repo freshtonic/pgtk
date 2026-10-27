@@ -1,14 +1,30 @@
 //! Exact current outcomes for the PostgreSQL-accepted legacy grammar gaps.
+//!
+//! The ledger names statements by their legacy statement ranges, which are
+//! no longer the statement set of the differential (issue #10). So this test
+//! asks the live oracle about each legacy statement, and it finds an expected
+//! version gap by the frozen psql submission that overlaps the statement.
 
 mod support;
 
 use std::collections::BTreeSet;
+use std::ops::Range;
 
 use pgtk_oracle::parse_ok;
 use support::baseline::{
     AcceptedLegacyGapOutcome, AcceptedLegacyGaps, FrozenStatements, LegacyItemKind, VersionBaseline,
 };
 use support::diff_check::{Outcome, StrictDiagnostic, check_statement, pgsql_format};
+
+/// The legacy statement `index` of `file`.
+fn legacy_statement(file: &str, index: usize) -> String {
+    let frozen = FrozenStatements::pinned().file(file);
+    let source = frozen.source();
+    frozen
+        .statements(&source)
+        .unwrap_or_else(|error| panic!("cannot load {file}: {error}"))[index]
+        .to_owned()
+}
 
 #[test]
 fn frozen_accepted_legacy_gap_contracts_are_exact() {
@@ -54,17 +70,17 @@ fn frozen_accepted_legacy_gap_contracts_are_exact() {
     // The ledger is the contract of the PostgreSQL 17 oracle. The oracle of
     // another target version can reject a ledger statement, and it can
     // accept a legacy parse error that 17 rejects. A build of that version
-    // then has the 17 grammar, so each such statement must be an expected
+    // then has the 17 grammar, so each such statement must be in an expected
     // version gap (docs/differential-baseline.md).
     let version = VersionBaseline::active();
-    let version_gaps = version
-        .gaps()
-        .iter()
-        .map(|gap| (gap.file.clone(), gap.statement_index))
-        .collect::<BTreeSet<_>>();
+    let in_version_gap = |file: &str, range: &Range<usize>| {
+        version.gaps().iter().any(|gap| {
+            gap.file == file && gap.byte_range.start < range.end && range.start < gap.byte_range.end
+        })
+    };
     let accepted_contracts = contracted_identities
         .iter()
-        .filter(|(file, index, _, _)| version.oracle_accepts(file)[*index])
+        .filter(|(file, index, _, _)| parse_ok(&legacy_statement(file, *index)))
         .cloned()
         .collect::<BTreeSet<_>>();
     let rejected_contracts = contracted_identities
@@ -76,7 +92,7 @@ fn frozen_accepted_legacy_gap_contracts_are_exact() {
     );
     let not_contracted = derived_identities
         .difference(&accepted_contracts)
-        .filter(|(file, index, _, _)| !version_gaps.contains(&(file.clone(), *index)))
+        .filter(|(file, _, start, end)| !in_version_gap(file, &(*start..*end)))
         .collect::<Vec<_>>();
     assert!(
         version.feature != "pg17" || not_contracted.is_empty(),
@@ -84,53 +100,35 @@ fn frozen_accepted_legacy_gap_contracts_are_exact() {
          accepted legacy gap ledger: {not_contracted:?}"
     );
     // Another version's oracle can accept a legacy parse error that 17
-    // rejects. Unless it is an expected version gap, pgtk-sql must pass it.
+    // rejects. Unless it is in an expected version gap, pgtk-sql must pass it.
     for (file, index, _, _) in not_contracted {
-        let source = frozen.file(file).source();
-        let statement = frozen
-            .file(file)
-            .statements(&source)
-            .unwrap_or_else(|error| panic!("cannot load {file}: {error}"))[*index];
         assert_eq!(
             check_statement(&support::Stmt {
-                source: statement.to_owned(),
+                source: legacy_statement(file, *index),
             }),
             Outcome::Pass,
-            "{file}:{index} is accepted by the {} oracle but is not an expected version gap",
+            "{file}:{index} is accepted by the {} oracle but is not in an expected version gap",
             version.feature
         );
     }
     assert!(
         accepted_contracts.is_subset(&derived_identities),
-        "the recorded {} oracle outcomes disagree with the live oracle",
+        "the {} oracle outcomes of the ledger disagree with the legacy item kinds",
         version.feature
     );
 
     for gap in gaps.entries() {
-        if !version.oracle_accepts(&gap.file)[gap.statement_index]
-            || version_gaps.contains(&(gap.file.clone(), gap.statement_index))
-        {
+        let statement = legacy_statement(&gap.file, gap.statement_index);
+        if !parse_ok(&statement) || in_version_gap(&gap.file, &gap.byte_range) {
             // The target version rejects the statement, or its build has an
             // expected version gap there. The differential test checks both.
             continue;
         }
-        let source = frozen.file(&gap.file).source();
-        let statement = frozen
-            .file(&gap.file)
-            .statements(&source)
-            .unwrap_or_else(|error| panic!("cannot load {}: {error}", gap.file))
-            [gap.statement_index];
-        assert!(
-            parse_ok(statement),
-            "{}:{} is no longer accepted by the pinned PostgreSQL oracle",
-            gap.file,
-            gap.statement_index
-        );
 
         match &gap.outcome {
             AcceptedLegacyGapOutcome::Pass => assert_eq!(
                 check_statement(&support::Stmt {
-                    source: statement.to_owned(),
+                    source: statement.clone(),
                 }),
                 Outcome::Pass,
                 "{}:{} regressed from a resolved legacy gap",
@@ -138,7 +136,7 @@ fn frozen_accepted_legacy_gap_contracts_are_exact() {
                 gap.statement_index
             ),
             AcceptedLegacyGapOutcome::Diagnostic(expected) => {
-                let failure = match pgsql_format(statement) {
+                let failure = match pgsql_format(&statement) {
                     Ok(_) => panic!(
                         "{}:{} unexpectedly resolved; review the accepted-gap ledger",
                         gap.file, gap.statement_index

@@ -2,7 +2,8 @@
 //! research PostgreSQL 19, "New statements", commits 447aae13b and
 //! 49a181b5d). The whole module has a `since-pg19` gate.
 
-use crate::ast::utility::explain::{Sconst, UtilityOptionList};
+use crate::ast::shared::expr::Sconst;
+use crate::ast::utility::explain::UtilityOptionList;
 
 recursa::ast_node! {
     /// `WITH (option [, ...])` — gram.y `opt_wait_with_clause` (b73d13c:16646).

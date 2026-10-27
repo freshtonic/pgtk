@@ -63,10 +63,36 @@ quoted identifier is a plain `#[lex(pattern = ...)]` token with no closer for
 closing quote follows, the closed form is one character longer and wins, so
 the open form wins only at end of input (freshtonic/pg-sql#89).
 
-One divergence is left, and it is deliberate. psql reports that its query
-buffer is still open and asks for another line; `pgtk-psql` has no notion of an
-open query buffer (freshtonic/pg-sql#11), so it treats the document as
-complete. The forwarded text and the interpolations are the same.
+psql reports that its query buffer is still open and asks for another line.
+`pgtk-psql` used to treat such a document as complete. Now
+`Rendered::is_complete` tells whether the buffer is open at end of input: in
+an open region, inside parentheses, or inside a tracked `BEGIN ... END` block
+(freshtonic/pgtk#6).
+
+## Query buffers
+
+psql does not end the query buffer at every `;`. The `;` rule of `psqlscan.l`
+ends it only when the parenthesis depth and the `BEGIN` depth are zero, and
+`psqlscan_track_identifier` counts `BEGIN ... END` only in a
+`CREATE [OR REPLACE] {FUNCTION|PROCEDURE}`. That depends on the tokens before
+the `;`, so the grammar keeps every `;` as `Terminator::Semi`, and
+`pgtk-psql/src/scan_state.rs` keeps psqlscan.l's state over the items, with
+the resets of `MainLoop` and the save and restore of an `\if` branch.
+`Rendered::boundaries` gives the boundaries that psql has, with their places
+in the source and in the rendered SQL (freshtonic/pgtk#6). The rendered SQL is
+still one string.
+
+## COPY data
+
+After psql sends a buffer that holds `COPY ... FROM STDIN`, or runs
+`\copy ... from stdin`, it reads the data lines from the script itself, from
+the line after the send up to a line that is exactly `\.` (`handleCopyIn`).
+The lexer must not read that text, so `pgtk-psql` lexes the script in
+segments, finds each send that reads data as psql counts it, and supplies the
+data and the `\.` line as the tokens of `PsqlItem::CopyData` through recursa's
+`LexBuilder`. A send in an inactive `\if` branch reads no data, so the segments
+depend on the variables: `parse` uses none, and `render` uses its own
+(freshtonic/pgtk#9). Rendering sends none of the data.
 
 ## Substitution and the source map
 

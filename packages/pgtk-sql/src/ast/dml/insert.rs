@@ -286,6 +286,7 @@ recursa::ast_node! {
     /// optional indirection chain — `f2[1]`, `f3.if1`, `a[1:5]` (Postgres
     /// `insert_column_item: ColId opt_indirection`).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_insert_column_item, flat = crate::ast::validation::current_schema_insert_column_item_flat)]
     pub struct InsertColumnItem {
         pub name: crate::tokens::ColId,
         /// gram.y `opt_indirection`, with a `.*` as the last element only

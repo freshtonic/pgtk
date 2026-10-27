@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "name": "postgresql-17.9",
+  "issue": 95,
+  "description": "Temporary list. Each submission here is one that the oracle rejects and pgtk-sql accepts. The strict check of #95 found them. The differential test expects an over-acceptance failure for each one where the oracle of the build's target version rejects it. Remove an entry when the grammar fix lands. An entry names a frozen psql submission (baselines/postgresql-17.9-submissions.json, #10) by its index and source range. The list is empty: the fixes of #95 removed its 23 entries.",
+  "causes": {},
+  "submissions": [
+  ]
+}

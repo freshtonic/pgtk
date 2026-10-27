@@ -89,7 +89,7 @@ recursa::ast_node! {
         // Use the canonical content token from `tokens::literal`. Keeping an
         // inline lexer declaration here would create a second `StringLit`
         // definition and prevent lookahead filters from naming it uniquely.
-        String(literal::StringLit),
+        String(crate::ast::shared::expr::Sconst),
         /// gram.y `utility_option_arg: ... | NumericOnly` (REL_17_11 gram.y
         /// 11884): a signed integer or float, which includes an integer above
         /// `int32` (issue #88).

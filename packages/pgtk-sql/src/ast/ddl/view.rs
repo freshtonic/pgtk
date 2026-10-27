@@ -124,6 +124,7 @@ recursa::ast_node! {
     /// Optional parenthesized, nonempty CREATE VIEW output-column list.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_view_columns, flat = crate::ast::validation::current_schema_view_columns_flat)]
     pub struct CreateViewColumnList(
         #[sep(COMMA)]
         #[deref]

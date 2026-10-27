@@ -53,6 +53,18 @@ fn constants_and_operators() {
 }
 
 #[test]
+fn an_unknown_parameter_in_the_target_list_is_text() {
+    // resolveTargetListUnknowns coerces the parameter to text, and
+    // variable_coerce_param_hook gives $1 that type.
+    let catalog = catalog();
+    assert_eq!(describe(&catalog, "SELECT $1"), "?column?:text(-1)");
+    assert_eq!(
+        describe(&catalog, "SELECT $1 AS four, sin($2) AS five"),
+        "four:text(-1), five:float8(-1)"
+    );
+}
+
+#[test]
 fn casts_and_functions() {
     let catalog = catalog();
     assert_eq!(describe(&catalog, "SELECT 1::int8"), "int8:int8(-1)");

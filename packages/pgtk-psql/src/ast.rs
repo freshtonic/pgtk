@@ -53,6 +53,45 @@ recursa::ast_node! {
         Command(MetaCommand),
         /// A run of text psql forwards to the server unchanged.
         Sql(SqlText),
+        /// The data lines that psql reads itself after it sends a
+        /// `COPY ... FROM STDIN` or runs `\copy ... from stdin`.
+        CopyData(CopyData),
+    }
+}
+
+recursa::ast_node! {
+    /// One block of COPY data: the lines that `handleCopyIn`
+    /// (`src/bin/psql/copy.c`) reads from the script for one
+    /// `COPY ... FROM STDIN`, and the `\.` line that ends them.
+    ///
+    /// The lexer does not read COPY data, because the data can hold any
+    /// text. `crate::parse` finds each send of a query buffer that holds a
+    /// `COPY ... FROM STDIN`, and supplies the data from the line after the
+    /// send. Only a line that is exactly `\.` and a LF or CRLF ends the data;
+    /// a block with no such line runs to the end of the input, and then
+    /// [`CopyData::end`] is `None`. psql reads such a block without error.
+    ///
+    /// The token patterns below are there because each token must have one.
+    /// They never match in the lexer: each ties with
+    /// [`MetaCommand::Unknown`], which has the higher priority.
+    #[derive(Debug, Clone)]
+    pub struct CopyData {
+        /// The data lines, line endings included. Empty when the `\.` line
+        /// follows the send directly.
+        #[lex(pattern = r"\\")]
+        pub rows: CopyRowsText,
+        /// The `\.` line, line ending included.
+        pub end: Option<CopyEnd>,
+    }
+}
+
+recursa::ast_node! {
+    /// The `\.` line that ends a block of COPY data.
+    #[derive(Debug, Clone)]
+    pub struct CopyEnd {
+        /// `\.` and its LF or CRLF.
+        #[lex(pattern = r"\\\.")]
+        pub marker: CopyEndText,
     }
 }
 
@@ -129,11 +168,11 @@ recursa::ast_node! {
         /// `;` — psqlscan.l:681, the only terminator `psqlscan.l` itself
         /// returns. The server sees it unchanged, so rendering copies it.
         ///
-        /// psql suppresses the boundary inside parentheses and inside a tracked
-        /// `BEGIN ... END` block; this crate does not track either, because it
-        /// renders one SQL string for the whole document rather than splitting
-        /// it into submissions. The distinction is invisible to the rendered
-        /// text, which pgtk-sql then frames on its own semicolons.
+        /// psql does not end the query buffer at a `;` inside parentheses or
+        /// inside a tracked `BEGIN ... END` block of a `CREATE FUNCTION`
+        /// (psqlscan.l's `paren_depth` and `begin_depth`). That depends on the
+        /// tokens before the `;`, so every `;` is this item, and
+        /// [`crate::Rendered::boundaries`] tells which ones end the buffer.
         #[tok(SEMI)]
         Semi,
         /// `\g`, `\gx`, `\gset`, `\gdesc`, `\gexec`, `\crosstabview` and
@@ -496,9 +535,12 @@ recursa::ast_node! {
         ///
         /// The name never starts with `;` or `:`, because `\;` and `\:` are
         /// [`SqlAtom::Escaped`].
+        ///
+        /// The priority wins the tie against the token patterns of
+        /// [`CopyData`], which the lexer must never match.
         Unknown(
-            #[cfg_attr(feature = "since-pg17", lex(pattern = r#"\\(?:[^ \t\r\f\x0b\n\\;:][^ \t\r\f\x0b\n\\]*)?"#))]
-            #[cfg_attr(not(feature = "since-pg17"), lex(pattern = r#"\\(?:[^ \t\r\f\n\\;:][^ \t\r\f\n\\]*)?"#))]
+            #[cfg_attr(feature = "since-pg17", lex(pattern = r#"\\(?:[^ \t\r\f\x0b\n\\;:][^ \t\r\f\x0b\n\\]*)?"#, priority = 1))]
+            #[cfg_attr(not(feature = "since-pg17"), lex(pattern = r#"\\(?:[^ \t\r\f\n\\;:][^ \t\r\f\n\\]*)?"#, priority = 1))]
             UnknownCommandText,
         ),
     }
@@ -643,7 +685,26 @@ recursa::ast_node! {
         /// The escape is `[\s\S]` rather than `.`: psqlscan.l:213 spells it
         /// `xeescape [\\][^0-7]`, a negated class that matches a newline, while
         /// `.` here does not.
-        EscapeString(#[lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'")] EscapeStringText),
+        ///
+        /// psqlscan.l `<xb,xh,xq,xe,xus>{quote}` enters `xqs`, and a
+        /// `quotecontinue` there goes back to `xe`. So `E'a'` newline `'\''`
+        /// is one escape string, and the `\'` of its second part is an escaped
+        /// quote. The token takes each continued part, with the gaps of
+        /// psqlscan.l `whitespace_with_newline`; a vertical tab is white space
+        /// from 17 (docs/research/psql-14-19-syntax-changes.md, item A4). The
+        /// other string kinds need no continuation here: their continued parts
+        /// have the extent of a plain string, which has no escape.
+        EscapeString(
+            #[cfg_attr(
+                feature = "since-pg17",
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f\x0b]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\x0b]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            #[cfg_attr(
+                not(feature = "since-pg17"),
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            EscapeStringText,
+        ),
         /// `U&'...'` — psqlscan.l `xus`.
         UnicodeString(#[lex(pattern = r"(?i:U)&'[^']*(?:''[^']*)*'")] UnicodeStringText),
         /// `B'...'` — psqlscan.l `xb`.
@@ -665,10 +726,20 @@ recursa::ast_node! {
         /// Where that quote follows, the closed form is one character longer
         /// and wins; only at end of input does this one win. The `xe`
         /// alternative also takes a final lone backslash, which has nothing
-        /// left to escape.
+        /// left to escape, and the continued parts of `EscapeString` before
+        /// its open part.
         OpenQuoted(
-            #[lex(
-                pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+            #[cfg_attr(
+                feature = "since-pg17",
+                lex(
+                    pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*(?:'(?:[ \t\f\x0b]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\x0b]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*)*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+                )
+            )]
+            #[cfg_attr(
+                not(feature = "since-pg17"),
+                lex(
+                    pattern = r#"'[^']*(?:''[^']*)*|(?i:E)'(?:[^'\\]|\\[\s\S]|'')*(?:'(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*)*\\?|(?i:U)&'[^']*(?:''[^']*)*|(?i:B)'[^']*|(?i:X)'[^']*|(?i:U)&"[^"]*(?:""[^"]*)*|"[^"]*(?:""[^"]*)*"#
+                )
             )]
             OpenQuotedText,
         ),

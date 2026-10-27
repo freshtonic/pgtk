@@ -674,7 +674,7 @@ embedded-tests/src/ast/session/set_reset.tests.rs	parse_show_ident	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_show_param	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_show_time_zone	false	14-
 embedded-tests/src/ast/session/set_reset.tests.rs	parse_show_transaction_isolation_level	false	14-
-embedded-tests/src/ast/shared/expr.tests.rs	accept_function_applications_gram_y_admits	false	14-
+embedded-tests/src/ast/shared/expr.tests.rs	reject_within_group_after_an_argument_order_distinct_or_variadic	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	and_binds_tighter_than_or	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	between_does_not_break_and_parse	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	bit_and_hex_string_literals_round_trip_without_space	false	14-

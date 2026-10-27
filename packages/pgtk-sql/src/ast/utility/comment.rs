@@ -4,7 +4,6 @@
 //! dedicated file because its grammar mirrors COMMENT.
 
 use crate::ast::shared::names::AggregateArgs;
-use crate::tokens::literal;
 
 // --- COMMENT / SECURITY LABEL shared object grammar ---
 
@@ -453,7 +452,7 @@ recursa::ast_node! {
     pub enum CommentText {
         #[tok(NULL)]
         Null,
-        Text(literal::StringLit),
+        Text(crate::ast::shared::expr::Sconst),
     }
 }
 
@@ -523,15 +522,13 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// A security-label provider name — Postgres' `NonReservedWord_or_Sconst`.
-    ///
-    /// Variant ordering: `String` before `Word` is irrelevant (disjoint
-    /// first-sets — a quoted string vs an identifier), but the string form is the
-    /// one the corpus exercises (`FOR 'dummy'`).
+    /// A security-label provider name — gram.y `opt_provider: FOR
+    /// NonReservedWord_or_Sconst` (REL_17_11 gram.y 7347): a string constant,
+    /// or a word that is not a reserved keyword.
     #[derive(Debug)]
     pub enum SecurityLabelProviderName {
-        String(literal::StringLit),
-        Word(literal::Ident),
+        String(crate::ast::shared::expr::Sconst),
+        Word(crate::tokens::NonReservedWord),
     }
 }
 

@@ -26,8 +26,9 @@ fn accepted_legacy_gap_contract_has_one_identity_per_frozen_skip() {
 
 #[test]
 fn every_version_baseline_is_complete_and_comes_from_its_pinned_oracle() {
-    // Loading checks the corpus identity, the pin, the per-file oracle
-    // outcomes and the order and ranges of the expected version gaps.
+    // Loading checks the corpus identity, the pin, the oracle outcome of
+    // each frozen submission and the order and ranges of the expected
+    // version gaps.
     for feature in baseline::version_features() {
         let version = baseline::VersionBaseline::of(feature);
         assert_eq!(version.feature, feature);
@@ -43,19 +44,28 @@ fn every_version_baseline_is_complete_and_comes_from_its_pinned_oracle() {
 }
 
 #[test]
-fn the_pg17_version_baseline_agrees_with_the_frozen_legacy_baseline() {
-    let legacy = baseline::Baseline::pinned();
+fn the_frozen_submissions_cover_the_frozen_corpus() {
+    let submissions = baseline::FrozenSubmissions::pinned();
+    let legacy = baseline::FrozenStatements::pinned();
+    assert_eq!(submissions.file_names(), legacy.file_names());
+    for name in legacy.file_names() {
+        let file = submissions.file(name);
+        assert_eq!(file.source_git_blob, legacy.file(name).source_git_blob);
+        assert_eq!(file.source_bytes, legacy.file(name).source_bytes);
+    }
+}
+
+#[test]
+fn every_version_checks_the_same_server_submissions() {
+    // The statement set is the psql submissions, the same for each version:
+    // the corpus is the 17.9 corpus, and psql 17 sends it.
     let pg17 = baseline::VersionBaseline::of("pg17");
-    for file in legacy.file_names() {
+    for feature in baseline::version_features() {
+        let version = baseline::VersionBaseline::of(feature);
         assert_eq!(
-            pg17.expected_outcomes(file),
-            legacy.file(file).outcomes,
-            "{file}: the 17.11 oracle gives the frozen 17.9 outcome counts"
+            version.expected_totals().checked,
+            pg17.expected_totals().checked,
+            "{feature}"
         );
     }
-    assert_eq!(pg17.expected_totals(), legacy.totals());
-    assert!(
-        pg17.gaps().is_empty(),
-        "pg17 is the complete grammar; it has no expected version gaps"
-    );
 }

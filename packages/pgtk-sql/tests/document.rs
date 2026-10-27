@@ -14,7 +14,7 @@
 //! asserted a substituted reading moved there with the behaviour.
 
 use pgtk_sql::ast::{Statement, dml::values::SelectClause};
-use pgtk_sql::document::{self, SqlParseError};
+use pgtk_sql::document::{self, RecoveredItem, SqlParseError};
 use recursa::Span;
 
 /// Proves the ordered spans own every source byte exactly once.
@@ -486,4 +486,280 @@ fn semicolons_inside_atomic_lexical_regions_do_not_split_islands() {
         assert_eq!(doc.render_exact(), source);
         assert_owned_once(source, doc.part_spans());
     }
+}
+
+fn island_texts<'a>(source: &'a str, doc: &document::SqlDocument<'_>) -> Vec<&'a str> {
+    doc.parts()
+        .filter_map(|part| match part {
+            pgtk_sql::CompletePart::Island(island) => Some(&source[island.span().range()]),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn an_empty_begin_atomic_body_is_one_island() {
+    for source in [
+        "CREATE PROCEDURE p() LANGUAGE sql BEGIN ATOMIC END; SELECT 3;",
+        "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC END;\nSELECT 3",
+    ] {
+        let doc = parse(source);
+        let items = island_texts(source, &doc);
+        assert_eq!(items.len(), 2, "two statements in {source:?}");
+        assert!(items[0].ends_with("BEGIN ATOMIC END;"), "{source:?}");
+        assert!(matches!(
+            doc.statements()[0],
+            Statement::CreateFunction(_) | Statement::CreateProcedure(_)
+        ));
+        assert_owned_once(source, doc.part_spans());
+    }
+}
+
+#[test]
+fn semicolons_in_a_begin_atomic_body_do_not_split_islands() {
+    // gram.y: `BEGIN_P ATOMIC routine_body_stmt_list END_P`, and each
+    // statement of the list ends with a `;`. The body is one statement of the
+    // document, also with a `CASE … END` in it and with empty statements.
+    for (source, body) in [
+        (
+            "CREATE FUNCTION f() RETURNS int LANGUAGE sql \
+             BEGIN ATOMIC SELECT 1; SELECT 2; END; SELECT 3;",
+            "CREATE FUNCTION f() RETURNS int LANGUAGE sql \
+             BEGIN ATOMIC SELECT 1; SELECT 2; END;",
+        ),
+        (
+            "CREATE PROCEDURE p() LANGUAGE sql \
+             BEGIN ATOMIC SELECT CASE WHEN true THEN 1 END; ; END;\nSELECT 3",
+            "CREATE PROCEDURE p() LANGUAGE sql \
+             BEGIN ATOMIC SELECT CASE WHEN true THEN 1 END; ; END;",
+        ),
+    ] {
+        let doc = parse(source);
+        assert_eq!(
+            island_texts(source, &doc),
+            [body, source[body.len()..].trim_start()]
+        );
+        assert_owned_once(source, doc.part_spans());
+    }
+}
+
+#[test]
+fn semicolons_in_parentheses_do_not_split_islands() {
+    // gram.y: `'(' RuleActionMulti ')'`.
+    let source = "CREATE RULE r AS ON INSERT TO t DO ALSO (NOTIFY a; NOTIFY b); SELECT 1;";
+    let doc = parse(source);
+    assert_eq!(doc.statements().len(), 2);
+    let first = doc.items().next().expect("the rule");
+    assert_eq!(
+        &source[first.source_bounds().expect("a span").range()],
+        "CREATE RULE r AS ON INSERT TO t DO ALSO (NOTIFY a; NOTIFY b);"
+    );
+}
+
+// --- Recovering parse --------------------------------------------------------
+
+fn recover(source: &str) -> document::RecoveredDocument<'_> {
+    document::parse_sql_recovering(source)
+        .unwrap_or_else(|error| panic!("recovering parse of {source:?}: {error}"))
+}
+
+/// The text of each item, with `!` before the text of a rejection.
+fn recovered_texts(source: &str) -> Vec<String> {
+    recover(source)
+        .items()
+        .map(|item| match item {
+            RecoveredItem::Statement { span, .. } => source[span.range()].to_owned(),
+            RecoveredItem::Rejected(rejection) => format!("!{}", &source[rejection.span().range()]),
+        })
+        .collect()
+}
+
+#[test]
+fn recovering_parse_of_accepted_text_is_the_strict_parse() {
+    for source in [
+        "",
+        " -- comment only\n",
+        "SELECT 1",
+        "SELECT 1;",
+        ";;SELECT 1;;",
+        "SELECT 1;\n-- belongs to two\nSELECT 2; -- tail",
+        "SELECT 'a;b'; SELECT $tag$a;$notag$;b$tag$; SELECT 1 AS \"x;y\";",
+        "SELECT /* a; /* b; */ c; */ 1;\r\nSELECT 'é';",
+        "CREATE RULE r AS ON INSERT TO t DO ALSO (NOTIFY a; NOTIFY b); SELECT 1;",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC END; SELECT 3;",
+        "SELECT begin atomic FROM t; SELECT 2;",
+    ] {
+        let strict = parse(source);
+        let recovered = recover(source);
+        assert!(recovered.is_accepted(), "{source:?}: {recovered:?}");
+        assert_eq!(recovered.source(), source);
+        let strict_spans = strict
+            .parts()
+            .filter_map(|part| match part {
+                pgtk_sql::CompletePart::Island(island) => Some(island.span()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let recovered_spans = recovered
+            .items()
+            .map(|item| item.span())
+            .collect::<Vec<_>>();
+        assert_eq!(recovered_spans, strict_spans, "{source:?}");
+        assert_eq!(
+            format!("{:?}", recovered.statements()),
+            format!("{:?}", strict.statements()),
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn recovering_parse_continues_after_each_rejection() {
+    let source = "SELECT 1; SELECT FROM WHERE; SELECT 2;\nSELECT 1 +; SELECT 3";
+    assert_eq!(
+        recovered_texts(source),
+        [
+            "SELECT 1;",
+            "!SELECT FROM WHERE;",
+            "SELECT 2;",
+            "!SELECT 1 +;",
+            "SELECT 3"
+        ]
+    );
+    let document = recover(source);
+    assert!(!document.is_accepted());
+    assert_eq!(document.statements().len(), 3);
+    assert_eq!(document.rejections().count(), 2);
+}
+
+#[test]
+fn a_recovered_rejection_is_the_strict_rejection_of_its_statement() {
+    let source = "SELECT 1;\nSELECT FROM WHERE;\nSELECT 2;\nSELECT 1 1;";
+    let document = recover(source);
+    let rejections = document.rejections().collect::<Vec<_>>();
+    assert_eq!(rejections.len(), 2);
+
+    // The first rejection is the rejection of the strict parse.
+    assert_eq!(**rejections[0].rejection(), *reject(source));
+
+    // Each rejection has the spans of the complete source, and the
+    // diagnostics that the strict parse gives for the statement alone.
+    for (rejection, text, failure) in [
+        (rejections[0], "SELECT FROM WHERE;", "WHERE"),
+        (rejections[1], "SELECT 1 1;", "1"),
+    ] {
+        let span = rejection.span();
+        assert_eq!(&source[span.range()], text);
+        assert_eq!(rejection.rejection().source(), source);
+        let diagnostic = &rejection.rejection().diagnostics()[0];
+        assert_eq!(&source[diagnostic.span().range()], failure);
+        let alone = reject(text);
+        assert_eq!(
+            diagnostic.span().start() - span.start(),
+            alone.diagnostics()[0].span().start(),
+            "{text:?}"
+        );
+        assert_eq!(diagnostic.message(), alone.diagnostics()[0].message());
+    }
+}
+
+#[test]
+fn recovering_parse_does_not_split_at_a_semicolon_in_parentheses() {
+    assert_eq!(
+        recovered_texts("SELECT (1; 2) FROM; SELECT 3;"),
+        ["!SELECT (1; 2) FROM;", "SELECT 3;"]
+    );
+    assert_eq!(
+        recovered_texts("CREATE RULE r AS ON INSERT TO t DO (NOTIFY a; SELEC); SELECT 3;"),
+        [
+            "!CREATE RULE r AS ON INSERT TO t DO (NOTIFY a; SELEC);",
+            "SELECT 3;"
+        ]
+    );
+    // A `)` that closes nothing does not open a level.
+    assert_eq!(
+        recovered_texts("SELECT 1); SELECT 3;"),
+        ["!SELECT 1);", "SELECT 3;"]
+    );
+    // A parenthesis that does not close takes the rest of the document.
+    assert_eq!(
+        recovered_texts("SELECT 0; SELECT (1; SELECT 2;"),
+        ["SELECT 0;", "!SELECT (1; SELECT 2;"]
+    );
+}
+
+#[test]
+fn recovering_parse_does_not_split_at_a_semicolon_in_a_string_or_comment() {
+    for (rejected, text) in [
+        ("SELECT 'a;b' FROM;", "plain string"),
+        ("SELECT E'a\\';b' FROM;", "escape string"),
+        ("SELECT U&'a;b' FROM;", "Unicode string"),
+        ("SELECT $$a;b$$ FROM;", "dollar-quoted string"),
+        (
+            "SELECT $tag$a;$notag$;b$tag$ FROM;",
+            "tagged dollar-quoted string",
+        ),
+        ("SELECT 1 AS \"x;y\" FROM;", "quoted identifier"),
+        ("SELECT -- a; comment\nFROM;", "line comment"),
+        ("SELECT /* a; /* b; */ c; */ FROM;", "nested block comment"),
+    ] {
+        let source = format!("{rejected} SELECT 3;");
+        assert_eq!(
+            recovered_texts(&source),
+            [format!("!{rejected}"), "SELECT 3;".to_owned()],
+            "{text}"
+        );
+    }
+    // A string that does not close takes the rest of the document.
+    assert_eq!(
+        recovered_texts("SELECT 1; SELECT 'a; SELECT 2;"),
+        ["SELECT 1;", "!SELECT 'a; SELECT 2;"]
+    );
+}
+
+#[test]
+fn recovering_parse_does_not_split_at_a_semicolon_in_a_begin_atomic_body() {
+    let header = "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC";
+    for body in [
+        "SELECT 1; SELECT FROM WHERE; END;",
+        "SELECT CASE WHEN true THEN 1 END; SELECT FROM WHERE; END;",
+        "SELECT FROM WHERE; ; END;",
+        // A routine in the body has its own body.
+        "CREATE FUNCTION g() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END; SELEC; END;",
+    ] {
+        let rejected = format!("{header} {body}");
+        let source = format!("{rejected} SELECT 3;");
+        assert_eq!(
+            recovered_texts(&source),
+            [format!("!{rejected}"), "SELECT 3;".to_owned()],
+            "{body:?}"
+        );
+    }
+    // A body that does not end takes the rest of the document.
+    assert_eq!(
+        recovered_texts("CREATE PROCEDURE p() BEGIN ATOMIC SELEC; SELECT 2;"),
+        ["!CREATE PROCEDURE p() BEGIN ATOMIC SELEC; SELECT 2;"]
+    );
+    // Only a statement that starts with `CREATE` has a body.
+    assert_eq!(
+        recovered_texts("SELECT begin atomic FROM; SELECT 3;"),
+        ["!SELECT begin atomic FROM;", "SELECT 3;"]
+    );
+}
+
+#[test]
+fn recovering_parse_keeps_empty_statements_and_a_missing_boundary() {
+    assert_eq!(
+        recovered_texts(";SELECT FROM;;SELECT 1 SELECT 2;SELECT 3"),
+        [";", "!SELECT FROM;", ";", "!SELECT 1 SELECT 2;", "SELECT 3"]
+    );
+}
+
+#[test]
+fn recovering_parse_rejects_psql_text_between_boundaries() {
+    let source = "SELECT 1;\n\\set x 1\nSELECT :x;\nSELECT 2;\n";
+    assert_eq!(
+        recovered_texts(source),
+        ["SELECT 1;", "!\\set x 1\nSELECT :x;", "SELECT 2;"]
+    );
 }

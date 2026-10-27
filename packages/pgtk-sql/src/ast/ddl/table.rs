@@ -967,7 +967,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct GenericOption {
         pub name: literal::AliasName,
-        pub value: crate::ast::utility::copy::CopySconst,
+        pub value: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -991,6 +991,7 @@ recursa::ast_node! {
     /// `COMPRESSION`, then `OPTIONS (...)`, and all three come before every
     /// `ColQualList` entry, `COLLATE` included.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_column_def, flat = crate::ast::validation::current_schema_column_def_flat)]
     pub struct ColumnDef {
         pub name: crate::tokens::ColId,
         pub type_name: crate::ast::shared::expr::CastType,
@@ -1754,6 +1755,7 @@ recursa::ast_node! {
     /// Required, non-empty CTAS output-column list.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_ctas_columns, flat = crate::ast::validation::current_schema_ctas_columns_flat)]
     pub struct CtasColumnList {
         #[sep(COMMA)]
         pub columns: one_or_many!(crate::tokens::ColId),
