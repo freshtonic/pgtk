@@ -184,6 +184,7 @@ recursa::ast_node! {
     /// element after a comma.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this)]
+    #[validate(crate::ast::validation::current_schema_table_alias_columns, flat = crate::ast::validation::current_schema_table_alias_columns_flat)]
     pub struct TableAliasColumnList(
         /// gram.y `name_list`.
         #[sep(COMMA)]
@@ -410,6 +411,7 @@ recursa::ast_node! {
     /// A column definition inside a function-table column-def-list:
     /// `name type` (e.g., `a int`).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_column_def, flat = crate::ast::validation::current_schema_func_table_column_def_flat)]
     pub struct FuncTableColumnDef {
         /// gram.y `TableFuncElement: ColId Typename opt_collate_clause`.
         pub name: crate::tokens::ColId,
@@ -533,6 +535,7 @@ recursa::ast_node! {
     /// Both lists lead with a `ColId`, and the parser tells them apart on the
     /// token after it: a `,` or `)` ends a name, anything else starts a type.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_alias_columns, flat = crate::ast::validation::current_schema_func_table_alias_columns_flat)]
     pub enum FuncTableAliasColumnList {
         /// gram.y `name_list`.
         Names(#[sep(COMMA)] one_or_many!(crate::tokens::ColId)),
@@ -1542,6 +1545,7 @@ recursa::ast_node! {
     /// `Ident` would admit.
     #[derive(Debug)]
     #[tok(AS, this)]
+    #[validate(crate::ast::validation::current_schema_join_using_alias, flat = crate::ast::validation::current_schema_join_using_alias_flat)]
     pub struct JoinUsingAlias {
         /// gram.y `USING '(' name_list ')' opt_alias_clause`: `AS ColId`.
         pub name: crate::tokens::ColId,
@@ -1552,6 +1556,7 @@ recursa::ast_node! {
     /// Parenthesized comma-separated column list in a JOIN USING clause.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_join_using_columns, flat = crate::ast::validation::current_schema_join_using_columns_flat)]
     pub struct JoinUsingColumns(
         /// gram.y `name_list`: one or more `ColId`.
         #[deref]

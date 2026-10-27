@@ -2407,3 +2407,43 @@ fn current_schema_is_no_col_id() {
         "SELECT \"current_schema\".x FROM t",
     ]);
 }
+
+/// The column names of a table, function-table or subquery alias, of a CTE,
+/// a view, a materialized view, a CREATE TABLE AS and a JOIN USING, and the
+/// name of a CTE, are `ColId`s in gram.y (`name_list`, `columnList`,
+/// `TableFuncElement`), so each refuses an unquoted `current_schema`.
+#[test]
+fn current_schema_is_no_column_name_of_a_list() {
+    assert_rejects(
+        &[
+            "SELECT * FROM t AS x (current_schema)",
+            "SELECT * FROM t AS x (a, current_schema)",
+            "SELECT * FROM t x (current_schema)",
+            "SELECT * FROM (SELECT 1) AS s (current_schema)",
+            "SELECT * FROM generate_series(1, 2) AS x (current_schema)",
+            "SELECT * FROM generate_series(1, 2) x (a, current_schema)",
+            "SELECT * FROM generate_series(1, 2) AS x (current_schema int)",
+            "SELECT * FROM ROWS FROM (f()) AS x (current_schema)",
+            "WITH current_schema AS (SELECT 1) SELECT 1",
+            "WITH current_schema (a) AS (SELECT 1) SELECT 1",
+            "WITH w (current_schema) AS (SELECT 1) SELECT 1",
+            "CREATE VIEW v (current_schema) AS SELECT 1",
+            "CREATE VIEW v (Current_Schema) AS SELECT 1",
+            "CREATE MATERIALIZED VIEW v (current_schema) AS SELECT 1",
+            "CREATE TABLE t (current_schema) AS SELECT 1",
+            "SELECT * FROM t JOIN u USING (current_schema)",
+            "SELECT * FROM t JOIN u USING (a) AS current_schema",
+        ],
+        "current_schema is no ColId",
+    );
+    assert_accepts(&[
+        "SELECT * FROM t AS x (\"current_schema\")",
+        "SELECT * FROM t AS x (a, b)",
+        "SELECT * FROM generate_series(1, 2) AS x (a int)",
+        "SELECT * FROM generate_series(1, 2) x (a, b)",
+        "WITH w (a) AS (SELECT 1) SELECT 1",
+        "CREATE VIEW v (a) AS SELECT 1",
+        "CREATE TABLE t (a) AS SELECT 1",
+        "SELECT * FROM t JOIN u USING (a) AS j",
+    ]);
+}

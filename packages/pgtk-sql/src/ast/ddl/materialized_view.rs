@@ -17,6 +17,7 @@ recursa::ast_node! {
     /// The wrapper owns the delimiters around the complete comma-separated list.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_mat_view_columns, flat = crate::ast::validation::current_schema_mat_view_columns_flat)]
     pub struct CreateMatViewColumnList(
         #[sep(COMMA)]
         #[deref]

@@ -1755,6 +1755,7 @@ recursa::ast_node! {
     /// Required, non-empty CTAS output-column list.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_ctas_columns, flat = crate::ast::validation::current_schema_ctas_columns_flat)]
     pub struct CtasColumnList {
         #[sep(COMMA)]
         pub columns: one_or_many!(crate::tokens::ColId),
