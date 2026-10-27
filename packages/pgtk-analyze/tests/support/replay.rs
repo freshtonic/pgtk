@@ -5,7 +5,7 @@
 //! fresh session but also asks the Oracle and the Subject about every
 //! statement first and compares their answers:
 //!
-//! 1. Skip it when it is not a statement, when `pgtk-sql` cannot parse it, or
+//! 1. Skip it when it is not server SQL, when `pgtk-sql` cannot parse it, or
 //!    when the Oracle's session is in a failed transaction.
 //! 2. If the Subject wants it, reload the Catalog if a statement since the
 //!    last load may have changed it, and read the search path.
@@ -31,7 +31,8 @@ type AnalysisSession = pgtk_analyze::Session;
 /// Why a statement was not compared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
-    /// A psql meta-command or other non-statement text.
+    /// A psql submission that is not server SQL: an empty query, a variable
+    /// that is not set, or an unknown meta-command.
     NotAStatement,
     /// `pgtk-sql` did not parse it, so the Subject never saw it.
     ParseFailed,
@@ -119,18 +120,8 @@ pub struct Shape {
     pub reads_session: bool,
 }
 
-/// Render one frozen item as psql would send it to the server: psql's own
-/// terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) are client
-/// syntax the server never sees, and `pgtk-psql` strips them. No variables are
-/// bound; the corpus sets its own with `\set`, which nothing models yet.
-pub fn render(item: &str) -> Option<String> {
-    let rendered = pgtk_psql::render(item, &pgtk_psql::Variables::new()).ok()?;
-    Some(rendered.sql().trim().to_owned())
-}
-
-/// Parse one statement with `pgtk-sql`, dropping the terminator the frozen
-/// range keeps, the way `pgtk-sql`'s own harness does. `None` when `pgtk-sql`
-/// rejects it.
+/// Parse one statement with `pgtk-sql`, dropping its terminator, the way
+/// `pgtk-sql`'s own harness does. `None` when `pgtk-sql` rejects it.
 pub fn parse(sql: &str) -> Option<Shape> {
     let lexed = pgtk_sql::lex(sql);
     if lexed.errors().next().is_some() {
@@ -174,6 +165,50 @@ pub fn parse(sql: &str) -> Option<Shape> {
             Statement::Execute(_) | Statement::Fetch(_) | Statement::Move(_)
         ),
     })
+}
+
+/// The statements of one psql submission, in order.
+///
+/// psql sends a query buffer as one query string, and the string can hold
+/// more than one statement (`\;`, or a variable whose value holds a `;`).
+/// The Oracle is asked about one statement at a time (a Parse and a
+/// Describe take one), so the harness splits the string. A `;` inside a
+/// statement, as in a `BEGIN ATOMIC` body, is no split: each statement is the
+/// shortest run of tokens up to a `;` that `pgtk-sql` parses as one
+/// `Statement`. The rest of a string that does not parse is one item, which
+/// the replay skips.
+pub fn statements(sql: &str) -> Vec<String> {
+    let lexed = pgtk_sql::lex(sql);
+    if lexed.errors().next().is_some() {
+        return vec![sql.to_owned()];
+    }
+    let tokens = lexed
+        .tokens()
+        .map(|token| (token.kind(), token.span().range()))
+        .collect::<Vec<_>>();
+    let mut statements = Vec::new();
+    let mut from = 0;
+    while from < tokens.len() {
+        let start = tokens[from].1.start;
+        let ends = (from..tokens.len())
+            .filter(|&end| tokens[end].0 == pgtk_sql::TokenKind::SEMI)
+            .collect::<Vec<_>>();
+        let split = ends
+            .iter()
+            .copied()
+            .find(|&end| parse(&sql[start..tokens[end].1.end]).is_some());
+        match split {
+            Some(end) => {
+                statements.push(sql[start..tokens[end].1.end].to_owned());
+                from = end + 1;
+            }
+            None => {
+                statements.push(sql[start..].to_owned());
+                break;
+            }
+        }
+    }
+    statements
 }
 
 /// Does running this statement leave the catalog as it was? Everything not
