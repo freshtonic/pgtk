@@ -117,6 +117,32 @@ pub fn fold_identifier_with_uescape<'a>(
     Ok(truncate(name))
 }
 
+/// Spell a `U&"..."` identifier and its optional `UESCAPE` clause as the one
+/// quoted identifier that `base_yylex` makes of them, for a declared
+/// classification (Recursa `#[classify(via ...)]`,
+/// `crate::tokens::UnicodeIdent`).
+///
+/// `parts` holds the source text of the name and of the string after
+/// `UESCAPE`, which is the empty text when there is no clause. The spelling
+/// is the name decoded with the escape character of the clause (`\` without
+/// one), as `"..."` with each `"` doubled: each fold reads a quoted
+/// identifier as a name, as gram.y reads the `IDENT` that `base_yylex`
+/// returns (REL_17_11 parser.c 315-343). Returns `None` when the scanner
+/// refuses the name or the escape character; a validation hook refuses those
+/// first.
+pub fn unicode_spelling(parts: &[&str]) -> Option<String> {
+    let [name, uescape] = parts else {
+        return None;
+    };
+    let folded = if uescape.is_empty() {
+        fold_identifier(name).ok()?
+    } else {
+        let escape = String::from_utf8(sconst_bytes(uescape)?).ok()?;
+        fold_identifier_with_uescape(name, &escape).ok()?
+    };
+    Some(format!("\"{}\"", folded.name.replace('"', "\"\"")))
+}
+
 /// Fold the source text of one identifier token for a declared
 /// classification, which compares the folded name with the names a `gram.y`
 /// action reads (`#[classify(...)]`, Recursa `docs/declared-rejections.md`).
