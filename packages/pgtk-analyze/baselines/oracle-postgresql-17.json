@@ -3,13 +3,13 @@
   "postgres_major": 17,
   "totals": {
     "items": 42902,
-    "skipped": 381,
+    "skipped": 382,
     "skipped_not_a_statement": 125,
-    "skipped_parse_failed": 50,
+    "skipped_parse_failed": 51,
     "skipped_aborted_transaction": 206,
     "skipped_catalog_unavailable": 0,
     "unsupported": 0,
-    "agree": 41729,
+    "agree": 41728,
     "known_divergence": 792,
     "disagree": 0
   },
@@ -1264,13 +1264,13 @@
     },
     "limit.sql": {
       "items": 80,
-      "skipped": 0,
+      "skipped": 1,
       "skipped_not_a_statement": 0,
-      "skipped_parse_failed": 0,
+      "skipped_parse_failed": 1,
       "skipped_aborted_transaction": 0,
       "skipped_catalog_unavailable": 0,
       "unsupported": 0,
-      "agree": 80,
+      "agree": 79,
       "known_divergence": 0,
       "disagree": 0
     },

@@ -637,6 +637,7 @@ recursa::ast_node! {
     /// Function options after the signature/RETURNS may appear in any order.
     #[derive(Debug)]
     #[tok(CREATE, this)]
+    #[validate(crate::ast::validation::table_function_arguments, flat = crate::ast::validation::table_function_arguments_flat)]
     pub struct CreateFunctionStmt {
         #[presence(OR, REPLACE)]
         pub or_replace: bool,

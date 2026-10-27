@@ -230,6 +230,10 @@ impl WithClause<'_> {
 recursa::ast_node! {
     /// WITH statement: WITH clause followed by a query-shaped body.
     #[derive(Debug)]
+    #[validate(
+        crate::ast::validation::with_statement,
+        flat = crate::ast::validation::with_statement_flat
+    )]
     pub struct WithStatement {
         pub with_clause: WithClause,
         pub body: WithBody,

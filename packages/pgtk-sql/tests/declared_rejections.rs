@@ -368,3 +368,208 @@ fn an_invalid_uescape_character_is_refused_at_the_string() {
         assert_declared_rejection(source, "42601", "invalid Unicode escape character", span);
     }
 }
+
+/// Asserts the declared rejection of `source` in every storage, and, with the
+/// oracle, that PostgreSQL refuses `source` with the same message.
+fn assert_postgres_rejection(source: &'static str, code: &str, message: &str, span: &str) {
+    assert_declared_rejection(source, code, message, span);
+    #[cfg(feature = "postgres-oracle")]
+    assert_eq!(
+        pgtk_oracle::parse_error(source).as_deref(),
+        Some(message),
+        "PostgreSQL refuses {source:?} with the same message"
+    );
+}
+
+/// Asserts that pgtk-sql and, with the oracle, PostgreSQL accept `source`.
+fn assert_postgres_accepts(source: &'static str) {
+    for entry in [Entry::Value, Entry::Arena, Entry::Flat] {
+        let lexed = lex(source);
+        let mut input = lexed.input();
+        let accepted = match entry {
+            Entry::Value => Statement::parse(&mut input).is_ok(),
+            Entry::Arena => Statement::parse_arena(&mut input).is_ok(),
+            Entry::Flat => Statement::parse_flat(&mut input).is_ok(),
+        };
+        assert!(accepted && input.is_eof(), "pgtk-sql accepts {source:?}");
+    }
+    #[cfg(feature = "postgres-oracle")]
+    assert_eq!(
+        pgtk_oracle::parse_error(source),
+        None,
+        "PostgreSQL accepts {source:?}"
+    );
+}
+
+/// gram.y `a_expr: row OVERLAPS row` refuses a row that is not two values, at
+/// the row (REL_17_11 gram.y 15002, 15007; issue #55).
+#[test]
+fn an_overlaps_row_holds_two_values() {
+    assert_postgres_rejection(
+        "SELECT (1, 2, 3) OVERLAPS (4, 5)",
+        "42601",
+        "wrong number of parameters on left side of OVERLAPS expression",
+        "(1, 2, 3)",
+    );
+    assert_postgres_rejection(
+        "SELECT (1, 2) OVERLAPS ROW(4)",
+        "42601",
+        "wrong number of parameters on right side of OVERLAPS expression",
+        "ROW(4)",
+    );
+    assert_postgres_accepts("SELECT (1, 2) OVERLAPS ROW(3, 4)");
+}
+
+/// gram.y `AexprConst: func_name '(' func_arg_list opt_sort_clause ')'
+/// Sconst` refuses a named argument (REL_17_11 gram.y 17250; issue #55).
+#[test]
+fn a_type_modifier_has_no_parameter_name() {
+    assert_postgres_rejection(
+        "SELECT foo(n := 20) 'x'",
+        "42601",
+        "type modifier cannot have parameter name",
+        "n := 20",
+    );
+    assert_postgres_accepts("SELECT foo(20) 'x'");
+}
+
+/// gram.y `mergeTableFuncParameters` refuses an `OUT` or `INOUT` argument of
+/// a `RETURNS TABLE` function (REL_17_11 gram.y 19129; issue #55). The error
+/// has no position, so the span is the statement.
+#[test]
+fn a_table_function_has_no_output_argument() {
+    for source in [
+        "CREATE FUNCTION f(OUT a int) RETURNS TABLE(b int) AS 'x' LANGUAGE sql",
+        "CREATE FUNCTION f(a INOUT int) RETURNS TABLE(b int) AS 'x' LANGUAGE sql",
+    ] {
+        assert_postgres_rejection(
+            source,
+            "42601",
+            "OUT and INOUT arguments aren't allowed in TABLE functions",
+            source,
+        );
+    }
+    assert_postgres_accepts(
+        "CREATE FUNCTION f(VARIADIC a int[]) RETURNS TABLE(b int) AS 'x' LANGUAGE sql",
+    );
+    assert_postgres_accepts("CREATE FUNCTION f(OUT a int) RETURNS int AS 'x' LANGUAGE sql");
+}
+
+/// gram.y `makeOrderedSetArgs` refuses an ordered-set aggregate whose last
+/// direct argument is `VARIADIC` unless the aggregated arguments are one
+/// `VARIADIC` argument of the same type (REL_17_11 gram.y 18843; issue #55).
+#[test]
+fn an_ordered_set_aggregate_with_a_variadic_direct_argument_repeats_it() {
+    for (source, span) in [
+        (
+            "CREATE AGGREGATE a(VARIADIC int ORDER BY VARIADIC text) (sfunc = f, stype = int)",
+            "ORDER BY VARIADIC text",
+        ),
+        (
+            "CREATE AGGREGATE a(VARIADIC int ORDER BY int) (sfunc = f, stype = int)",
+            "ORDER BY int",
+        ),
+        (
+            "ALTER AGGREGATE a(VARIADIC int ORDER BY VARIADIC int, int) RENAME TO b",
+            "ORDER BY VARIADIC int, int",
+        ),
+    ] {
+        assert_postgres_rejection(
+            source,
+            "0A000",
+            "an ordered-set aggregate with a VARIADIC direct argument must have one VARIADIC \
+             aggregated argument of the same data type",
+            span,
+        );
+    }
+    assert_postgres_accepts(
+        "CREATE AGGREGATE a(VARIADIC \"any\" ORDER BY VARIADIC \"any\") (sfunc = f, stype = int)",
+    );
+    assert_postgres_accepts(
+        "CREATE AGGREGATE a(int ORDER BY VARIADIC text) (sfunc = f, stype = int)",
+    );
+}
+
+/// gram.y `insertSelectOptions` refuses a second `ORDER BY`, `OFFSET`,
+/// `LIMIT` or `WITH` around a parenthesized query, and `WITH TIES` without
+/// `ORDER BY` (REL_17_11 gram.y 18880-18936; issue #55).
+#[test]
+fn a_query_takes_each_select_option_once() {
+    for (source, message, span) in [
+        (
+            "(SELECT 1 ORDER BY 1) ORDER BY 2",
+            "multiple ORDER BY clauses not allowed",
+            "ORDER BY 2",
+        ),
+        (
+            "(SELECT 1 OFFSET 1) OFFSET 2",
+            "multiple OFFSET clauses not allowed",
+            "OFFSET 2",
+        ),
+        (
+            "(SELECT 1 LIMIT 1) LIMIT 2",
+            "multiple LIMIT clauses not allowed",
+            "LIMIT 2",
+        ),
+        (
+            "SELECT 1 FETCH FIRST ROW WITH TIES",
+            "WITH TIES cannot be specified without ORDER BY clause",
+            "SELECT 1 FETCH FIRST ROW WITH TIES",
+        ),
+        (
+            "WITH a AS (SELECT 1) (WITH b AS (SELECT 2) SELECT 3)",
+            "multiple WITH clauses not allowed",
+            "WITH a AS (SELECT 1)",
+        ),
+    ] {
+        assert_postgres_rejection(source, "42601", message, span);
+    }
+    assert_postgres_accepts("(SELECT 1 ORDER BY 1) FETCH FIRST ROW WITH TIES");
+    assert_postgres_accepts("(SELECT 1 LIMIT 1) OFFSET 2");
+    assert_postgres_accepts("WITH a AS (SELECT 1) (SELECT 3)");
+}
+
+/// gram.y `frame_extent` refuses a frame that starts at `UNBOUNDED
+/// FOLLOWING` or ends at `UNBOUNDED PRECEDING`, and reports the start first
+/// (REL_17_11 gram.y 16335, 16359, 16364; issue #55). Each bound keeps its
+/// arm, so the keyword shifts as in gram.y, and a declared rule refuses it.
+#[test]
+fn a_frame_bound_is_refused_at_its_bound() {
+    for (source, message, span) in [
+        (
+            "SELECT sum(x) OVER (ROWS UNBOUNDED FOLLOWING) FROM t",
+            "frame start cannot be UNBOUNDED FOLLOWING",
+            "UNBOUNDED FOLLOWING",
+        ),
+        (
+            "SELECT sum(x) OVER (ROWS BETWEEN UNBOUNDED FOLLOWING AND CURRENT ROW) FROM t",
+            "frame start cannot be UNBOUNDED FOLLOWING",
+            "UNBOUNDED FOLLOWING AND CURRENT ROW",
+        ),
+        (
+            "SELECT sum(x) OVER (ROWS BETWEEN UNBOUNDED FOLLOWING AND UNBOUNDED PRECEDING) FROM t",
+            "frame start cannot be UNBOUNDED FOLLOWING",
+            "UNBOUNDED FOLLOWING AND UNBOUNDED PRECEDING",
+        ),
+        (
+            "SELECT sum(x) OVER (ROWS BETWEEN 1 PRECEDING AND UNBOUNDED PRECEDING) FROM t",
+            "frame end cannot be UNBOUNDED PRECEDING",
+            "UNBOUNDED PRECEDING",
+        ),
+        (
+            "SELECT sum(x) OVER (ROWS BETWEEN CURRENT ROW AND UNBOUNDED PRECEDING) FROM t",
+            "frame end cannot be UNBOUNDED PRECEDING",
+            "UNBOUNDED PRECEDING",
+        ),
+        (
+            "SELECT sum(x) OVER (ROWS BETWEEN 1 FOLLOWING AND UNBOUNDED PRECEDING) FROM t",
+            "frame end cannot be UNBOUNDED PRECEDING",
+            "UNBOUNDED PRECEDING",
+        ),
+    ] {
+        assert_postgres_rejection(source, "42P20", message, span);
+    }
+    assert_postgres_accepts(
+        "SELECT sum(x) OVER (ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) FROM t",
+    );
+}
