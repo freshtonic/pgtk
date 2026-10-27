@@ -82,8 +82,6 @@ pub(crate) fn lex_statement_source(source: &str) -> pgtk_sql::LexResult<'_> {
 /// Strictly parse one extracted statement with pgtk-sql and return its formatted
 /// SQL or a stable diagnostic summary for the grammar gap.
 pub(crate) fn pgsql_format(source: &str) -> Result<String, StrictStatementFailure> {
-    use pgtk_sql::ast::Statement;
-
     let lexed = lex_statement_source(source);
     if let Some(error) = lexed.errors().next() {
         let diagnostic = StrictDiagnostic {
@@ -99,6 +97,32 @@ pub(crate) fn pgsql_format(source: &str) -> Result<String, StrictStatementFailur
             diagnostic: Some(diagnostic),
         });
     }
+    let (formatted, cursor) = format_one_statement(&lexed)?;
+    if let Some(cursor) = cursor {
+        let trailing = lexed
+            .tokens()
+            .nth(cursor)
+            .expect("a non-EOF public cursor addresses a significant token");
+        return Err(StrictStatementFailure {
+            diagnostic: None,
+            summary: format!(
+                "pgtk-sql parse left trailing input {} at {:?}, token cursor {cursor}",
+                trailing.kind(),
+                trailing.span().range()
+            ),
+        });
+    }
+    Ok(formatted)
+}
+
+/// Parse one `Statement` from the start of `lexed` and format it. The cursor
+/// is `None` at the end of the input, or the index of the next significant
+/// token.
+fn format_one_statement(
+    lexed: &pgtk_sql::LexResult<'_>,
+) -> Result<(String, Option<usize>), StrictStatementFailure> {
+    use pgtk_sql::ast::Statement;
+
     let mut input = lexed.input();
     let parsed = Statement::parse(&mut input).map_err(|error| {
         let expected = error.expected().collect::<Vec<_>>().join(", ");
@@ -120,26 +144,83 @@ pub(crate) fn pgsql_format(source: &str) -> Result<String, StrictStatementFailur
             diagnostic: Some(diagnostic),
         }
     })?;
-    if !input.is_eof() {
-        let cursor = input.cursor();
-        let trailing = lexed
-            .tokens()
-            .nth(cursor)
-            .expect("a non-EOF public cursor addresses a significant token");
-        return Err(StrictStatementFailure {
-            diagnostic: None,
-            summary: format!(
-                "pgtk-sql parse left trailing input {} at {:?}, token cursor {cursor}",
-                trailing.kind(),
-                trailing.span().range()
-            ),
-        });
-    }
+    let cursor = (!input.is_eof()).then(|| input.cursor());
     let ast = parsed.ast();
-    Ok(pgtk_sql::formatter::format_tokens_sql(
-        ast,
-        recursa::PrettyConfig::default(),
+    Ok((
+        pgtk_sql::formatter::format_tokens_sql(ast, recursa::PrettyConfig::default()),
+        cursor,
     ))
+}
+
+/// Strictly parse one psql submission with pgtk-sql and return its formatted
+/// SQL, or a stable diagnostic summary for the grammar gap.
+///
+/// psql sends the whole query buffer as one query string, and the string can
+/// hold more than one statement (`\;`, or a variable whose value holds a
+/// `;`). A `;` inside a statement, as in a `BEGIN ATOMIC` body, is not a
+/// split. So each statement is the shortest run of tokens up to a `;` (or
+/// to the end) that parses as one whole `Statement`. A submission with no `;`
+/// before its end parses exactly as [`pgsql_format`] parses it, with the same
+/// diagnostic. The formatted statements are joined with `;`, which the raw
+/// parser reads as the same statement list.
+// Only the differential uses the submission check; each test target mounts
+// this module.
+#[cfg(feature = "postgres-oracle")]
+#[allow(dead_code)]
+pub(crate) fn pgsql_format_submission(source: &str) -> Result<String, StrictStatementFailure> {
+    let lexed = lex_statement_source(source);
+    if lexed.errors().next().is_some() {
+        return pgsql_format(source);
+    }
+    let tokens = lexed
+        .tokens()
+        .map(|token| (token.kind(), token.span()))
+        .collect::<Vec<_>>();
+    let part = |range: std::ops::Range<usize>| {
+        let mut part = pgtk_sql::LexBuilder::new(source);
+        for (kind, span) in &tokens[range] {
+            part.append(*kind, *span)
+                .expect("tokens copied from pgtk-sql lexing retain valid ordered spans");
+        }
+        part.finish()
+    };
+    let mut formatted = Vec::new();
+    let mut from = 0;
+    while from < tokens.len() {
+        // The places where the statement can end: each `;` and the end.
+        let ends = (from..tokens.len())
+            .filter(|&end| tokens[end].0 == pgtk_sql::TokenKind::SEMI)
+            .chain([tokens.len()]);
+        let mut statement = None;
+        for end in ends {
+            let lexed = part(from..end);
+            let result = format_one_statement(&lexed);
+            match result {
+                Ok((text, None)) => {
+                    statement = Some((text, end));
+                    break;
+                }
+                // The last place: the diagnostic of the whole remainder.
+                Ok((_, Some(cursor))) if end == tokens.len() => {
+                    let (kind, span) = tokens[from + cursor];
+                    return Err(StrictStatementFailure {
+                        diagnostic: None,
+                        summary: format!(
+                            "pgtk-sql parse left trailing input {kind} at {:?}, token cursor {}",
+                            span.range(),
+                            from + cursor
+                        ),
+                    });
+                }
+                Err(failure) if end == tokens.len() => return Err(failure),
+                _ => {}
+            }
+        }
+        let (text, end) = statement.expect("the last place returns or ends the statement");
+        formatted.push(text);
+        from = end + 1;
+    }
+    Ok(formatted.join(";\n"))
 }
 
 /// The first word of the failure of a statement that the oracle rejects and
@@ -149,8 +230,23 @@ pub const OVER_ACCEPTANCE: &str = "over-acceptance";
 
 #[cfg(feature = "postgres-oracle")]
 pub fn check_statement(stmt: &Stmt) -> Outcome {
-    let src = &stmt.source;
+    check_with(&stmt.source, pgsql_format)
+}
 
+/// The differential check of one psql submission: [`check_statement`], with
+/// each statement of the query string parsed in turn
+/// ([`pgsql_format_submission`]).
+#[cfg(feature = "postgres-oracle")]
+#[allow(dead_code)]
+pub fn check_submission(source: &str) -> Outcome {
+    check_with(source, pgsql_format_submission)
+}
+
+#[cfg(feature = "postgres-oracle")]
+fn check_with(
+    src: &str,
+    pgsql_format: fn(&str) -> Result<String, StrictStatementFailure>,
+) -> Outcome {
     if parse_ok(src) {
         // PostgreSQL accepts the input.
         let formatted = match pgsql_format(src) {
