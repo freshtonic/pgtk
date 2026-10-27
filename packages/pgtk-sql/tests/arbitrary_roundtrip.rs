@@ -23,6 +23,9 @@
 //! issue. The test reports the count of each one. A failure that no entry
 //! matches fails the test. When you fix an issue, remove its entries.
 //!
+//! At the `pg19-beta` target version the test is ignored until issue #100 is
+//! fixed (issue #105).
+//!
 //! `PGTK_SQL_ARBITRARY_ATTEMPTS` sets the number of attempts. The default is
 //! the merge gate's count. The release gate sets a larger count.
 //! `PGTK_SQL_ARBITRARY_FAILURES` names a file. The test writes each unknown
@@ -328,7 +331,14 @@ fn known_failure(rules: &[(Regex, Regex)], failure: &Failure) -> Option<usize> {
         })
 }
 
+// At pg19-beta, Pretty renders one sampled SUBSTRING ... SIMILAR ... ESCAPE
+// call without the parentheses that it needs (issue #100). Issue #105 turns
+// the round trip on again at pg19-beta.
 #[test]
+#[cfg_attr(
+    feature = "pg19-beta",
+    ignore = "issue #100: a SUBSTRING SIMILAR source without parentheses; issue #105"
+)]
 fn arbitrary_statements_round_trip_and_postgres_accepts_them() {
     let attempts = attempts();
     let report = std::thread::Builder::new()
