@@ -139,6 +139,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `AS alias` on an UPDATE target table.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_update_table_alias_with_as, flat = crate::ast::validation::current_schema_update_table_alias_with_as_flat)]
     pub struct UpdateTableAliasWithAs {
         #[tok(AS, this)]
         pub name: crate::tokens::ColId,

@@ -4,11 +4,11 @@
 use crate::ast::ddl::foreign::AlterGenericOptions;
 use crate::ast::ddl::function::{FunctionBuiltinType, FunctionTypeName};
 use crate::ast::ddl::table::CreateGenericOptions;
+use crate::ast::shared::expr::Sconst;
 use crate::ast::shared::expr::*;
 use crate::ast::shared::flags::*;
 use crate::ast::shared::names::*;
 use crate::ast::shared::numbers::*;
-use crate::ast::utility::copy::CopySconst;
 use crate::tokens::{literal, punct};
 
 recursa::ast_node! {
@@ -78,7 +78,7 @@ recursa::ast_node! {
         /// `def_arg` accepts `reserved_keyword` directly; pgtk-sql only adds
         /// keywords actually exercised by the corpus.
         Any,
-        String(CopySconst),
+        String(Sconst),
         Numeric(NumericOnly),
         /// A bare operator name on the RHS of a `def_elem`. Postgres' `def_arg`
         /// accepts `qual_all_Op`; the corpus exercises this on CREATE/ALTER
@@ -176,7 +176,7 @@ recursa::ast_node! {
         #[tok(NULL)]
         Null,
         /// An `Sconst`: plain, `E'…'` or `U&'…'`.
-        String(CopySconst),
+        String(Sconst),
     }
 }
 
@@ -201,7 +201,7 @@ recursa::ast_node! {
         /// `PASSWORD { Sconst | NULL }`.
         Plain(#[tok(PASSWORD, this)] PasswordValue),
         /// `ENCRYPTED PASSWORD Sconst`.
-        Encrypted(#[tok(ENCRYPTED, PASSWORD, this)] CopySconst),
+        Encrypted(#[tok(ENCRYPTED, PASSWORD, this)] Sconst),
     }
 }
 
@@ -219,7 +219,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ValidUntilOption {
         #[tok(VALID, UNTIL, this)]
-        pub value: CopySconst,
+        pub value: Sconst,
     }
 }
 

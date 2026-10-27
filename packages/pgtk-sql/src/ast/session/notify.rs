@@ -1,7 +1,5 @@
 //! NOTIFY / LISTEN / UNLISTEN.
 
-use crate::tokens::literal;
-
 // --- NOTIFY / LISTEN / UNLISTEN ---
 
 recursa::ast_node! {
@@ -9,7 +7,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct NotifyPayload {
         #[tok(COMMA, this)]
-        pub payload: literal::StringLit,
+        pub payload: crate::ast::shared::expr::Sconst,
     }
 }
 

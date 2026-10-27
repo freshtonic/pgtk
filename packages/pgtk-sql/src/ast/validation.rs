@@ -26,18 +26,40 @@ use crate::ast::ddl::function::{
 };
 use crate::ast::ddl::rule::{FlatRuleQuery, RuleQuery};
 use crate::ast::dml::select::{
-    FetchFirstBody, FetchMode, FlatFetchFirstBody, FlatFetchMode, FlatLimitLockingClause,
-    FlatLimitOffsetClause, FlatLimitingClause, LimitLockingClause, LimitOffsetClause,
-    LimitingClause,
+    FetchFirstBody, FetchMode, FlatFetchFirstBody, FlatFetchMode, FlatForLockingClause,
+    FlatForUpdateWait, FlatLimitLockingClause, FlatLimitOffsetClause, FlatLimitingClause,
+    ForLockingClause, ForUpdateWait, LimitLockingClause, LimitOffsetClause, LimitingClause,
 };
+use crate::ast::dml::select::{FlatUescapedAliasName, UescapedAliasName};
 use crate::ast::dml::values::{
     FlatQueryBody, FlatSelectClause, FlatSubquery, QueryBody, SelectClause, Subquery,
 };
 use crate::ast::shared::expr::{
-    Expr, FlatExpr, FlatFuncArg, FlatFunctionTypedLiteralTail, FlatRow, FuncArg,
-    FunctionTypedLiteralTail, Row,
+    Expr, FlatExpr, FlatFuncArg, FlatFunctionCallBody, FlatFunctionCallSuffix,
+    FlatFunctionTypedLiteralTail, FlatRow, FlatSconst, FlatUescapeString,
+    FlatUnicodeStringLitWithEscape, FuncArg, FunctionCallBody, FunctionCallSuffix,
+    FunctionTypedLiteralTail, Row, Sconst, UnicodeStringLitWithEscape,
 };
 use crate::ast::shared::with_clause::{FlatWithBody, FlatWithStatement, WithBody, WithStatement};
+use crate::ident::{
+    FoldError, escape_string_error, unicode_identifier_error, unicode_string_error,
+};
+use crate::tokens::literal::{
+    AliasName, CreateDbOptWord, FlatAliasName, FlatCreateDbOptWord, FlatIdent, FlatIdentOnly,
+    FlatRelationAliasName, FlatSelectBareAliasName, FlatUtilityOptionName, FlatWindowRefNameIdent,
+    Ident, IdentOnly, RelationAliasName, SelectBareAliasName, UtilityOptionName,
+    WindowRefNameIdent,
+};
+use crate::tokens::{
+    BareColLabel, ColId, ColLabel, FlatBareColLabel, FlatColId, FlatColLabel, FlatNonReservedWord,
+    FlatRoleSpecWord, FlatUidentName, Flattable_function_name, Flattype_function_name,
+    Flattype_name_ident, NonReservedWord, RoleSpecWord, table_function_name, type_function_name,
+    type_name_ident,
+};
+#[cfg(feature = "since-pg16")]
+use crate::tokens::{
+    FlatRoleGrantOptionWord, FlatRoleRevokeOptionWord, RoleGrantOptionWord, RoleRevokeOptionWord,
+};
 
 /// `wrong number of parameters on left side of OVERLAPS expression`.
 pub static OVERLAPS_LEFT: RejectionNote = RejectionNote::new(
@@ -120,6 +142,15 @@ pub static WITH_TIES_WITHOUT_ORDER_BY: RejectionNote = RejectionNote::new(
     "WITH TIES cannot be specified without ORDER BY clause",
     None,
     "gram.y REL_17_11 18913, insertSelectOptions",
+);
+
+/// `SKIP LOCKED and WITH TIES options cannot be used together`.
+pub static WITH_TIES_SKIP_LOCKED: RejectionNote = RejectionNote::new(
+    "QueryBody",
+    Some("42601"),
+    "SKIP LOCKED and WITH TIES options cannot be used together",
+    None,
+    "gram.y REL_17_11 18924, insertSelectOptions",
 );
 
 /// `multiple WITH clauses not allowed`.
@@ -356,6 +387,8 @@ struct SelectOptions {
     limit: bool,
     /// Whether the statement has a `WITH`.
     with: bool,
+    /// Whether a locking clause of the statement is `SKIP LOCKED`.
+    skip_locked: bool,
 }
 
 /// The `OFFSET`, the `LIMIT` and whether the `FETCH` is `WITH TIES`, of one
@@ -392,6 +425,16 @@ fn locking_limit<'a>(clause: &'a LimitLockingClause<'_>) -> Option<&'a LimitOffs
     }
 }
 
+/// Reports whether a locking clause has a `SKIP LOCKED` item.
+fn skip_locked(locking: Option<&ForLockingClause<'_>>) -> bool {
+    locking.is_some_and(|locking| {
+        locking
+            .items()
+            .iter()
+            .any(|item| matches!(item.wait, Some(ForUpdateWait::SkipLocked)))
+    })
+}
+
 /// The merged options of the statement one select clause names: none for a
 /// plain clause, the options of the parenthesized query for a `(...)`.
 fn clause_options(clause: &SelectClause<'_>) -> SelectOptions {
@@ -412,6 +455,11 @@ fn subquery_options(query: &Subquery<'_>) -> SelectOptions {
 fn body_options(body: &QueryBody<'_>) -> SelectOptions {
     let mut options = clause_options(&body.clause);
     options.order_by |= body.order_by.is_some();
+    options.skip_locked |= skip_locked(
+        body.limit_locking
+            .as_deref()
+            .and_then(LimitLockingClause::locking),
+    );
     if let Some(clause) = body_limit(body) {
         let (offset, limit) = limit_offset(clause);
         options.offset |= offset;
@@ -439,8 +487,17 @@ pub fn query_options(body: &QueryBody<'_>) -> Result<(), Refusal> {
     if limit.is_some() && inner.limit {
         return Err(Refusal::new(&MULTIPLE_LIMIT).at_field(2));
     }
-    if limit.is_some_and(with_ties) && !(body.order_by.is_some() || inner.order_by) {
-        return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+    if limit.is_some_and(with_ties) {
+        if !(body.order_by.is_some() || inner.order_by) {
+            return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+        }
+        let locking = body
+            .limit_locking
+            .as_deref()
+            .and_then(LimitLockingClause::locking);
+        if skip_locked(locking) || inner.skip_locked {
+            return Err(Refusal::new(&WITH_TIES_SKIP_LOCKED));
+        }
     }
     Ok(())
 }
@@ -506,6 +563,32 @@ fn flat_locking_limit<R: recursa::__private::FlatNode>(
     }
 }
 
+/// The flat form of [`skip_locked`]: the locking clause of one flat limit
+/// and locking tail.
+fn flat_skip_locked<R: recursa::__private::FlatNode>(
+    clause: Option<recursa::__private::Handle<FlatLimitLockingClause>>,
+    ast: &FlatAst<'_, R>,
+) -> bool {
+    let Some(clause) = clause else {
+        return false;
+    };
+    let locking = match ast[clause] {
+        FlatLimitLockingClause::LockingFirst(clause) => Some(ast[clause].locking),
+        FlatLimitLockingClause::LimitFirst(clause) => ast[clause].locking,
+    };
+    let Some(locking) = locking else {
+        return false;
+    };
+    match ast[locking] {
+        FlatForLockingClause::ReadOnly => false,
+        FlatForLockingClause::Items(items) => ast[items].iter().any(|item| {
+            ast[*item]
+                .wait
+                .is_some_and(|wait| matches!(ast[wait], FlatForUpdateWait::SkipLocked))
+        }),
+    }
+}
+
 /// The flat form of [`clause_options`].
 fn flat_clause_options<R: recursa::__private::FlatNode>(
     clause: &FlatSelectClause,
@@ -534,6 +617,7 @@ fn flat_body_options<R: recursa::__private::FlatNode>(
 ) -> SelectOptions {
     let mut options = flat_clause_options(&ast[body.clause], ast);
     options.order_by |= body.order_by.is_some();
+    options.skip_locked |= flat_skip_locked(body.limit_locking, ast);
     if let Some(clause) = flat_body_limit(body, ast) {
         let (offset, limit) = flat_limit_offset(&clause, ast);
         options.offset |= offset;
@@ -561,10 +645,13 @@ pub fn query_options_flat(
     if limit.is_some() && inner.limit {
         return Err(Refusal::new(&MULTIPLE_LIMIT).at_field(2));
     }
-    if limit.is_some_and(|limit| flat_with_ties(limit, ast))
-        && !(body.order_by.is_some() || inner.order_by)
-    {
-        return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+    if limit.is_some_and(|limit| flat_with_ties(limit, ast)) {
+        if !(body.order_by.is_some() || inner.order_by) {
+            return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
+        }
+        if flat_skip_locked(body.limit_locking, ast) || inner.skip_locked {
+            return Err(Refusal::new(&WITH_TIES_SKIP_LOCKED));
+        }
     }
     Ok(())
 }
@@ -634,4 +721,637 @@ pub fn rule_query_options_flat(
         return Err(Refusal::new(&WITH_TIES_WITHOUT_ORDER_BY));
     }
     Ok(())
+}
+
+// --- func_expr: func_application within_group_clause ---
+
+/// `cannot use multiple ORDER BY clauses with WITHIN GROUP`.
+pub static WITHIN_GROUP_ORDER_BY: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use multiple ORDER BY clauses with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15598, func_expr",
+);
+
+/// `cannot use DISTINCT with WITHIN GROUP`.
+pub static WITHIN_GROUP_DISTINCT: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use DISTINCT with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15603, func_expr",
+);
+
+/// `cannot use VARIADIC with WITHIN GROUP`.
+pub static WITHIN_GROUP_VARIADIC: RejectionNote = RejectionNote::new(
+    "FunctionCallSuffix",
+    Some("42601"),
+    "cannot use VARIADIC with WITHIN GROUP",
+    None,
+    "gram.y REL_17_11 15608, func_expr",
+);
+
+/// The `WITHIN GROUP` checks of one call, in the order of gram.y: an
+/// argument `ORDER BY`, `DISTINCT`, then `VARIADIC`.
+fn within_group_refusal(order_by: bool, distinct: bool, variadic: bool) -> Result<(), Refusal> {
+    // The error is at the `WITHIN GROUP` clause, field 3.
+    let note = if order_by {
+        &WITHIN_GROUP_ORDER_BY
+    } else if distinct {
+        &WITHIN_GROUP_DISTINCT
+    } else if variadic {
+        &WITHIN_GROUP_VARIADIC
+    } else {
+        return Ok(());
+    };
+    Err(Refusal::new(note).at_field(3))
+}
+
+/// gram.y `func_expr: func_application within_group_clause filter_clause
+/// over_clause`: the order of `WITHIN GROUP` and the aggregate `ORDER BY`
+/// share one field, so the action refuses a call with both. It also refuses
+/// `DISTINCT` and `VARIADIC` with `WITHIN GROUP` (REL_17_11 gram.y
+/// 15581-15612; REL_14_24 has the same checks).
+pub fn within_group(call: &FunctionCallSuffix<'_>) -> Result<(), Refusal> {
+    if call.within_group.is_none() {
+        return Ok(());
+    }
+    let (order_by, distinct, variadic) = match &call.body {
+        None | Some(FunctionCallBody::Star(_)) => (false, false, false),
+        Some(FunctionCallBody::All(args)) => (args.order_by.is_some(), false, false),
+        Some(FunctionCallBody::Distinct(args)) => (args.order_by.is_some(), true, false),
+        Some(FunctionCallBody::LeadingVariadic(args)) => (args.order_by.is_some(), false, true),
+        Some(FunctionCallBody::Args(args)) => (
+            args.order_by.is_some(),
+            false,
+            args.trailing_variadic.is_some(),
+        ),
+    };
+    within_group_refusal(order_by, distinct, variadic)
+}
+
+/// The flat form of [`within_group`].
+pub fn within_group_flat(
+    call: &FlatFunctionCallSuffix,
+    ast: &FlatAst<'_, FlatFunctionCallSuffix>,
+) -> Result<(), Refusal> {
+    if call.within_group.is_none() {
+        return Ok(());
+    }
+    let (order_by, distinct, variadic) = match call.body.map(|body| ast[body]) {
+        None | Some(FlatFunctionCallBody::Star(_)) => (false, false, false),
+        Some(FlatFunctionCallBody::All(args)) => (ast[args].order_by.is_some(), false, false),
+        Some(FlatFunctionCallBody::Distinct(args)) => (ast[args].order_by.is_some(), true, false),
+        Some(FlatFunctionCallBody::LeadingVariadic(args)) => {
+            (ast[args].order_by.is_some(), false, true)
+        }
+        Some(FlatFunctionCallBody::Args(args)) => (
+            ast[args].order_by.is_some(),
+            false,
+            ast[args].trailing_variadic.is_some(),
+        ),
+    };
+    within_group_refusal(order_by, distinct, variadic)
+}
+
+// --- Unicode escapes in string constants ---
+
+/// `invalid Unicode escape` in a `U&'...'` string.
+pub static UNICODE_STRING_ESCAPE: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\XXXX or \\+XXXXXX."),
+    "parser.c REL_17_11 494, str_udeescape",
+);
+
+/// `invalid Unicode escape value` in a `U&'...'` string.
+pub static UNICODE_STRING_VALUE: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "parser.c REL_17_11 347, check_unicode_value",
+);
+
+/// `invalid Unicode surrogate pair` in a `U&'...'` string.
+pub static UNICODE_STRING_PAIR: RejectionNote = RejectionNote::new(
+    "UnicodeStringLitWithEscape",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "parser.c REL_17_11 523, str_udeescape",
+);
+
+/// `invalid Unicode escape` in an `E'...'` string.
+pub static ESCAPE_STRING_ESCAPE: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("22025"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\uXXXX or \\UXXXXXXXX."),
+    "scan.l REL_17_11 716, <xe,xeu>{xeunicodefail}",
+);
+
+/// `invalid Unicode escape value` in an `E'...'` string.
+pub static ESCAPE_STRING_VALUE: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "scan.l REL_17_11 1393, addunicode",
+);
+
+/// `invalid Unicode surrogate pair` in an `E'...'` string.
+pub static ESCAPE_STRING_PAIR: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "scan.l REL_17_11 677, <xe>{xeunicode}",
+);
+
+/// The refusal of a `U&'...'` string with the escape error `error`.
+fn unicode_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
+    unicode_refusal(
+        error,
+        [
+            &UNICODE_STRING_ESCAPE,
+            &UNICODE_STRING_VALUE,
+            &UNICODE_STRING_PAIR,
+        ],
+    )
+}
+
+/// The refusal for the `str_udeescape` error `error`, with the notes of one
+/// site: the incorrect escape, the incorrect value and the surrogate pair.
+fn unicode_refusal(
+    error: Option<FoldError>,
+    [escape, value, pair]: [&'static RejectionNote; 3],
+) -> Result<(), Refusal> {
+    let note = match error {
+        None => return Ok(()),
+        Some(FoldError::InvalidEscapeValue) => value,
+        Some(FoldError::InvalidSurrogatePair) => pair,
+        Some(_) => escape,
+    };
+    // The error is at the string or the name, field 0.
+    Err(Refusal::new(note).at_field(0))
+}
+
+/// `invalid byte sequence for encoding "UTF8"` in an `E'...'` string.
+pub static ESCAPE_STRING_BYTES: RejectionNote = RejectionNote::new(
+    "EscapeStringLit",
+    Some("22021"),
+    "invalid byte sequence for encoding \"UTF8\"",
+    None,
+    "scan.l REL_17_11 633, pg_verifymbstr",
+);
+
+/// The refusal of an `E'...'` string with the escape error `error`.
+fn escape_string_refusal(error: Option<FoldError>) -> Result<(), Refusal> {
+    let note = match error {
+        None => return Ok(()),
+        Some(FoldError::InvalidEscapeValue) => &ESCAPE_STRING_VALUE,
+        Some(FoldError::InvalidSurrogatePair) => &ESCAPE_STRING_PAIR,
+        Some(FoldError::InvalidByteSequence) => &ESCAPE_STRING_BYTES,
+        Some(_) => &ESCAPE_STRING_ESCAPE,
+    };
+    Err(Refusal::new(note))
+}
+
+/// The flat form of [`uescape_text`].
+fn flat_uescape_text<'a, R: recursa::__private::FlatNode>(
+    string: FlatUescapeString,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    match string {
+        FlatUescapeString::Escape(string) => ast[string].as_str(),
+        FlatUescapeString::Dollar(string) => ast[string].as_str(),
+        FlatUescapeString::Sequence(string) => ast[string].as_str(),
+        FlatUescapeString::Plain(string) => ast[string].as_str(),
+    }
+}
+
+/// `parser.c` `base_yylex` decodes a `U&'...'` string with `str_udeescape`,
+/// with the escape character of its `UESCAPE` clause, and refuses an
+/// incorrect Unicode escape (REL_17_11 parser.c 316-319 and 380-530).
+pub fn unicode_string(string: &UnicodeStringLitWithEscape<'_>) -> Result<(), Refusal> {
+    let uescape = string
+        .uescape
+        .as_ref()
+        .map(|uescape| uescape.escape_char.text());
+    unicode_string_refusal(unicode_string_error(string.lit.text(), uescape))
+}
+
+/// The flat form of [`unicode_string`].
+pub fn unicode_string_flat(
+    string: &FlatUnicodeStringLitWithEscape,
+    ast: &FlatAst<'_, FlatUnicodeStringLitWithEscape>,
+) -> Result<(), Refusal> {
+    let uescape = string
+        .uescape
+        .map(|uescape| flat_uescape_text(ast[ast[uescape].escape_char], ast));
+    unicode_string_refusal(unicode_string_error(ast[string.lit].as_str(), uescape))
+}
+
+/// `scan.l` refuses an `E'...'` string with an incorrect Unicode escape, or
+/// whose value is no valid UTF-8 (`crate::ident::escape_string_error`). The check is on each node that holds the
+/// token: the `Escape` arm of [`Sconst`] and of [`Expr`].
+pub fn escape_sconst(value: &Sconst<'_>) -> Result<(), Refusal> {
+    let Sconst::Escape(string) = value else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(string.text()))
+}
+
+/// The flat form of [`escape_sconst`].
+pub fn escape_sconst_flat(
+    value: &FlatSconst,
+    ast: &FlatAst<'_, FlatSconst>,
+) -> Result<(), Refusal> {
+    let FlatSconst::Escape(string) = value else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(ast[*string].as_str()))
+}
+
+/// The [`Expr`] form of [`escape_sconst`].
+pub fn escape_expr(expr: &Expr<'_>) -> Result<(), Refusal> {
+    let Expr::EscapeStringLit(string) = expr else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(string.text()))
+}
+
+/// The flat form of [`escape_expr`].
+pub fn escape_expr_flat(expr: &FlatExpr, ast: &FlatAst<'_, FlatExpr>) -> Result<(), Refusal> {
+    let FlatExpr::EscapeStringLit(string) = expr else {
+        return Ok(());
+    };
+    escape_string_refusal(escape_string_error(ast[*string].as_str()))
+}
+
+// --- Unicode escapes in identifiers ---
+
+/// `invalid Unicode escape` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_ESCAPE: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode escape",
+    Some("Unicode escapes must be \\XXXX or \\+XXXXXX."),
+    "parser.c REL_17_11 494, str_udeescape",
+);
+
+/// `invalid Unicode escape value` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_VALUE: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode escape value",
+    None,
+    "parser.c REL_17_11 347, check_unicode_value",
+);
+
+/// `invalid Unicode surrogate pair` in a `U&"..."` identifier.
+pub static UNICODE_IDENT_PAIR: RejectionNote = RejectionNote::new(
+    "UIDENT",
+    Some("42601"),
+    "invalid Unicode surrogate pair",
+    None,
+    "parser.c REL_17_11 523, str_udeescape",
+);
+
+/// The notes of a `U&"..."` identifier.
+const UNICODE_IDENT_NOTES: [&RejectionNote; 3] = [
+    &UNICODE_IDENT_ESCAPE,
+    &UNICODE_IDENT_VALUE,
+    &UNICODE_IDENT_PAIR,
+];
+
+/// The refusal of the identifier with the source text `raw` and no `UESCAPE`
+/// clause: `base_yylex` decodes a `U&"..."` name with `str_udeescape` and the
+/// escape character `\` (REL_17_11 parser.c 315-343; the same in REL_14_24).
+fn identifier_refusal(raw: &str) -> Result<(), Refusal> {
+    unicode_refusal(unicode_identifier_error(raw, None), UNICODE_IDENT_NOTES)
+}
+
+/// `parser.c` decodes the name of `AS U&"..." UESCAPE 'c'` with the escape
+/// character of the clause and refuses an incorrect escape.
+pub fn uescaped_alias_name(name: &UescapedAliasName<'_>) -> Result<(), Refusal> {
+    unicode_refusal(
+        unicode_identifier_error(name.name.text(), Some(name.uescape.escape_char.text())),
+        UNICODE_IDENT_NOTES,
+    )
+}
+
+/// The flat form of [`uescaped_alias_name`].
+pub fn uescaped_alias_name_flat(
+    name: &FlatUescapedAliasName,
+    ast: &FlatAst<'_, FlatUescapedAliasName>,
+) -> Result<(), Refusal> {
+    let FlatUidentName::Text(text) = ast[name.name];
+    let uescape = flat_uescape_text(ast[ast[name.uescape].escape_char], ast);
+    unicode_refusal(
+        unicode_identifier_error(ast[text].as_str(), Some(uescape)),
+        UNICODE_IDENT_NOTES,
+    )
+}
+
+/// The hooks of the identifier types: a `U&"..."` name is checked with the
+/// escape character `\` ([`identifier_refusal`]). Each type holds one token;
+/// a `UESCAPE` clause is part of no identifier type (only of
+/// `UescapedAliasName`).
+macro_rules! identifier_hooks {
+    ($($(#[$meta:meta])* $hook:ident, $hook_flat:ident, $ty:ident, $flat:ident;)*) => {$(
+        $(#[$meta])*
+        #[doc = concat!("The `str_udeescape` check of a `", stringify!($ty), "`.")]
+        pub fn $hook(name: &$ty<'_>) -> Result<(), Refusal> {
+            identifier_refusal(name.text())
+        }
+
+        $(#[$meta])*
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(name: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            match name {
+                $flat::Text(text) => identifier_refusal(ast[*text].as_str()),
+                #[allow(unreachable_patterns)]
+                _ => Ok(()),
+            }
+        }
+    )*};
+}
+
+identifier_hooks! {
+    ident_col_id, ident_col_id_flat, ColId, FlatColId;
+    ident_col_label, ident_col_label_flat, ColLabel, FlatColLabel;
+    ident_non_reserved_word, ident_non_reserved_word_flat, NonReservedWord, FlatNonReservedWord;
+    ident_role_spec_word, ident_role_spec_word_flat, RoleSpecWord, FlatRoleSpecWord;
+    ident_type_function_name, ident_type_function_name_flat, type_function_name,
+        Flattype_function_name;
+    ident_table_function_name, ident_table_function_name_flat, table_function_name,
+        Flattable_function_name;
+    ident_type_name_ident, ident_type_name_ident_flat, type_name_ident, Flattype_name_ident;
+    ident_bare_col_label, ident_bare_col_label_flat, BareColLabel, FlatBareColLabel;
+    #[cfg(feature = "since-pg16")]
+    ident_role_revoke_option_word, ident_role_revoke_option_word_flat, RoleRevokeOptionWord,
+        FlatRoleRevokeOptionWord;
+    #[cfg(feature = "since-pg16")]
+    ident_role_grant_option_word, ident_role_grant_option_word_flat, RoleGrantOptionWord,
+        FlatRoleGrantOptionWord;
+    ident_ident, ident_ident_flat, Ident, FlatIdent;
+    ident_create_db_opt_word, ident_create_db_opt_word_flat, CreateDbOptWord, FlatCreateDbOptWord;
+    ident_utility_option_name, ident_utility_option_name_flat, UtilityOptionName,
+        FlatUtilityOptionName;
+    ident_ident_only, ident_ident_only_flat, IdentOnly, FlatIdentOnly;
+    ident_select_bare_alias_name, ident_select_bare_alias_name_flat, SelectBareAliasName,
+        FlatSelectBareAliasName;
+    ident_alias_name, ident_alias_name_flat, AliasName, FlatAliasName;
+}
+
+// --- CURRENT_SCHEMA as a ColId ---
+
+/// `syntax error at or near "CURRENT_SCHEMA"`: kwlist.h makes
+/// `current_schema` a `TYPE_FUNC_NAME_KEYWORD`, so it is no `ColId`.
+pub static CURRENT_SCHEMA_COL_ID: RejectionNote = RejectionNote::new(
+    "ColId",
+    Some("42601"),
+    "syntax error at or near \"CURRENT_SCHEMA\"",
+    None,
+    "REL_17_11 kwlist.h 115, current_schema",
+);
+
+/// The refusal of the `ColId` with the source text `raw` at field `field`
+/// when it is the unquoted keyword `CURRENT_SCHEMA`
+/// ([`crate::ident::current_schema_class`]).
+fn current_schema_refusal(raw: &str, field: usize) -> Result<(), Refusal> {
+    if crate::ident::current_schema_class(raw) == Some("current_schema") {
+        return Err(Refusal::new(&CURRENT_SCHEMA_COL_ID).at_field(field));
+    }
+    Ok(())
+}
+
+/// The source text of a flat `ColId`.
+fn flat_col_id_text<'a, R: recursa::__private::FlatNode>(
+    id: FlatColId,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    let FlatColId::Text(text) = id;
+    ast[text].as_str()
+}
+
+/// pgtk-sql lexes `current_schema` as an identifier (`crate::tokens`), so
+/// each rule whose gram.y form is a `ColId` refuses the unquoted keyword by
+/// its text: a qualified name or a column reference with a dot, a FROM name
+/// with a dot, an alias, a window name, an INSERT target and a column
+/// definition. `SELECT current_schema` stays an expression, which gram.y
+/// reads as `SQLValueFunction`. Found by diff-agent.
+macro_rules! current_schema_hooks {
+    ($($hook:ident, $hook_flat:ident, $ty:path, $flat:path, $field:ident, $index:literal;)*) => {$(
+        #[doc = concat!("`CURRENT_SCHEMA` is no `ColId` in `", stringify!($ty), "`.")]
+        pub fn $hook(node: &$ty) -> Result<(), Refusal> {
+            current_schema_refusal(node.$field.text(), $index)
+        }
+
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(node: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            current_schema_refusal(flat_col_id_text(ast[node.$field], ast), $index)
+        }
+    )*};
+}
+
+current_schema_hooks! {
+    current_schema_qualified_ref, current_schema_qualified_ref_flat, crate::ast::shared::expr::QualifiedRef, crate::ast::shared::expr::FlatQualifiedRef, table, 0;
+    current_schema_named_table_qualified_name, current_schema_named_table_qualified_name_flat, crate::ast::dml::select::NamedTableQualifiedName, crate::ast::dml::select::FlatNamedTableQualifiedName, first, 0;
+    current_schema_long_func_call_name, current_schema_long_func_call_name_flat, crate::ast::dml::select::LongFuncCallName, crate::ast::dml::select::FlatLongFuncCallName, first, 0;
+    current_schema_table_alias_with_as, current_schema_table_alias_with_as_flat, crate::ast::dml::select::TableAliasWithAs, crate::ast::dml::select::FlatTableAliasWithAs, name, 0;
+    current_schema_table_alias_bare, current_schema_table_alias_bare_flat, crate::ast::dml::select::TableAliasBare, crate::ast::dml::select::FlatTableAliasBare, name, 0;
+    current_schema_plain_table_alias_with_as, current_schema_plain_table_alias_with_as_flat, crate::ast::dml::select::PlainTableAliasWithAs, crate::ast::dml::select::FlatPlainTableAliasWithAs, name, 0;
+    current_schema_plain_table_alias_bare, current_schema_plain_table_alias_bare_flat, crate::ast::dml::select::PlainTableAliasBare, crate::ast::dml::select::FlatPlainTableAliasBare, name, 0;
+    current_schema_func_table_alias_as_named, current_schema_func_table_alias_as_named_flat, crate::ast::dml::select::FuncTableAliasAsNamed, crate::ast::dml::select::FlatFuncTableAliasAsNamed, name, 0;
+    current_schema_func_table_alias_named, current_schema_func_table_alias_named_flat, crate::ast::dml::select::FuncTableAliasNamed, crate::ast::dml::select::FlatFuncTableAliasNamed, name, 0;
+    current_schema_window_def, current_schema_window_def_flat, crate::ast::dml::select::WindowDef, crate::ast::dml::select::FlatWindowDef, name, 0;
+    current_schema_delete_as_alias, current_schema_delete_as_alias_flat, crate::ast::dml::delete::DeleteAsAlias, crate::ast::dml::delete::FlatDeleteAsAlias, name, 0;
+    current_schema_update_table_alias_with_as, current_schema_update_table_alias_with_as_flat, crate::ast::dml::update::UpdateTableAliasWithAs, crate::ast::dml::update::FlatUpdateTableAliasWithAs, name, 0;
+    current_schema_insert_column_item, current_schema_insert_column_item_flat, crate::ast::dml::insert::InsertColumnItem, crate::ast::dml::insert::FlatInsertColumnItem, name, 0;
+    current_schema_column_def, current_schema_column_def_flat, crate::ast::ddl::table::ColumnDef, crate::ast::ddl::table::FlatColumnDef, name, 0;
+    current_schema_func_table_column_def, current_schema_func_table_column_def_flat, crate::ast::dml::select::FuncTableColumnDef, crate::ast::dml::select::FlatFuncTableColumnDef, name, 0;
+    current_schema_cte_definition, current_schema_cte_definition_flat, crate::ast::shared::with_clause::CteDefinition, crate::ast::shared::with_clause::FlatCteDefinition, name, 0;
+    current_schema_join_using_alias, current_schema_join_using_alias_flat, crate::ast::dml::select::JoinUsingAlias, crate::ast::dml::select::FlatJoinUsingAlias, name, 0;
+}
+
+/// The source text of a flat `AliasName`.
+fn flat_alias_name_text<'a, R: recursa::__private::FlatNode>(
+    name: FlatAliasName,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    let FlatAliasName::Text(text) = name;
+    ast[text].as_str()
+}
+
+/// The column names of a table alias, a CTE, a view, a materialized view, a
+/// CREATE TABLE AS and a JOIN USING are gram.y `name_list` and `columnList`,
+/// lists of `ColId` (REL_17_11 gram.y `alias_clause`, `opt_name_list`,
+/// `opt_column_list`, `join_qual`), so each refuses an unquoted
+/// `CURRENT_SCHEMA` (`AS x (current_schema)`).
+macro_rules! current_schema_list_hooks {
+    ($($hook:ident, $hook_flat:ident, $ty:path, $flat:path, $field:tt, $text:ident;)*) => {$(
+        #[doc = concat!("`CURRENT_SCHEMA` is no `ColId` in `", stringify!($ty), "`.")]
+        pub fn $hook(list: &$ty) -> Result<(), Refusal> {
+            list.$field
+                .iter()
+                .try_for_each(|name| current_schema_refusal(name.text(), 0))
+        }
+
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(list: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            ast[list.$field]
+                .iter()
+                .try_for_each(|&name| current_schema_refusal($text(ast[name], ast), 0))
+        }
+    )*};
+}
+
+current_schema_list_hooks! {
+    current_schema_table_alias_columns, current_schema_table_alias_columns_flat, crate::ast::dml::select::TableAliasColumnList, crate::ast::dml::select::FlatTableAliasColumnList, 0, flat_col_id_text;
+    current_schema_cte_columns, current_schema_cte_columns_flat, crate::ast::shared::with_clause::CteColumnList, crate::ast::shared::with_clause::FlatCteColumnList, 0, flat_alias_name_text;
+    current_schema_view_columns, current_schema_view_columns_flat, crate::ast::ddl::view::CreateViewColumnList, crate::ast::ddl::view::FlatCreateViewColumnList, 0, flat_alias_name_text;
+    current_schema_mat_view_columns, current_schema_mat_view_columns_flat, crate::ast::ddl::materialized_view::CreateMatViewColumnList, crate::ast::ddl::materialized_view::FlatCreateMatViewColumnList, 0, flat_col_id_text;
+    current_schema_ctas_columns, current_schema_ctas_columns_flat, crate::ast::ddl::table::CtasColumnList, crate::ast::ddl::table::FlatCtasColumnList, columns, flat_col_id_text;
+    current_schema_join_using_columns, current_schema_join_using_columns_flat, crate::ast::dml::select::JoinUsingColumns, crate::ast::dml::select::FlatJoinUsingColumns, 0, flat_col_id_text;
+}
+
+/// A bare `current_schema` is gram.y `SQLValueFunction`, which takes no
+/// indirection, so `current_schema[1]` is a syntax error: only a `ColId`
+/// takes one (`columnref`).
+pub fn current_schema_column_ref(
+    column: &crate::ast::shared::expr::ColumnRef<'_>,
+) -> Result<(), Refusal> {
+    match column.indirection {
+        Some(_) => current_schema_refusal(column.name.text(), 0),
+        None => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_column_ref`].
+pub fn current_schema_column_ref_flat(
+    column: &crate::ast::shared::expr::FlatColumnRef,
+    ast: &FlatAst<'_, crate::ast::shared::expr::FlatColumnRef>,
+) -> Result<(), Refusal> {
+    match column.indirection {
+        Some(_) => current_schema_refusal(flat_col_id_text(ast[column.name], ast), 0),
+        None => Ok(()),
+    }
+}
+
+/// A bare `current_schema` in FROM is gram.y `func_table`
+/// (`func_expr_windowless`), not `relation_expr`: it takes an alias, but no
+/// `*` and no `TABLESAMPLE`, which only a `qualified_name` takes.
+pub fn current_schema_named_table_ref(
+    table: &crate::ast::dml::select::NamedTableRef<'_>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::{NamedTableRefTail, TableFunctionName};
+    let TableFunctionName::Name(name) = &table.name else {
+        return Ok(());
+    };
+    match &table.tail {
+        Some(NamedTableRefTail::Inherited(_) | NamedTableRefTail::Sample(_)) => {
+            current_schema_refusal(name.text(), 0)
+        }
+        Some(NamedTableRefTail::Alias(alias)) if alias.tablesample.is_some() => {
+            current_schema_refusal(name.text(), 0)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_named_table_ref`].
+pub fn current_schema_named_table_ref_flat(
+    table: &crate::ast::dml::select::FlatNamedTableRef,
+    ast: &FlatAst<'_, crate::ast::dml::select::FlatNamedTableRef>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::{FlatNamedTableRefTail, FlatTableFunctionName};
+    let FlatTableFunctionName::Name(name) = ast[table.name] else {
+        return Ok(());
+    };
+    let Flattable_function_name::Text(text) = ast[name];
+    let raw = ast[text].as_str();
+    match table.tail.map(|tail| ast[tail]) {
+        Some(FlatNamedTableRefTail::Inherited(_) | FlatNamedTableRefTail::Sample(_)) => {
+            current_schema_refusal(raw, 0)
+        }
+        Some(FlatNamedTableRefTail::Alias(alias)) if ast[alias].tablesample.is_some() => {
+            current_schema_refusal(raw, 0)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The column names of a function table alias (gram.y `alias_clause:
+/// ... '(' name_list ')'`) are `ColId`s, so each refuses an unquoted
+/// `CURRENT_SCHEMA`. The column definitions refuse it in
+/// [`current_schema_func_table_column_def`].
+pub fn current_schema_func_table_alias_columns(
+    list: &crate::ast::dml::select::FuncTableAliasColumnList<'_>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::FuncTableAliasColumnList;
+    match list {
+        FuncTableAliasColumnList::Names(names) => names
+            .iter()
+            .try_for_each(|name| current_schema_refusal(name.text(), 0)),
+        FuncTableAliasColumnList::Definitions(_) => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_func_table_alias_columns`].
+pub fn current_schema_func_table_alias_columns_flat(
+    list: &crate::ast::dml::select::FlatFuncTableAliasColumnList,
+    ast: &FlatAst<'_, crate::ast::dml::select::FlatFuncTableAliasColumnList>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::FlatFuncTableAliasColumnList;
+    match list {
+        FlatFuncTableAliasColumnList::Names(names) => ast[*names]
+            .iter()
+            .try_for_each(|&name| current_schema_refusal(flat_col_id_text(ast[name], ast), 0)),
+        FlatFuncTableAliasColumnList::Definitions(_) => Ok(()),
+    }
+}
+
+/// [`RelationAliasName`] is a `ColId`: an alias with no `AS`. It is checked
+/// as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
+pub fn ident_relation_alias_name(name: &RelationAliasName<'_>) -> Result<(), Refusal> {
+    identifier_refusal(name.text())?;
+    current_schema_refusal(name.text(), 0)
+}
+
+/// The flat form of [`ident_relation_alias_name`].
+pub fn ident_relation_alias_name_flat(
+    name: &FlatRelationAliasName,
+    ast: &FlatAst<'_, FlatRelationAliasName>,
+) -> Result<(), Refusal> {
+    let FlatRelationAliasName::Text(text) = name;
+    identifier_refusal(ast[*text].as_str())?;
+    current_schema_refusal(ast[*text].as_str(), 0)
+}
+
+/// [`WindowRefNameIdent`] is a `ColId`: the name of an existing window. It is
+/// checked as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
+pub fn ident_window_ref_name_ident(name: &WindowRefNameIdent<'_>) -> Result<(), Refusal> {
+    identifier_refusal(name.text())?;
+    current_schema_refusal(name.text(), 0)
+}
+
+/// The flat form of [`ident_window_ref_name_ident`].
+pub fn ident_window_ref_name_ident_flat(
+    name: &FlatWindowRefNameIdent,
+    ast: &FlatAst<'_, FlatWindowRefNameIdent>,
+) -> Result<(), Refusal> {
+    let FlatWindowRefNameIdent::Text(text) = name;
+    identifier_refusal(ast[*text].as_str())?;
+    current_schema_refusal(ast[*text].as_str(), 0)
+}
+
+// Added in 15 with MERGE (REL_15_19 gram.y `MergeStmt`).
+#[cfg(feature = "since-pg15")]
+current_schema_hooks! {
+    current_schema_merge_as_alias, current_schema_merge_as_alias_flat, crate::ast::dml::merge::MergeAsAlias, crate::ast::dml::merge::FlatMergeAsAlias, name, 0;
 }

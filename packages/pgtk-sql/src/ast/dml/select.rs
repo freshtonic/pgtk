@@ -82,7 +82,8 @@ recursa::ast_node! {
     /// as an escape clause only after a Unicode identifier (`UIDENT`) or a
     /// Unicode string, so after any other name `UESCAPE` is a syntax error
     /// (issue #59). pgtk-sql lexes each identifier spelling as one token, so
-    /// the rule refuses the name by its text.
+    /// the rule refuses the name by its text. The validation hook refuses an
+    /// incorrect escape of the name (`str_udeescape`).
     #[classify(name, fold = crate::ident::unicode_identifier_class)]
     #[reject(
         one_of(name, "plain"),
@@ -90,9 +91,12 @@ recursa::ast_node! {
         message = "syntax error at or near \"UESCAPE\"",
         cite = "REL_17_11 parser.c base_yylex, UIDENT UESCAPE",
     )]
+    #[validate(crate::ast::validation::uescaped_alias_name, flat = crate::ast::validation::uescaped_alias_name_flat)]
     #[derive(Debug)]
     pub struct UescapedAliasName {
-        pub name: literal::AliasName,
+        /// The name, which `parser.c` decodes with the escape character of
+        /// the clause, so it has no escape check of its own.
+        pub name: crate::tokens::UidentName,
         pub uescape: crate::ast::shared::expr::UescapeSuffix,
     }
 }
@@ -151,6 +155,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `AS name [(col1, col2)]` table alias form.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_table_alias_with_as, flat = crate::ast::validation::current_schema_table_alias_with_as_flat)]
     pub struct TableAliasWithAs {
         /// gram.y `alias_clause: AS ColId ...`.
         #[tok(AS, this)]
@@ -164,6 +169,7 @@ recursa::ast_node! {
     /// admits `ColId`; the narrower category keeps join and clause starters from
     /// being consumed as aliases.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_table_alias_bare, flat = crate::ast::validation::current_schema_table_alias_bare_flat)]
     pub struct TableAliasBare {
         pub name: crate::tokens::ColId,
         pub columns: Option<TableAliasColumnList>,
@@ -178,6 +184,7 @@ recursa::ast_node! {
     /// element after a comma.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this)]
+    #[validate(crate::ast::validation::current_schema_table_alias_columns, flat = crate::ast::validation::current_schema_table_alias_columns_flat)]
     pub struct TableAliasColumnList(
         /// gram.y `name_list`.
         #[sep(COMMA)]
@@ -381,6 +388,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `AS name [(col, ...)]` form.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_plain_table_alias_with_as, flat = crate::ast::validation::current_schema_plain_table_alias_with_as_flat)]
     pub struct PlainTableAliasWithAs {
         /// gram.y `alias_clause: AS ColId ...`.
         #[tok(AS, this)]
@@ -392,6 +400,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// Bare `name [(col, ...)]` form using PostgreSQL's `ColId` alias category.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_plain_table_alias_bare, flat = crate::ast::validation::current_schema_plain_table_alias_bare_flat)]
     pub struct PlainTableAliasBare {
         pub name: crate::tokens::ColId,
         pub columns: Option<TableAliasColumnList>,
@@ -402,6 +411,7 @@ recursa::ast_node! {
     /// A column definition inside a function-table column-def-list:
     /// `name type` (e.g., `a int`).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_column_def, flat = crate::ast::validation::current_schema_func_table_column_def_flat)]
     pub struct FuncTableColumnDef {
         /// gram.y `TableFuncElement: ColId Typename opt_collate_clause`.
         pub name: crate::tokens::ColId,
@@ -487,6 +497,7 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_alias_as_named, flat = crate::ast::validation::current_schema_func_table_alias_as_named_flat)]
     pub struct FuncTableAliasAsNamed {
         /// gram.y `alias_clause: AS ColId ...`.
         pub name: crate::tokens::ColId,
@@ -496,6 +507,7 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_alias_named, flat = crate::ast::validation::current_schema_func_table_alias_named_flat)]
     pub struct FuncTableAliasNamed {
         /// gram.y `alias_clause: ColId ...`; `Ident` (every non-reserved word)
         /// also admitted `left`, `join` and the other `type_func_name`
@@ -523,6 +535,7 @@ recursa::ast_node! {
     /// Both lists lead with a `ColId`, and the parser tells them apart on the
     /// token after it: a `,` or `)` ends a name, anything else starts a type.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_func_table_alias_columns, flat = crate::ast::validation::current_schema_func_table_alias_columns_flat)]
     pub enum FuncTableAliasColumnList {
         /// gram.y `name_list`.
         Names(#[sep(COMMA)] one_or_many!(crate::tokens::ColId)),
@@ -584,7 +597,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTableColumnPath {
         #[tok(PATH, this)]
-        pub path_str: literal::StringLit,
+        pub path_str: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -713,7 +726,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTableNestedColumn {
         #[tok(NESTED, optional(PATH), this)]
-        pub path_str: literal::StringLit,
+        pub path_str: crate::ast::shared::expr::Sconst,
         pub as_name: Option<JsonTablePathName>,
         pub columns: JsonTableColumnList,
     }
@@ -1171,6 +1184,7 @@ recursa::ast_node! {
     /// [`TableFunctionName`], gram.y `ColId indirection` of `qualified_name`
     /// and of `func_name`, with at most three parts.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_named_table_qualified_name, flat = crate::ast::validation::current_schema_named_table_qualified_name_flat)]
     pub struct NamedTableQualifiedName {
         pub first: crate::tokens::ColId,
         pub second: crate::ast::shared::expr::FuncCallNamePart,
@@ -1192,6 +1206,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// A dotted `func_name` of four parts or more.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_long_func_call_name, flat = crate::ast::validation::current_schema_long_func_call_name_flat)]
     pub struct LongFuncCallName {
         pub first: crate::tokens::ColId,
         pub second: crate::ast::shared::expr::FuncCallNamePart,
@@ -1207,6 +1222,7 @@ recursa::ast_node! {
     /// once lets `(`, `*`, an alias, or the absence of a suffix select the source
     /// shape without comparing arbitrarily long dotted names.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_named_table_ref, flat = crate::ast::validation::current_schema_named_table_ref_flat)]
     pub struct NamedTableRef {
         pub name: TableFunctionName,
         pub tail: Option<NamedTableRefTail>,
@@ -1529,6 +1545,7 @@ recursa::ast_node! {
     /// `Ident` would admit.
     #[derive(Debug)]
     #[tok(AS, this)]
+    #[validate(crate::ast::validation::current_schema_join_using_alias, flat = crate::ast::validation::current_schema_join_using_alias_flat)]
     pub struct JoinUsingAlias {
         /// gram.y `USING '(' name_list ')' opt_alias_clause`: `AS ColId`.
         pub name: crate::tokens::ColId,
@@ -1539,6 +1556,7 @@ recursa::ast_node! {
     /// Parenthesized comma-separated column list in a JOIN USING clause.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
+    #[validate(crate::ast::validation::current_schema_join_using_columns, flat = crate::ast::validation::current_schema_join_using_columns_flat)]
     pub struct JoinUsingColumns(
         /// gram.y `name_list`: one or more `ColId`.
         #[deref]
@@ -2269,6 +2287,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// A single named window definition: `name AS (inline_window_spec)`.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_window_def, flat = crate::ast::validation::current_schema_window_def_flat)]
     pub struct WindowDef {
         pub name: crate::tokens::ColId,
         #[tok(AS, LPAREN, this, RPAREN)]

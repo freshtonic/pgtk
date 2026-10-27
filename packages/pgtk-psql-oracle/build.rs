@@ -69,6 +69,7 @@ const REQUIRED_GENERATED: &[&str] = &[
     "src/bin/psql/psqlscanslash.c",
     // The frontend libraries they need.
     "src/fe_utils/conditional.c",
+    "src/bin/psql/stringutils.c",
     "src/interfaces/libpq/libpq.a",
     "src/common/libpgcommon.a",
     "src/port/libpgport.a",
@@ -223,6 +224,10 @@ fn main() {
     // it needs the conditional stack. `libpgfeutils.a` holds both this and
     // psqlscan.o, so the source is compiled rather than the library linked.
     build.file(tree.join("src/fe_utils/conditional.c"));
+    // `strtokx`, which `parse_slash_copy` uses to read the arguments of
+    // `\copy`. The shim needs it to know whether `\copy` reads data from the
+    // script.
+    build.file(tree.join("src/bin/psql/stringutils.c"));
 
     build.compile("pgpsqloracle");
 

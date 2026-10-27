@@ -53,9 +53,9 @@ inactive branches hold text that psql never sends.
   `AUTOCOMMIT` or `ON_ERROR_STOP`. psql changes or refuses some values of
   these variables.
 - It does not read an included file (`\i`), and it does not stop at `\q`.
-- It does not read the data lines after `COPY ... FROM STDIN` or
-  `\copy ... from stdin`. psql reads them itself. pgtk-psql reads them as
-  psql text, where `\N` and `\.` are unknown commands.
+- It does not run `\copy`. It reads the data lines after
+  `\copy ... from stdin`, as psql does, but only to know where the script
+  continues (freshtonic/pgtk#9, ADR 0007).
 - An unknown command, and a command that fails when psql runs it, makes psql
   drop the rest of the line. pgtk-psql cannot know which command fails, so it
   reads every known command as a command that succeeds. It keeps the name of

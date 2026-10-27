@@ -14,9 +14,10 @@
 //! `baselines/psql-oracle/<feature>.json`. A document that does not agree
 //! with psql is an **expected psql gap** with a recorded reason, and the
 //! reasons are the deliberate limits of what pgtk-psql models (ADR 0007, ADR
-//! 0013): it models `psqlscan.l` lexing, the meta-commands as
-//! `psqlscanslash.l` reads them, `\set`, `\unset` and the `\if` blocks, but not
-//! COPY data and not the error path of an unknown command.
+//! 0013): it models `psqlscan.l` lexing and its query-buffer boundaries, the
+//! meta-commands as `psqlscanslash.l` reads them, `\set`, `\unset` and the `\if`
+//! blocks, and the COPY data that psql reads itself, but not the error path of
+//! an unknown command.
 //!
 //! Regenerate after a change of pin, of oracle or of the psql grammar:
 //!
@@ -123,7 +124,8 @@ impl CorpusFile {
 /// in the baseline. A construct that only some target versions have is gated
 /// like the grammar it exercises.
 fn shaped_documents() -> Vec<(&'static str, String)> {
-    let mut documents: Vec<(&'static str, String)> = vec![
+    let mut documents: Vec<(&'static str, String)> =
+        vec![
         // Interpolation in every position.
         ("interp/target", "SELECT :v".into()),
         ("interp/literal", "SELECT :'v'".into()),
@@ -148,6 +150,12 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         ("shell/dollar-quote", "SELECT $$:v$$".into()),
         ("shell/tagged-dollar-quote", "SELECT $tag$:v$tag$".into()),
         ("shell/non-ascii-tag", "SELECT $tagé$:v$tagé$".into()),
+        ("shell/non-ascii-first-tag", "SELECT $é$ :v $é$, :v".into()),
+        // scan.l `ident_cont` takes `$` and each non-ASCII character, so an
+        // interpolation directly after such an identifier is still one.
+        ("word/dollar-continuation", "SELECT a$b:v, a$:v".into()),
+        ("word/non-ascii", "SELECT é:v, naïve :v, 日本:v".into()),
+        ("word/dollar-quote-after-word", "SELECT a$$ :v $$, :v".into()),
         ("shell/line-comment", "SELECT 1 -- :v\nSELECT 2".into()),
         ("shell/block-comment", "SELECT 1 /* :v */".into()),
         (
@@ -155,6 +163,17 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
             "SELECT 1 /* /* :v */ */".into(),
         ),
         ("shell/escaped-newline", "SELECT E'a\\\nb' :v".into()),
+        // psqlscan.l `xqs`: a continued `E'...'` string keeps the rules of
+        // `xe`, so the `\'` of its second part is an escaped quote.
+        (
+            "shell/escape-string-continuation",
+            "SELECT E'a'\n'\\'' :v".into(),
+        ),
+        (
+            "shell/escape-string-continuation-comment",
+            "SELECT E'a' -- c\n'b'\n'\\'' :v".into(),
+        ),
+        ("shell/bit-string-continuation", "SELECT B'1'\n'0:1'".into()),
         // Operators that begin with a colon.
         ("colon/cast", "SELECT a::v".into()),
         ("colon/assignment", "SELECT a :=v".into()),
@@ -180,6 +199,50 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         (
             "terminator/begin-atomic",
             "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END;".into(),
+        ),
+        // Where psql ends the query buffer: psqlscan.l's parenthesis and
+        // `BEGIN` depths, which psql_scan_reset sets to zero after a send.
+        (
+            "terminator/begin-atomic-two",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; SELECT 2; END;\nSELECT 3;"
+                .into(),
+        ),
+        (
+            "terminator/case-in-begin",
+            "CREATE PROCEDURE p() BEGIN ATOMIC SELECT CASE WHEN true THEN 1 END; END;\nSELECT 2;"
+                .into(),
+        ),
+        (
+            "terminator/or-replace",
+            "CREATE OR REPLACE PROCEDURE p() BEGIN ATOMIC SELECT 1; END;\nSELECT 2;".into(),
+        ),
+        (
+            "terminator/begin-outside-routine",
+            "BEGIN; SELECT 1; END;".into(),
+        ),
+        (
+            "terminator/national-string-prefix",
+            "CREATE n'' FUNCTION f() BEGIN ATOMIC SELECT 1; END;\nSELECT 2;".into(),
+        ),
+        (
+            "terminator/nested-parentheses",
+            "SELECT ((1); 2);\nSELECT 3;".into(),
+        ),
+        (
+            "terminator/send-in-parentheses",
+            "SELECT (1 \\g\nSELECT 2;".into(),
+        ),
+        (
+            "terminator/reset-in-parentheses",
+            "SELECT (1 \\r\nSELECT 2;".into(),
+        ),
+        (
+            "terminator/batch-in-parentheses",
+            "SELECT (1 \\; 2);\nSELECT 3;".into(),
+        ),
+        (
+            "terminator/inactive-parenthesis",
+            "\\if false\n(\n\\endif\nSELECT 1;".into(),
         ),
         // Send commands.
         ("send/g", "SELECT 1 \\g".into()),
@@ -285,6 +348,12 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
         ("open/quoted-identifier", "SELECT \"a".into()),
         ("open/dollar-quote", "SELECT $$a".into()),
         ("open/block-comment", "SELECT /* a".into()),
+        ("open/escape-string-continuation", "SELECT E'a'\n'\\'".into()),
+        ("open/parenthesis", "SELECT (1".into()),
+        (
+            "open/begin",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1;".into(),
+        ),
         // Numbers, whose extent moved in 15.
         ("number/exponent-string", "SELECT 1e'\\' :v".into()),
         ("number/junk", "SELECT 123abc :v".into()),
@@ -302,6 +371,70 @@ fn shaped_documents() -> Vec<(&'static str, String)> {
             "copy/from-stdin",
             "COPY t FROM STDIN;\n1\t:v\n\\.\nSELECT 2;".into(),
         ),
+        (
+            "copy/rest-of-line",
+            "COPY t FROM STDIN; SELECT 1;\n1\n\\.\nSELECT 2;".into(),
+        ),
+        (
+            "copy/two-on-a-line",
+            "COPY a FROM STDIN; COPY b FROM STDIN;\n1\n\\.\n2\n\\.\nSELECT 3;".into(),
+        ),
+        (
+            "copy/batch",
+            "COPY a FROM stdin \\; COPY b FROM stdin;\n1\n\\.\n2\n\\.\nSELECT 3;".into(),
+        ),
+        (
+            "copy/send-command",
+            "COPY t FROM STDIN \\g\n1\n\\.\nSELECT 2;".into(),
+        ),
+        (
+            "copy/send-command-batch",
+            "COPY a FROM STDIN \\; SELECT 1 \\g\n1\n\\.\nSELECT 2;".into(),
+        ),
+        ("copy/gdesc", "COPY t FROM STDIN \\gdesc\nSELECT 2;".into()),
+        (
+            "copy/stale-words",
+            "COPY t FROM STDIN;\n1\n\\.\n;\n2\n\\.\nSELECT 3;".into(),
+        ),
+        ("copy/binary", "COPY BINARY t FROM STDIN;\n1\n\\.\nSELECT 2;".into()),
+        (
+            "copy/schema-and-columns",
+            "COPY s.t (a, b) FROM STDIN (FORMAT csv);\n1,2\n\\.\nSELECT 2;".into(),
+        ),
+        ("copy/to-stdout", "COPY t TO STDOUT;\nSELECT 2;".into()),
+        ("copy/from-file", "COPY t FROM '/tmp/x';\nSELECT 2;".into()),
+        ("copy/query", "COPY (SELECT 1) TO STDOUT;\nSELECT 2;".into()),
+        (
+            "copy/marker-with-space",
+            "COPY t FROM STDIN;\n1\n\\. \n \\.\n\\.\nSELECT 2;".into(),
+        ),
+        (
+            "copy/crlf",
+            "COPY t FROM STDIN;\r\n1\r\n\\.\r\nSELECT 2;\r\n".into(),
+        ),
+        ("copy/missing-marker", "COPY t FROM STDIN;\n1\n2".into()),
+        ("copy/marker-at-end", "COPY t FROM STDIN;\n1\n\\.".into()),
+        ("copy/empty", "COPY t FROM STDIN;\n\\.\nSELECT 2;".into()),
+        ("copy/at-end", "COPY t FROM STDIN;".into()),
+        (
+            "copy/opaque-data",
+            "COPY t FROM STDIN;\nSELECT 'a;\n\\set x 1\n\\if\n\\.\nSELECT :'x';".into(),
+        ),
+        (
+            "copy/inactive-branch",
+            "\\if false\nCOPY t FROM STDIN;\n\\endif\nSELECT 1;".into(),
+        ),
+        (
+            "copy/client",
+            "\\copy t from stdin\n1\t:v\n\\.\nSELECT 2;".into(),
+        ),
+        (
+            "copy/client-columns",
+            "\\COPY t (a, b) FROM STDIN WITH (FORMAT csv)\n1,2\n\\.\nSELECT 2;".into(),
+        ),
+        ("copy/client-to", "\\copy (select 1) to stdout\nSELECT 2;".into()),
+        ("copy/client-pstdin", "\\copy t from pstdin\nSELECT 2;".into()),
+        ("copy/client-quoted-file", "\\copy t from 'stdin'\nSELECT 2;".into()),
     ];
     // Added in 17: a vertical tab ends a command name
     // (docs/research/psql-14-19-syntax-changes.md, item A4).
@@ -341,6 +474,8 @@ struct Facts {
     /// Each backslash command: its whole extent, and the extent of each of
     /// its arguments.
     commands: Vec<(Range<usize>, Vec<Range<usize>>)>,
+    /// Each block of COPY data: the extent of the rows and of the `\.` line.
+    copy_data: Vec<(Range<usize>, Option<Range<usize>>)>,
     /// Whether the document ends with a complete query buffer.
     complete: bool,
 }
@@ -355,17 +490,6 @@ fn span_of(source: &str, part: &str) -> Range<usize> {
         "token text is not a subslice of the parsed source",
     );
     (start - base)..(start - base + part.len())
-}
-
-/// The end offset of each `;` terminator token, in order. `Terminator::Semi`
-/// carries no text, so its position comes from the lexer, as
-/// `pgtk_psql::substitution` does.
-fn semicolon_spans(source: &str) -> Vec<Range<usize>> {
-    pgtk_psql::lex(source)
-        .tokens()
-        .filter(|token| token.kind() == pgtk_psql::TokenKind::SEMI)
-        .map(|token| token.span().range())
-        .collect()
 }
 
 /// The extent of a command and of each of its arguments.
@@ -386,9 +510,8 @@ fn pg_psql_facts(source: &str, variables: &Variables) -> Option<Facts> {
     let rendered = pgtk_psql::render(source, variables).ok()?;
 
     let mut interpolations = Vec::new();
-    let mut submissions = Vec::new();
     let mut commands = Vec::new();
-    let mut semicolons = semicolon_spans(source).into_iter();
+    let mut copy_data = Vec::new();
     for item in &document.items {
         let command = match item {
             PsqlItem::Interpolation(interpolation) => {
@@ -398,40 +521,38 @@ fn pg_psql_facts(source: &str, variables: &Variables) -> Option<Facts> {
                 ));
                 continue;
             }
-            PsqlItem::Terminator(Terminator::Semi) => {
-                submissions.push(
-                    semicolons
-                        .next()
-                        .expect("each `;` terminator is one SEMI token"),
-                );
+            PsqlItem::Terminator(Terminator::Semi) | PsqlItem::Sql(_) => continue,
+            PsqlItem::CopyData(data) => {
+                copy_data.push((
+                    span_of(source, data.rows.text()),
+                    data.end
+                        .as_ref()
+                        .map(|end| span_of(source, end.marker.text())),
+                ));
                 continue;
             }
-            PsqlItem::Sql(_) => continue,
             PsqlItem::Terminator(Terminator::Send(send)) => send.command(),
             PsqlItem::Terminator(Terminator::Reset(reset)) => reset.command(),
             #[cfg(feature = "since-pg18")]
             PsqlItem::Terminator(Terminator::Discard(discard)) => discard.command(),
-            PsqlItem::Command(command) => {
-                commands.push(command_facts(source, &command.command()));
-                continue;
-            }
+            PsqlItem::Command(command) => command.command(),
         };
-        // A terminator command: the boundary is the backslash and the name,
-        // as the oracle reports it.
-        submissions.push(span_of(source, command.head()));
         commands.push(command_facts(source, &command));
     }
 
     Some(Facts {
         sql: rendered.sql().to_owned(),
         interpolations,
-        submissions,
+        // A `;` boundary is the `;`, and a command boundary is the backslash
+        // and the name, as the oracle reports them.
+        submissions: rendered
+            .boundaries()
+            .iter()
+            .map(|boundary| boundary.source.clone())
+            .collect(),
         commands,
-        // pgtk-psql has no notion of an incomplete query buffer: it has no
-        // open lexical region, so a document it parses at all is complete.
-        // Where psql is still inside a string, a comment or a dollar-quoted
-        // body, that is the `open-lexical-region` gap.
-        complete: true,
+        copy_data,
+        complete: rendered.is_complete(),
     })
 }
 
@@ -459,6 +580,7 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
     let mut interpolations = Vec::new();
     let mut submissions = Vec::new();
     let mut commands = Vec::new();
+    let mut copy_data = Vec::new();
     for event in scanned.events() {
         match event {
             Event::Interpolation { name, source, .. } => {
@@ -525,6 +647,7 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
                 sql.truncate((length + (output.start - at)).min(sql.len()));
                 buffer_start = buffer_start.min(sql.len());
             }
+            Event::CopyData { rows, end } => copy_data.push((rows.clone(), end.clone())),
             Event::End { .. } | Event::Incomplete { .. } => {}
         }
         marks.push((copied, sql.len()));
@@ -543,6 +666,7 @@ fn oracle_facts(source: &str, variables: &[(&str, &str)]) -> Facts {
         interpolations,
         submissions,
         commands,
+        copy_data,
         complete: scanned.is_complete(),
     }
 }
@@ -556,12 +680,18 @@ struct Outcome {
     interpolations: bool,
     submissions: bool,
     commands: bool,
+    copy_data: bool,
     complete: bool,
 }
 
 impl Outcome {
     fn agrees(self) -> bool {
-        self.text && self.interpolations && self.submissions && self.commands && self.complete
+        self.text
+            && self.interpolations
+            && self.submissions
+            && self.commands
+            && self.copy_data
+            && self.complete
     }
 
     /// The comparisons that disagreed, in a stable order.
@@ -571,6 +701,7 @@ impl Outcome {
             (!self.interpolations, "interpolations"),
             (!self.submissions, "submissions"),
             (!self.commands, "commands"),
+            (!self.copy_data, "copy_data"),
             (!self.complete, "complete"),
         ]
         .into_iter()
@@ -626,11 +757,12 @@ fn compare(source: &str) -> Comparison {
             interpolations: false,
             submissions: false,
             commands: false,
+            copy_data: false,
             complete: !unbound_oracle.complete,
         };
         return Comparison {
             outcome,
-            class: classify(source, &scanned, None, &unbound_oracle, outcome),
+            class: classify(source, None, outcome),
             detail: format!(
                 "pgtk-psql refuses the document; psql ends with {:?}",
                 scanned.final_prompt(),
@@ -644,6 +776,8 @@ fn compare(source: &str) -> Comparison {
         interpolations: unbound_psql.interpolations == unbound_oracle.interpolations,
         submissions: unbound_psql.submissions == unbound_oracle.submissions,
         commands: unbound_psql.commands == unbound_oracle.commands,
+        copy_data: unbound_psql.copy_data == unbound_oracle.copy_data
+            && bound_psql.copy_data == bound_oracle.copy_data,
         complete: unbound_psql.complete == unbound_oracle.complete,
     };
     let detail = if outcome.agrees() {
@@ -663,13 +797,7 @@ fn compare(source: &str) -> Comparison {
     };
     Comparison {
         outcome,
-        class: classify(
-            source,
-            &scanned,
-            Some(&unbound_psql),
-            &unbound_oracle,
-            outcome,
-        ),
+        class: classify(source, Some(&unbound_psql), outcome),
         detail,
     }
 }
@@ -701,51 +829,18 @@ fn first_difference(psql_side: &str, oracle_side: &str) -> String {
 /// disagreement that fits none of them is `unclassified`, so a new one cannot
 /// be recorded without a reason. The order of the rules is the order of
 /// causes: a later rule only speaks for a document no earlier one explains.
-fn classify(
-    source: &str,
-    scanned: &pgtk_psql_oracle::Scan,
-    psql: Option<&Facts>,
-    oracle: &Facts,
-    outcome: Outcome,
-) -> &'static str {
+fn classify(source: &str, psql: Option<&Facts>, outcome: Outcome) -> &'static str {
     if outcome.agrees() {
         return "";
     }
-    // The document reaches end of input inside a string, a quoted identifier,
-    // a dollar-quoted body or a comment. psql asks for another line; pgtk-psql
-    // runs the region to end of input as one token but has no open query
-    // buffer, so it disagrees on `complete` (ADR 0007, freshtonic/pg-sql#89).
-    if !scanned.is_complete() && scanned.final_prompt().is_open_lexical_region() {
-        return "open-lexical-region";
-    }
     if psql.is_none() {
         return "refused";
-    }
-    // psql reads the data lines after a `COPY ... FROM STDIN` itself, up to
-    // `\.`. Neither side models that: both read the data as psql text, where
-    // `\N` and `\.` are unknown commands, and the two read an unknown command
-    // differently (the next class).
-    if (scanned.copy_from_stdin() > 0 || has_copy_from_stdin_command(source))
-        && has_unknown_command(source)
-    {
-        return "copy-data";
     }
     // psql reports an unknown command as an error and drops the rest of its
     // line. pgtk-psql keeps the name only, as `MetaCommand::Unknown`, and
     // forwards it, so that the server SQL shows the error.
     if has_unknown_command(source) {
         return "unknown-command";
-    }
-    // psql suppresses the `;` boundary inside parentheses and inside a
-    // tracked `BEGIN ... END` block of a `CREATE FUNCTION`. pgtk-psql tracks
-    // neither, because it renders one string for the whole document rather
-    // than splitting it into submissions, so it only ever has fewer psql
-    // boundaries than its own.
-    let psql = psql.expect("the refusal case returned above");
-    if oracle.submissions.len() < psql.submissions.len()
-        && is_subsequence(&oracle.submissions, &psql.submissions)
-    {
-        return "boundary-suppressed-by-nesting";
     }
     "unclassified"
 }
@@ -759,28 +854,6 @@ fn has_unknown_command(source: &str) -> bool {
             .iter()
             .any(|item| matches!(item, PsqlItem::Command(MetaCommand::Unknown(_))))
     })
-}
-
-/// Whether the document holds `\copy ... from stdin`, which reads its data
-/// lines from the script as `COPY ... FROM STDIN` does.
-fn has_copy_from_stdin_command(source: &str) -> bool {
-    pgtk_psql::parse(source).is_ok_and(|document| {
-        document.items.iter().any(|item| match item {
-            PsqlItem::Command(command @ MetaCommand::WholeLine(_)) => {
-                let command = command.command();
-                command.name().eq_ignore_ascii_case("copy")
-                    && command.text().to_ascii_lowercase().contains("from stdin")
-            }
-            _ => false,
-        })
-    })
-}
-
-/// Whether `part` appears in `whole` in order.
-fn is_subsequence(part: &[Range<usize>], whole: &[Range<usize>]) -> bool {
-    let mut remaining = whole.iter();
-    part.iter()
-        .all(|wanted| remaining.any(|candidate| candidate == wanted))
 }
 
 // --- The pinned baseline ----------------------------------------------------
@@ -984,14 +1057,7 @@ fn every_document_matches_its_pinned_outcome() {
     // No gap may be recorded without a reason the crate documents.
     for (class, _) in expected.values() {
         assert!(
-            [
-                "copy-data",
-                "unknown-command",
-                "boundary-suppressed-by-nesting",
-                "open-lexical-region",
-                "refused",
-            ]
-            .contains(&class.as_str()),
+            ["unknown-command", "refused"].contains(&class.as_str()),
             "unknown psql gap class {class:?}",
         );
     }

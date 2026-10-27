@@ -46,6 +46,31 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// gram.y `Sconst`: a string constant in each of its spellings. gram.y
+    /// `Sconst` is `SCONST` (REL_17_11 gram.y 17297), which scan.l gives for
+    /// the plain `'…'` form, a continued `'…'` form (`quotecontinue`), the
+    /// `E'…'` (escape) form and a dollar-quoted `$tag$…$tag$` form. scan.l
+    /// gives `USCONST` for `U&'…'`, and parser.c (`base_yylex`) makes it
+    /// `SCONST` after it reads an optional `UESCAPE` clause (REL_17_11
+    /// parser.c 316-319, gram.y 686-687). So a `U&'…'` string is an `Sconst`
+    /// in each rule, with its `UESCAPE` clause (issues #74 and #93).
+    ///
+    /// A bit string (`B'…'`) and a hex string (`X'…'`) are not an `Sconst`:
+    /// scan.l makes them `BCONST` and `XCONST` tokens. So they have no variant
+    /// here (issue #52).
+    #[derive(Debug)]
+    pub enum Sconst {
+        Unicode(UnicodeStringLitWithEscape),
+        /// scan.l refuses an incorrect Unicode escape (issue #95).
+        #[validate(crate::ast::validation::escape_sconst, flat = crate::ast::validation::escape_sconst_flat)]
+        Escape(literal::EscapeStringLit),
+        Dollar(literal::DollarStringLit),
+        Sequence(literal::StringLitSequence),
+        Plain(literal::StringLit),
+    }
+}
+
+recursa::ast_node! {
     /// Content inside IN parentheses: either a subquery or expression list.
     ///
     /// PG's `in_expr` is either `select_with_parens` or `'(' expr_list ')'`.
@@ -522,6 +547,7 @@ recursa::ast_node! {
     ///   literal follows the dotted attribute names only
     ///   ([`QualifiedTail::Call`] and [`QualifiedTail::TypedLiteral`]).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_qualified_ref, flat = crate::ast::validation::current_schema_qualified_ref_flat)]
     pub struct QualifiedRef {
         pub table: crate::tokens::ColId,
         pub path: QualifiedPath,
@@ -575,7 +601,7 @@ recursa::ast_node! {
         Call(FunctionCallTail),
         /// gram.y `AexprConst: func_name Sconst` (REL_17_11 gram.y 17223):
         /// `pg_catalog.int4 '1'`.
-        TypedLiteral(literal::StringLit),
+        TypedLiteral(Sconst),
         /// `t.a.*`, the last element of the chain.
         Star(ParenthesizedDotStar),
         /// `t.a[1]` and the elements after the subscript.
@@ -616,6 +642,7 @@ recursa::ast_node! {
     /// cast to an array type and `f(x)[1]` is rejected, as PostgreSQL has it.
     #[derive(Debug)]
     #[flat(pool)]
+    #[validate(crate::ast::validation::current_schema_column_ref, flat = crate::ast::validation::current_schema_column_ref_flat)]
     pub struct ColumnRef {
         pub name: crate::tokens::ColId,
         /// The subscript and the elements after it. A `.*` is the last
@@ -1264,7 +1291,11 @@ recursa::ast_node! {
     /// One shape rather than a "plain" and a "within group" tail: the two ended
     /// the argument list on the same `)` and could only be told apart after it,
     /// which a one-token parser cannot do.
+    ///
+    /// The action refuses an argument `ORDER BY`, `DISTINCT` or `VARIADIC`
+    /// with `WITHIN GROUP` (issue #95).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::within_group, flat = crate::ast::validation::within_group_flat)]
     pub struct FunctionCallSuffix {
         pub open: FunctionCallOpen,
         pub body: Option<FunctionCallBody>,
@@ -1311,7 +1342,7 @@ recursa::ast_node! {
         /// gram.y `func_arg_list`.
         pub args: FunctionArgumentList,
         pub close: FunctionCallClose,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2348,7 +2379,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct FixedTypeCastFunc {
         pub type_name: FixedTypeCastFuncName,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2372,7 +2403,7 @@ recursa::ast_node! {
         /// and `precision` is also an operator class after a column in an
         /// index element, which the LR parser could not tell apart.
         pub type_name: crate::tokens::type_function_name,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2392,7 +2423,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JsonTypeCastFunc {
         #[tok(JSON, this)]
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2434,7 +2465,7 @@ recursa::ast_node! {
         /// Optional precision, e.g., `timestamp(6)`.
         pub precision: Option<IconstPrecision>,
         pub tz: Option<TimeZoneQualifier>,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2446,7 +2477,7 @@ recursa::ast_node! {
         /// Optional precision, e.g., `time(2)`.
         pub precision: Option<IconstPrecision>,
         pub tz: Option<TimeZoneQualifier>,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -2522,7 +2553,7 @@ recursa::ast_node! {
     /// `'str' [qualifier]` after `INTERVAL`.
     #[derive(Debug)]
     pub struct IntervalLitQualified {
-        pub value: literal::StringLit,
+        pub value: Sconst,
         pub qualifier: Option<IntervalQualifier>,
     }
 }
@@ -2532,7 +2563,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct IntervalLitPrecision {
         pub precision: IconstPrecision,
-        pub value: literal::StringLit,
+        pub value: Sconst,
     }
 }
 
@@ -3199,14 +3230,15 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Field argument of `EXTRACT(field FROM source)`.
+    /// Field argument of `EXTRACT(field FROM source)`: gram.y `extract_arg`,
+    /// whose string arm is `Sconst` (REL_17_11 gram.y 16620).
     ///
     /// Variant ordering: `StringLit` before `Ident` — string literal has a
     /// distinct first token (`'`) so order is not strictly required; listed
     /// first to match the Postgres docs ordering.
     #[derive(Debug)]
     pub enum ExtractField {
-        StringLit(StringLitSeq0),
+        StringLit(Sconst),
         Ident(literal::AliasName),
     }
 }
@@ -3231,12 +3263,41 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// The string after `UESCAPE`. `base_yylex` (`parser.c`) reads it with
+    /// `core_yylex` and asks for an `SCONST` (REL_17_11 parser.c 268-274), so
+    /// each spelling of [`Sconst`] except the Unicode one is here: a plain, a
+    /// continued, an escape or a dollar-quoted string. A `U&'...'` string is
+    /// a `USCONST` there, and `parser.c` refuses it ("UESCAPE must be
+    /// followed by a simple string literal").
+    #[derive(Debug)]
+    pub enum UescapeString {
+        Escape(literal::EscapeStringLit),
+        Dollar(literal::DollarStringLit),
+        Sequence(literal::StringLitSequence),
+        Plain(literal::StringLit),
+    }
+}
+
+impl UescapeString<'_> {
+    /// The source text of the string.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Escape(string) => string.text(),
+            Self::Dollar(string) => string.text(),
+            Self::Sequence(string) => string.text(),
+            Self::Plain(string) => string.text(),
+        }
+    }
+}
+
+recursa::ast_node! {
     /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
     ///
-    /// `base_yylex` (`parser.c`) rejects an escape that is not one character,
-    /// or that `check_uescapechar` refuses: a hex digit, `+`, `'`, `"` or
-    /// white space (REL_17_11 parser.c 277-280; issue #55). The error is at
-    /// the escape string.
+    /// `base_yylex` (`parser.c`) rejects an escape whose value is not one
+    /// byte, or that `check_uescapechar` refuses: a hex digit, `+`, `'`, `"`
+    /// or white space (REL_17_11 parser.c 277-280; issue #55). The error is
+    /// at the escape string. The value is the value of the string, so
+    /// `UESCAPE E'\x21'` is `!` (`crate::ident::uescape_class`).
     #[classify(escape_char, fold = crate::ident::uescape_class)]
     #[reject(
         one_of(escape_char, "invalid"),
@@ -3247,15 +3308,20 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct UescapeSuffix {
         #[tok(UESCAPE, this)]
-        pub escape_char: literal::StringLit,
+        pub escape_char: UescapeString,
     }
 }
 
 recursa::ast_node! {
     /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
+    /// parser.c refuses an incorrect Unicode escape (issue #95).
+    ///
+    /// After the string, a `UESCAPE` is always the clause (`UNICODE_END` in
+    /// `crate::tokens`).
     #[derive(Debug)]
+    #[parse(prec = UNICODE_END)]
+    #[validate(crate::ast::validation::unicode_string, flat = crate::ast::validation::unicode_string_flat)]
     pub struct UnicodeStringLitWithEscape {
-        #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
         pub lit: literal::UnicodeStringLit,
         pub uescape: Option<UescapeSuffix>,
     }
@@ -4718,7 +4784,9 @@ recursa::ast_node! {
         /// Escape string literal: `E'foo\n'`. Must come before `CastFunc` and
         /// `StringLit` — `CastFunc` is `TypeName StringLit` and would match `e`
         /// as a type name followed by the string literal.
-        EscapeStringLit(#[lex(pattern = r"(?i:E)'(?:[^'\\]|\\.|'')*'")] literal::EscapeStringLit),
+        /// scan.l refuses an incorrect Unicode escape (issue #95).
+        #[validate(crate::ast::validation::escape_expr, flat = crate::ast::validation::escape_expr_flat)]
+        EscapeStringLit(literal::EscapeStringLit),
         /// `TIMESTAMP [WITH|WITHOUT TIME ZONE] 'string'`.
         TimestampLit(TimestampLit),
         /// `TIME [WITH|WITHOUT TIME ZONE] 'string'`.
@@ -4858,10 +4926,10 @@ recursa::ast_node! {
         /// `BitStringLit` over `Ident`+`StringLit` only when the prefixed token
         /// is also declared first at the atom level. Without this ordering, the
         /// formatter would round-trip `B'10'` as `B '10'` (inserted space).
-        BitStringLit(#[lex(pattern = r"(?i:B)'[^']*'")] literal::BitStringLit),
+        BitStringLit(literal::BitStringLit),
         /// Hex-string literal: `X'1FF'`. Same ordering rationale as
         /// `BitStringLit` — must precede `StringLit` and any plain `Ident`.
-        HexStringLit(#[lex(pattern = r"(?i:X)'[^']*'")] literal::HexStringLit),
+        HexStringLit(literal::HexStringLit),
         /// String literal sequence: `'hello'` or `'first' 'second' ...` —
         /// Postgres concatenates adjacent string literals into one.
         StringLit(StringLitSeq0),

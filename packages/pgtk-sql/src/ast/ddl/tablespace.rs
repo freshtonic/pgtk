@@ -1,6 +1,5 @@
 /// CREATE TABLESPACE / DROP TABLESPACE statement AST.
 use crate::ast::ddl::index::{StorageParam, WithStorage};
-use crate::tokens::literal;
 
 recursa::ast_node! {
     /// `OWNER role` optional clause.
@@ -16,7 +15,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct LocationClause {
         #[tok(LOCATION, this)]
-        pub path: literal::StringLit,
+        pub path: crate::ast::shared::expr::Sconst,
     }
 }
 

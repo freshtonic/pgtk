@@ -46,7 +46,7 @@ recursa::ast_node! {
     #[tok(AS, ENUM, LPAREN, this, RPAREN)]
     pub struct CreateTypeEnum {
         #[sep(COMMA)]
-        pub labels: zero_or_many!(literal::StringLit),
+        pub labels: zero_or_many!(crate::ast::shared::expr::Sconst),
     }
 }
 
@@ -171,9 +171,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTypeRenameValue {
         #[tok(RENAME, VALUE, this)]
-        pub old_value: literal::StringLit,
+        pub old_value: crate::ast::shared::expr::Sconst,
         #[tok(TO, this)]
-        pub new_value: literal::StringLit,
+        pub new_value: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -193,7 +193,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterEnumValueBefore {
         #[tok(BEFORE, this)]
-        pub neighbor: literal::StringLit,
+        pub neighbor: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -203,7 +203,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterEnumValueAfter {
         #[tok(AFTER, this)]
-        pub neighbor: literal::StringLit,
+        pub neighbor: crate::ast::shared::expr::Sconst,
     }
 }
 
@@ -214,7 +214,7 @@ recursa::ast_node! {
     #[tok(ADD, VALUE, this)]
     pub struct AlterTypeAddValue {
         pub if_not_exists: Option<IfNotExists>,
-        pub new_value: literal::StringLit,
+        pub new_value: crate::ast::shared::expr::Sconst,
         pub position: Option<AlterEnumValuePosition>,
     }
 }

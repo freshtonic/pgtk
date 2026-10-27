@@ -85,40 +85,47 @@ fn variable_set_stmt_keeps_scope_prefixes_and_special_rests() {
     }
 }
 
-/// `UESCAPE` remains an ordinary bare label unless it introduces the Unicode
-/// string escape-clause shape. The LR token feed classifies the latter
-/// with `UESCAPE_LA` while preserving the source spelling in the AST.
+/// parser.c (`base_yylex`) reads a `UESCAPE` after a Unicode string as its
+/// escape clause, and asks for a simple string after it ("UESCAPE must be
+/// followed by a simple string literal", REL_17_11 parser.c 253-274). In
+/// every other position `UESCAPE` is an unreserved keyword: a label, a type
+/// name before a string (a typed literal), an option name. The `UESCAPE`
+/// precedence level of `crate::tokens` gives this; there is no lookahead
+/// filter.
 #[test]
 fn unicode_escape_clause_and_bare_uescape_label_remain_distinct() {
-    for source in [
+    assert_accepts(&[
         "SELECT U&'d!0061t' UESCAPE '!'",
         "SELECT U&'d\\0061t' UESCAPE '!'",
         "SELECT U&'d\\0061t' /* intervening trivia */ UESCAPE '!'",
-        "SELECT U&'d\\0061t' UESCAPE",
+        "SELECT U&'x' uescape 'y'",
+        "SELECT U&'x' AS uescape",
         "SELECT 1 UESCAPE",
-    ] {
-        let lexed = lex(source);
-        assert!(
-            lexed.errors().next().is_none(),
-            "lexical errors in {source:?}"
-        );
-
-        let mut input = lexed.input();
-        Statement::parse(&mut input)
-            .unwrap_or_else(|error| panic!("strict statement {source:?}: {error}"));
-        assert!(input.is_eof(), "strict parse left input for {source:?}");
-    }
-
-    let source = "SELECT U&'d!0061t' UESCAPE 1";
-    let lexed = lex(source);
-    assert!(
-        lexed.errors().next().is_none(),
-        "lexical errors in {source:?}"
-    );
-    let mut input = lexed.input();
-    assert!(
-        Statement::parse(&mut input).is_err() || !input.is_eof(),
-        "a UESCAPE keyword without a string literal must not consume a numeric literal"
+        "SELECT 'a' uescape",
+        "SELECT uescape FROM t",
+        // A typed literal whose type is named `uescape`.
+        "SELECT uescape 'x'",
+        "SELECT uescape E'x'",
+        "SELECT uescape $$x$$",
+        "SELECT s.uescape 'x'",
+        "SELECT f(uescape 'x')",
+        "CREATE TABLE t (a int DEFAULT uescape 'x')",
+        // An option named `uescape`, with a string value.
+        "EXPLAIN (uescape 'x') SELECT 1",
+        "VACUUM (uescape 'x')",
+        "COPY t FROM STDIN (uescape 'x')",
+        "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (uescape 'x')",
+        "ALTER SERVER s OPTIONS (ADD uescape 'x')",
+        "ALTER SERVER s OPTIONS (SET uescape 'x')",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT U&'d\\0061t' UESCAPE",
+            "SELECT U&'x' uescape, 1",
+            "SELECT 1 FROM t WHERE a = U&'x' uescape",
+            "SELECT U&'d!0061t' UESCAPE 1",
+        ],
+        "a UESCAPE after a Unicode string must have a simple string after it",
     );
 }
 
@@ -1011,17 +1018,46 @@ fn narrow_places_keep_the_forms_of_gram_y() {
         "SELECT XMLEXISTS(('a' || 'b') PASSING x)",
         "SELECT JSON_OBJECT(a, b)",
         "SELECT JSON_OBJECT(a => 1)",
+        "SELECT ARRAY[[1], [2]]",
+        "SELECT ARRAY[[], []]",
+        "SELECT ARRAY[]",
+    ]);
+    // Added in 16 (REL_16_15 gram.y `json_object_constructor`): the SQL/JSON
+    // `JSON_OBJECT` and `JSON_OBJECTAGG`. REL_15_19 gram.y has no SQL/JSON.
+    #[cfg(feature = "since-pg16")]
+    assert_accepts(&[
         "SELECT JSON_OBJECT(a : b RETURNING text)",
         "SELECT JSON_OBJECT(DEFAULT : 1)",
         "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
         "SELECT JSON_OBJECTAGG(a VALUE 1)",
-        "SELECT ARRAY[[1], [2]]",
-        "SELECT ARRAY[[], []]",
-        "SELECT ARRAY[]",
+    ]);
+    #[cfg(not(feature = "since-pg16"))]
+    assert_rejects(
+        &[
+            "SELECT JSON_OBJECT(a : b RETURNING text)",
+            "SELECT JSON_OBJECT(DEFAULT : 1)",
+            "SELECT JSON_OBJECT(a VALUE 1, b : 2)",
+            "SELECT JSON_OBJECTAGG(a VALUE 1)",
+        ],
+        "the syntax is added in 16",
+    );
+    // Added in 17 (REL_17_11 gram.y `JSON_QUERY`, `JSON_EXISTS` and
+    // `JSON_TABLE`). REL_16_15 gram.y has none of them.
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&[
         "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
         "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
         "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
     ]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &[
+            "SELECT JSON_QUERY(a, '$' NULL ON EMPTY NULL ON ERROR)",
+            "SELECT JSON_QUERY(a, '$' NULL ON ERROR)",
+            "SELECT JSON_EXISTS(a, '$' TRUE ON ERROR)",
+        ],
+        "the syntax is added in 17",
+    );
 }
 
 /// A `)` before a set operator closes each form that can end a
@@ -1070,7 +1106,6 @@ fn each_construct_that_ends_in_a_close_can_end_a_set_operand() {
         "SELECT 1 FROM ROWS FROM (f(1)) UNION SELECT 2",
         "SELECT 1 FROM XMLTABLE('/a' PASSING x COLUMNS a int) UNION SELECT 2",
         "SELECT XMLELEMENT(NAME a) UNION SELECT 2",
-        "SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2",
         "SELECT JSON_OBJECT() UNION SELECT 2",
         // The forms that a parenthesized query takes, which gram.y reads
         // through `select_with_parens` (REL_17_11 gram.y 12652-12686).
@@ -1081,6 +1116,15 @@ fn each_construct_that_ends_in_a_close_can_end_a_set_operand() {
         "SELECT * FROM ((SELECT 1) UNION SELECT 2) s",
         "INSERT INTO t (a) (SELECT 1) UNION SELECT 2",
     ]);
+    // Added in 17 (REL_17_11 gram.y `JSON_QUERY`, `JSON_EXISTS` and
+    // `JSON_TABLE`). REL_16_15 gram.y has none of them.
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&["SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2"]);
+    #[cfg(not(feature = "since-pg17"))]
+    assert_rejects(
+        &["SELECT * FROM JSON_TABLE(j, '$' COLUMNS (a int)) UNION SELECT 2"],
+        "the syntax is added in 17",
+    );
 }
 
 /// gram.y `Sconst` is `SCONST`, which scan.l gives for a dollar-quoted
@@ -1173,15 +1217,11 @@ fn statements_that_a_gram_y_action_rejects() {
         "COPY t FROM STDIN WHERE a > 1",
         "COPY (SELECT 1) TO STDOUT",
         "CREATE ROLE r ENCRYPTED PASSWORD 'x'",
-        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
         "CREATE TABLE t (a int REFERENCES p ON UPDATE NO ACTION ON DELETE SET DEFAULT)",
         "CREATE RECURSIVE VIEW v (a) AS SELECT 1",
         "CREATE VIEW v AS SELECT 1 WITH CASCADED CHECK OPTION",
         "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (MODULUS 2, REMAINDER 0)",
         "CREATE TABLE p1 PARTITION OF p FOR VALUES WITH (REMAINDER 1, MODULUS 2)",
-        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
-        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
-        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
         "CREATE TRIGGER t AFTER INSERT OR UPDATE OF a OR DELETE OR TRUNCATE ON x EXECUTE FUNCTION f()",
         "CREATE POLICY p ON t AS PERMISSIVE",
         "CREATE POLICY p ON t AS \"restrictive\"",
@@ -1189,6 +1229,26 @@ fn statements_that_a_gram_y_action_rejects() {
         "ALTER INDEX i ALTER 32767 SET STATISTICS 100",
         "SELECT U&'d!0061t' UESCAPE '!'",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&[
+        "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+        "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+        "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+    ]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &[
+            "CREATE TABLE t (a int REFERENCES p MATCH FULL ON DELETE SET NULL (a) ON UPDATE CASCADE)",
+            "CREATE PUBLICATION p FOR TABLE t, u (a) WHERE (a > 1), ONLY v",
+            "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, current_schema, TABLE t, u",
+            "ALTER PUBLICATION p ADD TABLE t, TABLES IN SCHEMA s, r",
+        ],
+        "the syntax is added in 15",
+    );
 }
 
 /// CREATE statement forms that gram.y does not have (issue #57).
@@ -1261,7 +1321,6 @@ fn create_statements_keep_the_forms_of_gram_y() {
         "CREATE RECURSIVE VIEW v (a) WITH (security_barrier) AS SELECT 1",
         "CREATE OR REPLACE TEMP VIEW v (a) AS SELECT 1",
         "CREATE TABLE t (a int REFERENCES p ON DELETE CASCADE ON UPDATE RESTRICT)",
-        "CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))",
         "ALTER TABLE t ADD UNIQUE USING INDEX i",
         "CREATE SCHEMA s CREATE TABLE t (a int) CREATE VIEW v AS SELECT 1",
         "SELECT 1 INTO TEMP TABLE t",
@@ -1272,6 +1331,16 @@ fn create_statements_keep_the_forms_of_gram_y() {
         "CREATE ROLE r LOGIN",
         "CREATE USER u WITH LOGIN SUPERUSER",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&["CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))"]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &["CREATE TABLE t (a int, UNIQUE NULLS NOT DISTINCT (a))"],
+        "the syntax is added in 15",
+    );
 }
 
 /// ALTER and utility statement forms that gram.y does not have (issue #58).
@@ -1356,7 +1425,6 @@ fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
         "CLUSTER (VERBOSE) t USING i",
         "INSERT INTO t DEFAULT VALUES",
         "INSERT INTO t (a) OVERRIDING USER VALUE VALUES (1)",
-        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s",
         "ALTER INDEX i ALTER 1 SET STATISTICS 100",
         "ALTER INDEX i ALTER a SET (fillfactor = 70)",
         "ALTER TABLE t ALTER a DROP NOT NULL",
@@ -1365,6 +1433,16 @@ fn alter_and_utility_statements_keep_the_forms_of_gram_y() {
         "INSERT INTO t VALUES (1) ON CONFLICT DO NOTHING",
         "INSERT INTO t VALUES (1) ON CONFLICT ON CONSTRAINT c DO NOTHING",
     ]);
+    // Added in 15 (REL_15_19 gram.y): the column list of a `key_action`
+    // SET NULL, a publication table's column list and WHERE, `TABLES IN
+    // SCHEMA` and `NULLS [NOT] DISTINCT`. REL_14_24 gram.y has none.
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&["CREATE PUBLICATION p FOR TABLES IN SCHEMA s"]);
+    #[cfg(not(feature = "since-pg15"))]
+    assert_rejects(
+        &["CREATE PUBLICATION p FOR TABLES IN SCHEMA s"],
+        "the syntax is added in 15",
+    );
 }
 
 /// `ALTER TYPE ... SET (...)` takes gram.y `operator_def_list`, whose value is
@@ -1666,5 +1744,777 @@ fn an_operator_call_takes_a_string_literal_after_its_close() {
         "SELECT 1 OPERATOR(+) E'2', 1 OPERATOR(+) $$2$$",
         "SELECT 1 OPERATOR(=) ANY ('{1}')",
         "SELECT a FROM t ORDER BY a USING OPERATOR(<)",
+    ]);
+}
+
+/// gram.y `Sconst` is `SCONST`, which scan.l gives for each string spelling:
+/// a plain string, a continued string, an escape string and a dollar-quoted
+/// string. parser.c makes a Unicode string an `SCONST` too (REL_17_11
+/// parser.c 316-319). Each typed literal of `AexprConst` (REL_17_11 gram.y
+/// 17223-17281), `zone_value` (1840-1877), the `CYCLE` mark values and the
+/// `extract_arg` take an `Sconst`. Before each of these spellings, the `)`
+/// is the merged kind `RPAREN_TYPED_LA` (issue #93).
+#[test]
+fn a_typed_literal_takes_each_sconst_spelling() {
+    assert_accepts(&[
+        "SELECT date E'2000-01-01'",
+        "SELECT date $$x$$",
+        "SELECT char(3) E'x'",
+        "SELECT f(3) $$x$$",
+        "SET TIME ZONE INTERVAL(3) $$1$$",
+        "SELECT date 'x'\n'y'",
+        "SELECT f(3) 'x'\n'y'",
+        "SELECT f(3) E'x', f(3) U&'x', f(3) U&'x' UESCAPE '!'",
+        "SELECT pg_catalog.int4 E'1', pg_catalog.int4 $$1$$, s.t(3) $$x$$",
+        "SELECT numeric(10, 2) $$1.5$$, varchar(3) U&'x', bit(1) E'1'",
+        "SELECT int4 U&'1' UESCAPE '!', text 'a'\n'b'",
+        "SELECT timestamp(3) E'2000-01-01', time with time zone $$00:00$$",
+        "SELECT interval $$1$$ year, interval(2) E'1 s', interval 'x'\n'y' day",
+        "SELECT EXTRACT(E'year' FROM now())",
+        "SET TIME ZONE E'UTC'",
+        "SET TIME ZONE $$UTC$$",
+        "SET TIME ZONE INTERVAL $$1$$ HOUR",
+        "SET TIME ZONE INTERVAL(3) U&'1'",
+        "SET TIME ZONE INTERVAL 'x'\n'y'",
+        "WITH RECURSIVE c(a) AS (SELECT 1) CYCLE a SET m TO date E'x' \
+         DEFAULT s.t(3) $$x$$ USING p SELECT 1",
+        "WITH RECURSIVE c(a) AS (SELECT 1) CYCLE a SET m TO t(3) U&'x' \
+         DEFAULT pg_catalog.text $$y$$ USING p SELECT 1",
+        "SELECT 1 OPERATOR(+) U&'2', 1 OPERATOR(+) '2'\n'3'",
+        "COPY t FROM U&'f' UESCAPE '!'",
+    ]);
+}
+
+/// The other rules that take gram.y `Sconst` take each of its spellings too
+/// (issue #93): `copy_file_name`, `func_as`, `NonReservedWord_or_Sconst`,
+/// `enum_val_list`, `TriggerFuncArg`, `event_trigger_value_list`,
+/// `comment_text`, `security_label`, `opt_boolean_or_string`,
+/// `notify_payload`, `file_name` and the `Sconst` of the transaction, `SET`,
+/// tablespace and conversion statements.
+#[test]
+fn each_rule_that_takes_an_sconst_takes_each_spelling() {
+    assert_accepts(&[
+        "COPY t FROM E'f'",
+        "COPY t TO PROGRAM $$cat$$",
+        "COPY t FROM 'a'\n'b' WITH (FORMAT $$csv$$)",
+        "CREATE FUNCTION f() RETURNS int AS E'select 1' LANGUAGE $$sql$$",
+        "CREATE FUNCTION f() RETURNS int AS U&'lib', $$sym$$ LANGUAGE c",
+        "CREATE TYPE e AS ENUM (E'a', $$b$$, U&'c')",
+        "ALTER TYPE e ADD VALUE E'x' BEFORE $$y$$",
+        "ALTER TYPE e RENAME VALUE E'x' TO $$y$$",
+        "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f(E'a', $$b$$)",
+        "CREATE EVENT TRIGGER e ON ddl_command_start WHEN TAG IN (E'a', $$b$$) \
+         EXECUTE FUNCTION f()",
+        "COMMENT ON TABLE t IS $$x$$",
+        "SECURITY LABEL FOR $$p$$ ON TABLE t IS E'x'",
+        "EXPLAIN (FORMAT $$json$$) SELECT 1",
+        "VACUUM (INDEX_CLEANUP $$on$$) t",
+        "NOTIFY c, $$x$$",
+        "LOAD E'lib'",
+        "PREPARE TRANSACTION $$g$$",
+        "COMMIT PREPARED E'g'",
+        "SET x = E'a', $$b$$",
+        "SET SESSION AUTHORIZATION $$r$$",
+        "SET SCHEMA E's'",
+        "SET NAMES $$utf8$$",
+        "SET TRANSACTION SNAPSHOT $$s$$",
+        "CREATE TABLESPACE s LOCATION $$/x$$",
+        "CREATE CONVERSION c FOR E'a' TO $$b$$ FROM f",
+        "ALTER EXTENSION e UPDATE TO $$2$$",
+    ]);
+}
+
+/// gram.y `Iconst` and `SignedIconst` take only an `ICONST`. scan.l makes an
+/// `ICONST` only from an integer that fits in `int32`, and an `FCONST` from a
+/// larger one (`process_integer_literal`: REL_14_24 scan.l 1305 with
+/// `strtoint`, REL_17_11 scan.l 1370 with `pg_strtoint32_safe`). A rule that
+/// takes `NumericOnly`, `FCONST` or an expression takes both. The sign is a
+/// separate token, so `-2147483648` is `'-'` and an `FCONST` (issue #96).
+#[test]
+fn an_iconst_takes_only_an_integer_that_fits_in_int32() {
+    assert_accepts(&[
+        "CREATE ROLE r SYSID 2147483647",
+        "CREATE ROLE r SYSID 0002147483647",
+        "CREATE ROLE r CONNECTION LIMIT -2147483647",
+        "ALTER ROLE r CONNECTION LIMIT 2147483647",
+        "FETCH -2147483647 FROM c",
+        "FETCH ABSOLUTE 2147483647 FROM c",
+        "MOVE RELATIVE -2147483647 IN c",
+        "MOVE FORWARD 2147483647 FROM c",
+        "MOVE BACKWARD -2147483647 FROM c",
+        "ALTER TABLE t ALTER c SET STATISTICS 2147483647",
+        "ALTER STATISTICS s SET STATISTICS -2147483647",
+        "SELECT 1::int[2147483647]",
+        "SELECT 1::int ARRAY[2147483647]",
+        "SELECT CURRENT_TIME(2147483647)",
+        "SELECT 1::char(2147483647)",
+        "SELECT 1::timestamp(2147483647)",
+        "SELECT 1::interval second(2147483647)",
+        "SELECT INTERVAL(2147483647) '1'",
+        "SET TIME ZONE INTERVAL(2147483647) '1'",
+        "CREATE TABLE p PARTITION OF q FOR VALUES WITH (MODULUS 2147483647, REMAINDER 0)",
+        "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS OPERATOR 2147483647 <",
+        "ALTER OPERATOR FAMILY f USING btree DROP FUNCTION 2147483647 (int)",
+        // `AexprConst`, `NumericOnly`, `TriggerFuncArg`, an option value and
+        // an expression take an `FCONST` too.
+        "SELECT 2147483648",
+        "SELECT -2147483648",
+        "SELECT 1 LIMIT 2147483648",
+        "SET x = -2147483648",
+        "CREATE SEQUENCE s START -2147483648",
+        "CREATE TRIGGER tr AFTER INSERT ON t EXECUTE FUNCTION f(2147483648)",
+        "COPY t FROM STDIN WITH (x 2147483648)",
+        "EXPLAIN (x 2147483648) SELECT 1",
+    ]);
+    assert_rejects(
+        &[
+            "CREATE ROLE r SYSID 2147483648",
+            "CREATE ROLE r SYSID 0002147483648",
+            "CREATE ROLE r CONNECTION LIMIT -2147483648",
+            "ALTER ROLE r CONNECTION LIMIT 2147483648",
+            "FETCH 2147483648 FROM c",
+            "FETCH -2147483648 FROM c",
+            "FETCH ABSOLUTE 2147483648 FROM c",
+            "MOVE RELATIVE -2147483648 IN c",
+            "MOVE FORWARD 2147483648 FROM c",
+            "MOVE BACKWARD -2147483648 FROM c",
+            "ALTER TABLE t ALTER c SET STATISTICS 2147483648",
+            "ALTER TABLE t ALTER 2147483648 SET STATISTICS 1",
+            "ALTER STATISTICS s SET STATISTICS -2147483648",
+            "SELECT 1::int[2147483648]",
+            "SELECT 1::int ARRAY[2147483648]",
+            "SELECT CURRENT_TIMESTAMP(2147483648)",
+            "SELECT LOCALTIME(2147483648)",
+            "SELECT 1::char(2147483648)",
+            "SELECT 1::float(2147483648)",
+            "SELECT 1::timestamp(2147483648)",
+            "SELECT 1::interval second(2147483648)",
+            "SELECT INTERVAL(2147483648) '1'",
+            "SET TIME ZONE INTERVAL(2147483648) '1'",
+            "CREATE TABLE p PARTITION OF q FOR VALUES WITH (MODULUS 2147483648, REMAINDER 0)",
+            "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS OPERATOR 2147483648 <",
+            "CREATE OPERATOR CLASS c FOR TYPE int USING btree AS FUNCTION 2147483648 f(int)",
+            "ALTER OPERATOR FAMILY f USING btree DROP OPERATOR 2147483648 (int, int)",
+        ],
+        "an Iconst takes only an integer that fits in int32",
+    );
+}
+
+/// From 16 an integer can have a `0x`, `0o` or `0b` prefix and `_`
+/// separators, and scan.l applies the same `int32` limit to each form
+/// (REL_16_15 scan.l 395-410 and `process_integer_literal`; issue #96).
+#[cfg(feature = "since-pg16")]
+#[test]
+fn an_iconst_takes_each_integer_form_that_fits_in_int32() {
+    assert_accepts(&[
+        "CREATE ROLE r SYSID 0x7FFFFFFF",
+        "CREATE ROLE r SYSID 0x0_7fff_ffff",
+        "CREATE ROLE r SYSID 0o17777777777",
+        "CREATE ROLE r SYSID 0b1111111111111111111111111111111",
+        "CREATE ROLE r SYSID 2_147_483_647",
+        "CREATE ROLE r SYSID 0_002_147_483_647",
+        "CREATE ROLE r CONNECTION LIMIT -0x7FFFFFFF",
+        "SELECT 0x80000000",
+        "SELECT -0o20000000000",
+        "SELECT 1 LIMIT 0b10000000000000000000000000000000",
+        "SET x = 2_147_483_648",
+    ]);
+    assert_rejects(
+        &[
+            "CREATE ROLE r SYSID 0x80000000",
+            "CREATE ROLE r SYSID 0X0000_8000_0000",
+            "CREATE ROLE r SYSID 0o20000000000",
+            "CREATE ROLE r SYSID 0b10000000000000000000000000000000",
+            "CREATE ROLE r SYSID 2_147_483_648",
+            "CREATE ROLE r CONNECTION LIMIT -0x80000000",
+            "FETCH 0o20000000000 FROM c",
+            "SELECT 1::int[0x8000_0000]",
+        ],
+        "an Iconst takes only an integer that fits in int32",
+    );
+}
+
+/// `createdb_opt_item` takes a `SignedIconst` at 14 (REL_14_24 gram.y 10203)
+/// and a `NumericOnly` from 15 (commit 34fa0ddae5c, back-patched to 15.1).
+#[test]
+fn a_createdb_option_number_takes_a_float_from_15() {
+    assert_accepts(&[
+        "CREATE DATABASE d OID = 2147483647",
+        "ALTER DATABASE d CONNECTION LIMIT -2147483647",
+    ]);
+    let wide = [
+        "CREATE DATABASE d OID = 2147483648",
+        "ALTER DATABASE d CONNECTION LIMIT -2147483648",
+    ];
+    if cfg!(feature = "since-pg15") {
+        assert_accepts(&wide);
+    } else {
+        assert_rejects(&wide, "a createdb option number is a SignedIconst at 14");
+    }
+}
+
+/// scan.l `<xb,xh,xq,xe,xus>{quote}` (REL_17_11 scan.l 588-606) looks for a
+/// `quotecontinue` after each string kind, so an escape, a bit, a hex and a
+/// Unicode string continue over a newline as one constant, as a plain string
+/// does. The continued part keeps the rules of the first part: in
+/// `E'a'` newline `'\''` the `\'` is an escaped quote. A continuation needs a
+/// newline, takes no block comment, and starts with a plain quote.
+#[test]
+fn each_string_kind_continues_over_a_newline() {
+    assert_accepts(&[
+        "SELECT E'a'\n'b'",
+        "SELECT E'a'\n'\\''",
+        "SELECT E'a' -- c\n  'b'\n'c'",
+        "SELECT E'\\\n'",
+        "SELECT B'1'\n'0'",
+        "SELECT B'1'\n'0'\n'1'",
+        "SELECT X'1'\n'F'",
+        "SELECT U&'a'\n'b'",
+        "SELECT U&'a'\n'!0061' UESCAPE '!'",
+        "SELECT date E'a'\n'b'",
+        "SELECT f(3) E'x'\n'y'",
+        "COPY t FROM E'a'\n'b'",
+        "SELECT X'1'\n'F' :: int",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT 'a'\nE'b'",
+            "SELECT E'a' /* c */\n'b'",
+            "SELECT B'1' '0'",
+            "SELECT E'a' 'b'",
+            "SELECT U&'a'\nU&'b'",
+        ],
+        "a continuation needs a newline and a plain quote",
+    );
+}
+
+/// `base_yylex` (`parser.c`) reads the string after `UESCAPE` with
+/// `core_yylex` and asks for an `SCONST` (REL_17_11 parser.c 268-274): a
+/// plain, a continued, an escape or a dollar-quoted string. The escape
+/// character is the value of the string.
+#[test]
+fn uescape_takes_each_simple_string_spelling() {
+    assert_accepts(&[
+        "SELECT U&'x' UESCAPE E'!'",
+        "SELECT U&'x' UESCAPE $$!$$",
+        "SELECT U&'x' UESCAPE $t$!$t$",
+        "SELECT U&'x' UESCAPE E'\\x21'",
+        "SELECT U&'x' UESCAPE E'\\041'",
+        "SELECT U&'x' UESCAPE E'\\u0021'",
+        "SELECT U&'x' UESCAPE ''\n'!'",
+        "SELECT 1 AS U&\"x\" UESCAPE E'!'",
+        "SELECT 1 AS U&\"x\" UESCAPE $$!$$",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT U&'x' UESCAPE U&'!'",
+            "SELECT U&'x' UESCAPE B'1'",
+            "SELECT U&'x' UESCAPE E'!!'",
+            "SELECT U&'x' UESCAPE '!'\n'!'",
+            "SELECT U&'x' UESCAPE E'\\''",
+            "SELECT U&'x' UESCAPE $$ $$",
+        ],
+        "the UESCAPE string is no SCONST, or its value is no escape character",
+    );
+}
+
+/// `\v` is an escape of `E'...'` from 17 (REL_17_11 scan.l 1420; REL_16_15
+/// scan.l `unescape_single_char` has no `case 'v'`). Before 17 it is `v`,
+/// which is a valid escape character; from 17 it is a vertical tab, which
+/// is white space.
+#[test]
+fn the_v_escape_of_an_escape_string_follows_the_version() {
+    let source = "SELECT U&'x' UESCAPE E'\\v'";
+    if cfg!(feature = "since-pg17") {
+        assert_rejects(&[source], "a vertical tab is no escape character");
+    } else {
+        assert_accepts(&[source]);
+    }
+}
+
+/// gram.y `NonReservedWord_or_Sconst` (REL_17_11 gram.y 1885) is a string
+/// constant or a word that is not a reserved keyword. `ALTER EXTENSION ...
+/// UPDATE TO`, `CREATE EXTENSION ... VERSION` and the `FOR` provider of
+/// `SECURITY LABEL` take it (`alter_extension_opt_item`,
+/// `create_extension_opt_item`, `opt_provider`).
+#[test]
+fn a_non_reserved_word_or_sconst_takes_each_word_and_string() {
+    assert_accepts(&[
+        "ALTER EXTENSION e UPDATE TO v2",
+        "ALTER EXTENSION e UPDATE TO \"2.0\"",
+        "ALTER EXTENSION e UPDATE TO int",
+        "ALTER EXTENSION e UPDATE TO E'2'",
+        "CREATE EXTENSION e VERSION v2",
+        "CREATE EXTENSION e VERSION int",
+        "SECURITY LABEL FOR selinux ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR \"p\" ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR int ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR left ON TABLE t IS 'x'",
+        "SECURITY LABEL FOR E'p' ON TABLE t IS 'x'",
+    ]);
+    assert_rejects(
+        &[
+            "ALTER EXTENSION e UPDATE TO select",
+            "CREATE EXTENSION e VERSION select",
+            "CREATE EXTENSION e VERSION table",
+            "SECURITY LABEL FOR select ON TABLE t IS 'x'",
+            "SECURITY LABEL FOR 1 ON TABLE t IS 'x'",
+        ],
+        "a reserved keyword is no NonReservedWord",
+    );
+}
+
+/// The statements that PostgreSQL rejects and that the strict differential
+/// check found accepted (issue #95), with forms near them.
+#[test]
+fn over_acceptances_of_the_strict_differential_check_are_rejected() {
+    assert_rejects(
+        &[
+            // parser.c `str_udeescape`: an incorrect escape in `U&'...'`.
+            "SELECT U&'wrong: \\061'",
+            "SELECT U&'wrong: \\+0061'",
+            "SELECT U&'wrong: \\db99'",
+            "SELECT U&'wrong: \\db99xy'",
+            "SELECT U&'wrong: \\db99\\\\'",
+            "SELECT U&'wrong: \\db99\\0061'",
+            "SELECT U&'wrong: \\+00db99\\+000061'",
+            "SELECT U&'wrong: \\+2FFFFF'",
+            "SELECT U&'wrong: \\0000'",
+            "SELECT U&'wrong: \\dc00'",
+            "SELECT U&'wrong: !061' UESCAPE '!'",
+            "SELECT U&'it''s \\061'",
+            "CREATE TABLE t (a text DEFAULT U&'\\061')",
+            "COMMENT ON TABLE t IS U&'\\061'",
+            // scan.l: an incorrect `\u` or `\U` escape in `E'...'`.
+            "SELECT E'wrong: \\u061'",
+            "SELECT E'wrong: \\U0061'",
+            "SELECT E'wrong: \\udb99'",
+            "SELECT E'wrong: \\udb99xy'",
+            "SELECT E'wrong: \\udb99\\\\'",
+            "SELECT E'wrong: \\udb99\\u0061'",
+            "SELECT E'wrong: \\U0000db99\\U00000061'",
+            "SELECT E'wrong: \\U002FFFFF'",
+            "SELECT E'wrong: \\u0000'",
+            "SELECT E'wrong: \\udc00'",
+            "SELECT E'wrong: \\udb99'''",
+            "COMMENT ON TABLE t IS E'\\u061'",
+            // gram.y `func_expr`: `WITHIN GROUP` with an argument `ORDER BY`,
+            // `DISTINCT` or `VARIADIC`.
+            "SELECT percentile_cont(p ORDER BY p) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(DISTINCT a) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(VARIADIC a) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(a, VARIADIC b) WITHIN GROUP (ORDER BY x) FROM t",
+            "SELECT f(ALL a ORDER BY a) WITHIN GROUP (ORDER BY x) FROM t",
+            // gram.y `insertSelectOptions`: `WITH TIES` and `SKIP LOCKED`.
+            "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW WITH TIES FOR UPDATE SKIP LOCKED",
+            "SELECT a FROM t ORDER BY a FOR UPDATE SKIP LOCKED FETCH FIRST 1 ROW WITH TIES",
+            "SELECT a FROM t ORDER BY a FETCH FIRST ROW WITH TIES FOR SHARE FOR UPDATE SKIP LOCKED",
+            "(SELECT a FROM t FOR UPDATE SKIP LOCKED) ORDER BY a FETCH FIRST 1 ROW WITH TIES",
+            // `CURRENT_SCHEMA` is no `ColId`.
+            "CREATE PUBLICATION p FOR TABLE CURRENT_SCHEMA",
+            "DROP TABLE current_schema",
+        ],
+        "PostgreSQL rejects it",
+    );
+    #[cfg(feature = "since-pg15")]
+    assert_rejects(
+        &[
+            "CREATE PUBLICATION p FOR TABLE s.t, CURRENT_SCHEMA",
+            "ALTER PUBLICATION p ADD TABLE t, current_schema",
+        ],
+        "a table object is no CURRENT_SCHEMA",
+    );
+    assert_accepts(&[
+        "SELECT U&'d\\0061t\\+000061'",
+        "SELECT U&'d!0061t\\+000061' UESCAPE '!'",
+        "SELECT U&'\\061' UESCAPE '!'",
+        "SELECT U&'\\d83d\\de00'",
+        "SELECT U&'it''s'",
+        "SELECT E'd\\u0061t\\U00000061'",
+        "SELECT E'\\ud83d\\ude00'",
+        "SELECT E'\\\\u061'",
+        "SELECT E'\\''",
+        "SELECT E'\\x41\\101\\n'",
+        "SELECT percentile_cont(0.5) WITHIN GROUP (ORDER BY x) FROM t",
+        "SELECT f(ALL a) WITHIN GROUP (ORDER BY x) FROM t",
+        "SELECT string_agg(a, ',' ORDER BY a) FROM t",
+        "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW WITH TIES FOR UPDATE NOWAIT",
+        "SELECT a FROM t ORDER BY a FETCH FIRST 1 ROW ONLY FOR UPDATE SKIP LOCKED",
+        "SELECT a FROM t ORDER BY a LIMIT 1 FOR UPDATE SKIP LOCKED",
+        "SELECT current_schema",
+        "SELECT current_schema()",
+        "SELECT * FROM \"current_schema\".t",
+        "SELECT * FROM current_schema()",
+        "DROP TABLE \"current_schema\"",
+    ]);
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&[
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA CURRENT_SCHEMA",
+        "CREATE PUBLICATION p FOR TABLES IN SCHEMA s, CURRENT_SCHEMA",
+        "CREATE PUBLICATION p FOR TABLE t, \"current_schema\"",
+    ]);
+    // scan.l: a zero-length delimited identifier is a lexical error.
+    for source in [
+        "CREATE TABLE i_am_a_failure() USING \"\"",
+        "SELECT 1 AS \"\"",
+        "SELECT 1 AS U&\"\"",
+    ] {
+        assert!(
+            lex(source).errors().next().is_some(),
+            "{source:?} must not lex"
+        );
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
+    }
+    assert_accepts(&["SELECT 1 AS \"\"\"\"", "SELECT 1 AS \"a\"\"\""]);
+}
+
+/// gram.y `opt_routine_body: BEGIN_P ATOMIC routine_body_stmt_list END_P`,
+/// with `routine_body_stmt_list: routine_body_stmt_list routine_body_stmt ';'
+/// | EMPTY` and `routine_body_stmt: stmt | ReturnStmt`. `stmt` can be empty,
+/// and it does not hold `TransactionStmtLegacy` (`BEGIN`, `END`). The rules
+/// are the same from 14 to 19 (REL_14_24 gram.y 7942-7981, REL_17_11 gram.y
+/// 8731-8770; issue #97).
+#[test]
+fn a_begin_atomic_body_holds_statements_that_end_in_a_semicolon() {
+    let accepted = [
+        "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END",
+        "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; SELECT 2; END",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC RETURN 1; END",
+        "CREATE FUNCTION f() RETURNS boolean BEGIN ATOMIC ; END",
+        "CREATE FUNCTION f() RETURNS boolean BEGIN ATOMIC ; ; SELECT 1; ; END",
+        "CREATE FUNCTION f(x int) RETURNS boolean LANGUAGE sql \
+         BEGIN ATOMIC SELECT CASE WHEN x % 2 = 0 THEN true ELSE false END; END",
+        "CREATE FUNCTION f() RETURNS SETOF int LANGUAGE sql STABLE \
+         BEGIN ATOMIC SELECT * FROM t; END",
+        "CREATE FUNCTION f(a int) RETURNS void LANGUAGE sql \
+         BEGIN ATOMIC INSERT INTO t SELECT a + $1; END",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC COMMIT; START TRANSACTION; END",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC \
+         CREATE FUNCTION g() RETURNS int BEGIN ATOMIC SELECT 1; END; END",
+        "CREATE PROCEDURE p() LANGUAGE sql \
+         BEGIN ATOMIC INSERT INTO t VALUES (1); DELETE FROM t; END",
+        "CREATE OR REPLACE PROCEDURE p(x int) BEGIN ATOMIC UPDATE t SET a = x; END",
+        "CREATE PROCEDURE p() BEGIN ATOMIC END",
+    ];
+    assert_accepts(&accepted);
+    // The formatted text parses again to the same text, and PostgreSQL
+    // accepts it.
+    for source in accepted {
+        let lexed = lex(source);
+        let mut input = lexed.input();
+        let parsed = Statement::parse(&mut input).expect("strict statement");
+        let once = pgtk_sql::formatter::format_tokens_sql(parsed.ast(), Default::default());
+        let relexed = lex(&once);
+        let mut reinput = relexed.input();
+        let reparsed = Statement::parse(&mut reinput)
+            .unwrap_or_else(|error| panic!("formatted {once:?} does not parse: {error}"));
+        assert!(reinput.is_eof(), "formatted {once:?} left input");
+        let twice = pgtk_sql::formatter::format_tokens_sql(reparsed.ast(), Default::default());
+        assert_eq!(once, twice, "formatting {source:?} is not a fixed point");
+        #[cfg(feature = "postgres-oracle")]
+        if let Some(error) = pgtk_oracle::parse_error(&once) {
+            panic!("PostgreSQL rejects the formatted {once:?}: {error}");
+        }
+    }
+    assert_rejects(
+        &[
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1 END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1;",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC BEGIN; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC BEGIN; COMMIT; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END TRANSACTION",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC RETURN; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END RETURN 1",
+            "CREATE PROCEDURE p() BEGIN ATOMIC SELECT 1 END",
+        ],
+        "a routine body statement ends in a `;` and is a gram.y `stmt`",
+    );
+}
+
+/// Asserts that each of `sources` is a lexical error, and that the raw parser
+/// of the target version rejects it.
+fn assert_lex_errors(sources: &[&str]) {
+    for source in sources {
+        assert!(
+            lex(source).errors().next().is_some(),
+            "{source:?} must not lex"
+        );
+        #[cfg(feature = "postgres-oracle")]
+        assert!(
+            pgtk_oracle::parse_error(source).is_some(),
+            "PostgreSQL accepts {source:?}"
+        );
+    }
+}
+
+/// scan.l `ident_start [A-Za-z\200-\377_]` and `ident_cont
+/// [A-Za-z\200-\377_0-9\$]` (REL_17_11 scan.l 346-349; REL_14_24 scan.l
+/// 344-347 has the same rules). A byte with the high bit set is an identifier
+/// character, so each non-ASCII character of a UTF-8 source is one, and `$`
+/// continues an identifier. Thus `a$$x$$` is one identifier, not an
+/// identifier and a dollar-quoted string. Found by string-agent.
+#[test]
+fn an_identifier_takes_each_character_of_scan_l() {
+    assert_accepts(&[
+        "SELECT a$b",
+        "SELECT a$b$c FROM t",
+        "SELECT _$",
+        "SELECT a$1",
+        "SELECT a$$x$$",
+        "SELECT é",
+        "SELECT naïve FROM t",
+        "SELECT 日本",
+        "SELECT a.é",
+        "SELECT é$1",
+        "SELECT 1 AS é",
+        "SELECT 1 é",
+        "SELECT U&\"x\" FROM é.ü",
+        "CREATE TABLE é (naïve int)",
+        "SELECT $1 a",
+    ]);
+}
+
+/// scan.l `dolq_start [A-Za-z\200-\377_]` and `dolq_cont
+/// [A-Za-z\200-\377_0-9]` (REL_17_11 scan.l 299-300; REL_14_24 scan.l
+/// 296-297). A tag holds no `$`. Found by string-agent.
+#[test]
+fn a_dollar_quote_tag_takes_each_character_of_scan_l() {
+    assert_accepts(&[
+        "SELECT $é$x$é$",
+        "SELECT $é$1x$é$",
+        "SELECT $a1$x$a1$",
+        "SELECT $_$x$_$",
+        "SELECT $日本$x$日本$",
+        "SELECT $a$b$x$a$b$",
+    ]);
+}
+
+/// From 15 a number or a parameter that an identifier follows directly is a
+/// lexical error (scan.l `integer_junk`, `numeric_junk`, `real_junk` and
+/// `param_junk`, REL_17_11 scan.l 435-438), and an identifier can start with
+/// a non-ASCII character. Before 15 there are no such rules, so `123é` is
+/// `123` with the alias `é` (REL_14_24 scan.l).
+#[test]
+fn a_number_before_a_non_ascii_identifier_follows_the_version() {
+    let sources = [
+        "SELECT 123é",
+        "SELECT 123日",
+        "SELECT 1.5é",
+        "SELECT 1e5é",
+        "SELECT 0x1é",
+        "SELECT $1é",
+        "SELECT $1a",
+        "SELECT $1é$x$1é$",
+    ];
+    if cfg!(feature = "since-pg15") {
+        assert_lex_errors(&sources);
+    } else {
+        assert_accepts(&sources);
+    }
+}
+
+/// scan.l verifies the value of an `E'...'` string when an octal or a
+/// hexadecimal escape gives a zero byte or a byte with the high bit set
+/// (`saw_non_ascii`, then `pg_verifymbstr` at the closing quote: REL_17_11
+/// scan.l 627-636 and 735-750; REL_14_24 scan.l 588-597). In a UTF8 database
+/// a zero byte or a byte sequence that is not UTF-8 is "invalid byte
+/// sequence for encoding". The check reads the whole value of a continued
+/// string, also the string after `UESCAPE`. Found by string-agent.
+#[test]
+fn an_escape_string_value_is_valid_utf8_without_a_zero_byte() {
+    assert_rejects(
+        &[
+            "SELECT E'\\0'",
+            "SELECT E'\\400'",
+            "SELECT E'\\777'",
+            "SELECT E'\\x00'",
+            "SELECT E'\\377'",
+            "SELECT E'\\xff'",
+            "SELECT E'\\303'",
+            "SELECT E'é\\377'",
+            "SELECT E'\\u00e9\\303'",
+            "SELECT E'a'\n'\\303'",
+            "SELECT date E'\\xff'",
+            "COMMENT ON TABLE t IS E'\\xff'",
+            "SELECT U&'x' UESCAPE E'\\0'",
+            "SELECT U&'x' UESCAPE E'\\377'",
+        ],
+        "the value is no valid UTF-8 or holds a zero byte",
+    );
+    assert_accepts(&[
+        "SELECT E'\\303\\251'",
+        "SELECT E'\\x41\\xc3\\xa9'",
+        "SELECT E'\\303'\n'\\251'",
+        "SELECT E'\\001'",
+        "SELECT E'\\é'",
+    ]);
+}
+
+/// gram.y `merge_insert` takes the `insert_column_list` of a plain INSERT:
+/// `insert_column_item: ColId opt_indirection` (REL_17_11 gram.y 12596;
+/// REL_15_19 gram.y 12207). Found by submission-agent (rules.sql).
+#[cfg(feature = "since-pg15")]
+#[test]
+fn a_merge_insert_column_takes_an_indirection() {
+    let merge = "MERGE INTO t USING s ON t.a = s.a WHEN NOT MATCHED THEN INSERT";
+    let accepted = [
+        format!("{merge} (filling[1], id) VALUES (1, 2)"),
+        format!("{merge} (f.x, id) VALUES (1, 2)"),
+        format!("{merge} (f[1:2].x) VALUES (1)"),
+        format!("{merge} (f.*) VALUES (1)"),
+        format!("{merge} (value) VALUES (1)"),
+        format!("{merge} (a, b) VALUES (1, 2)"),
+    ];
+    assert_accepts(&accepted.iter().map(String::as_str).collect::<Vec<_>>());
+    let rejected = [
+        format!("{merge} (select) VALUES (1)"),
+        format!("{merge} (left) VALUES (1)"),
+    ];
+    assert_rejects(
+        &rejected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "a column name is a ColId",
+    );
+}
+
+/// `base_yylex` (`parser.c`) decodes each `U&"..."` identifier with
+/// `str_udeescape`, with the escape character of its `UESCAPE` clause or `\`
+/// (REL_17_11 parser.c 315-343; REL_14_24 has the same rules), and refuses an
+/// incorrect Unicode escape in each identifier position. The check is the
+/// check of a `U&'...'` string. Found by diff-agent.
+#[test]
+fn a_unicode_identifier_with_an_incorrect_escape_is_refused() {
+    assert_rejects(
+        &[
+            "SELECT U&\"\\061\" FROM t",
+            "SELECT a FROM U&\"\\061\"",
+            "CREATE TABLE U&\"\\db99\" (a int)",
+            "SELECT 1 AS U&\"\\0000\"",
+            "SELECT 1 U&\"\\+2FFFFF\"",
+            "SELECT U&\"\\dc00\"()",
+            "SELECT x::U&\"\\061\"",
+            "SELECT t.U&\"\\061\" FROM t",
+            "GRANT r TO U&\"\\061\"",
+            "SELECT 1 AS U&\"!061\" UESCAPE '!'",
+        ],
+        "str_udeescape refuses the escape",
+    );
+    assert_accepts(&[
+        "SELECT U&\"\\0061\" FROM U&\"\\+000074\"",
+        "SELECT U&\"\\d83d\\de00\"",
+        "SELECT U&\"a\\\\b\"",
+        "SELECT 1 AS U&\"\\\" UESCAPE '!'",
+        "SELECT 1 AS U&\"\\061\" UESCAPE '!'",
+        "SELECT 1 AS U&\"d!0061t\" UESCAPE '!'",
+    ]);
+}
+
+/// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
+/// kwlist.h 115; REL_14_24 has the same class), so it is no `ColId`.
+/// pgtk-sql lexes it as an identifier, and each rule whose gram.y form is a
+/// `ColId` refuses it by its text: a dotted name, a FROM name with a dot, a
+/// subscript, an alias, a window name, an INSERT target and a column
+/// definition. As an expression and as a function name it is gram.y
+/// `SQLValueFunction` and `type_function_name`, and a quoted
+/// `"current_schema"` is a plain name. Found by diff-agent.
+#[test]
+fn current_schema_is_no_col_id() {
+    assert_rejects(
+        &[
+            "SELECT * FROM current_schema.t",
+            "SELECT current_schema.x FROM t",
+            "SELECT Current_Schema.x FROM t",
+            "SELECT current_schema.*",
+            "SELECT current_schema.f()",
+            "SELECT current_schema.t 'x'",
+            "SELECT current_schema[1]",
+            "SELECT * FROM current_schema.f()",
+            "SELECT * FROM current_schema.b.c.d()",
+            "SELECT * FROM current_schema *",
+            "SELECT * FROM current_schema TABLESAMPLE system (1)",
+            "SELECT * FROM current_schema AS x TABLESAMPLE system (1)",
+            "SELECT * FROM t current_schema",
+            "SELECT * FROM t AS current_schema",
+            "SELECT * FROM generate_series(1, 2) AS current_schema",
+            "SELECT * FROM generate_series(1, 2) current_schema",
+            "SELECT * FROM (SELECT 1) AS current_schema",
+            "SELECT x FROM t WINDOW current_schema AS ()",
+            "SELECT x FROM t WINDOW w AS (current_schema)",
+            "UPDATE t current_schema SET a = 1",
+            "UPDATE t AS current_schema SET a = 1",
+            "DELETE FROM t AS current_schema",
+            "INSERT INTO t (current_schema) VALUES (1)",
+            "CREATE TABLE t (current_schema int)",
+            "ALTER TABLE t ADD COLUMN current_schema int",
+        ],
+        "current_schema is no ColId",
+    );
+    #[cfg(feature = "since-pg15")]
+    assert_rejects(
+        &["MERGE INTO t AS current_schema USING s ON true WHEN MATCHED THEN DELETE"],
+        "current_schema is no ColId",
+    );
+    assert_accepts(&[
+        "SELECT current_schema",
+        "SELECT current_schema()",
+        "SELECT current_schema::text",
+        "SELECT current_schema 'x'",
+        "SELECT CAST(1 AS current_schema)",
+        "SELECT a FROM t ORDER BY current_schema",
+        "SELECT t.current_schema FROM t",
+        "SELECT 1 AS current_schema",
+        "SELECT * FROM current_schema",
+        "SELECT * FROM current_schema AS x",
+        "SELECT * FROM current_schema x",
+        "SELECT * FROM current_schema()",
+        "SELECT * FROM a.b.c.current_schema()",
+        "CREATE INDEX ON t (current_schema)",
+        "SET search_path = current_schema",
+        "SELECT \"current_schema\"[1]",
+        "SELECT * FROM \"current_schema\".t",
+        "SELECT \"current_schema\".x FROM t",
+    ]);
+}
+
+/// The column names of a table, function-table or subquery alias, of a CTE,
+/// a view, a materialized view, a CREATE TABLE AS and a JOIN USING, and the
+/// name of a CTE, are `ColId`s in gram.y (`name_list`, `columnList`,
+/// `TableFuncElement`), so each refuses an unquoted `current_schema`.
+#[test]
+fn current_schema_is_no_column_name_of_a_list() {
+    assert_rejects(
+        &[
+            "SELECT * FROM t AS x (current_schema)",
+            "SELECT * FROM t AS x (a, current_schema)",
+            "SELECT * FROM t x (current_schema)",
+            "SELECT * FROM (SELECT 1) AS s (current_schema)",
+            "SELECT * FROM generate_series(1, 2) AS x (current_schema)",
+            "SELECT * FROM generate_series(1, 2) x (a, current_schema)",
+            "SELECT * FROM generate_series(1, 2) AS x (current_schema int)",
+            "SELECT * FROM ROWS FROM (f()) AS x (current_schema)",
+            "WITH current_schema AS (SELECT 1) SELECT 1",
+            "WITH current_schema (a) AS (SELECT 1) SELECT 1",
+            "WITH w (current_schema) AS (SELECT 1) SELECT 1",
+            "CREATE VIEW v (current_schema) AS SELECT 1",
+            "CREATE VIEW v (Current_Schema) AS SELECT 1",
+            "CREATE MATERIALIZED VIEW v (current_schema) AS SELECT 1",
+            "CREATE TABLE t (current_schema) AS SELECT 1",
+            "SELECT * FROM t JOIN u USING (current_schema)",
+            "SELECT * FROM t JOIN u USING (a) AS current_schema",
+        ],
+        "current_schema is no ColId",
+    );
+    assert_accepts(&[
+        "SELECT * FROM t AS x (\"current_schema\")",
+        "SELECT * FROM t AS x (a, b)",
+        "SELECT * FROM generate_series(1, 2) AS x (a int)",
+        "SELECT * FROM generate_series(1, 2) x (a, b)",
+        "WITH w (a) AS (SELECT 1) SELECT 1",
+        "CREATE VIEW v (a) AS SELECT 1",
+        "CREATE TABLE t (a) AS SELECT 1",
+        "SELECT * FROM t JOIN u USING (a) AS j",
     ]);
 }

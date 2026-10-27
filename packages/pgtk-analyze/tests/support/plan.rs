@@ -1,19 +1,18 @@
-//! The replay plan: every corpus file in schedule order, every item rendered
-//! and parsed once, so both the snapshot pass and the comparison pass work
-//! from the same view of the corpus.
+//! The replay plan: every corpus file in schedule order, every statement of
+//! every psql submission parsed once, so both the snapshot pass and the
+//! comparison pass work from the same view of the corpus.
 
 use super::corpus::{FrozenSplit, ItemKind};
-use super::replay::{Shape, parse, render};
+use super::replay::{Shape, parse, statements};
 
 /// One corpus item, ready to run or compare.
 #[derive(Clone, Debug)]
 pub struct PlannedItem {
-    /// The item as psql would send it, when it is a statement `pgtk-psql`
-    /// could render.
+    /// The statement as psql sends it, when the submission is server SQL.
     pub sql: Option<String>,
     /// What `pgtk-sql` made of it, when it parsed.
     pub shape: Option<Shape>,
-    /// Whether the frozen split calls it a statement at all.
+    /// Whether the frozen submissions call it server SQL at all.
     pub kind: ItemKind,
 }
 
@@ -35,8 +34,8 @@ pub struct Plan {
 }
 
 impl Plan {
-    /// Read, render and parse the whole corpus. Files the schedule names but
-    /// the frozen split does not know are left out.
+    /// Read and parse the whole corpus. Files the schedule names but the
+    /// frozen submissions do not know are left out.
     pub fn build(split: &FrozenSplit) -> Self {
         let mut groups = Vec::new();
         for names in schedule_groups() {
@@ -50,17 +49,20 @@ impl Plan {
                 let items = file
                     .items
                     .iter()
-                    .map(|item| {
-                        let raw = file.text_of(item);
-                        let sql = (item.kind == ItemKind::Statement)
-                            .then(|| render(raw))
-                            .flatten();
-                        let shape = sql.as_deref().and_then(parse);
-                        PlannedItem {
-                            sql,
-                            shape,
+                    .flat_map(|item| match item.kind {
+                        ItemKind::Statement => statements(file.text_of(item))
+                            .into_iter()
+                            .map(|sql| PlannedItem {
+                                shape: parse(&sql),
+                                sql: Some(sql),
+                                kind: item.kind,
+                            })
+                            .collect::<Vec<_>>(),
+                        ItemKind::Other => vec![PlannedItem {
+                            sql: None,
+                            shape: None,
                             kind: item.kind,
-                        }
+                        }],
                     })
                     .collect::<Vec<_>>();
                 files.push(PlannedFile {

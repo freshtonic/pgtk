@@ -39,7 +39,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub enum LanguageName {
         Ident(literal::AliasName),
-        String(literal::StringLit),
+        String(Sconst),
     }
 }
 
@@ -52,31 +52,19 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Function body: either a single-quoted or a dollar-quoted string, which is
-    /// gram.y's `func_as: Sconst | Sconst ',' Sconst` payload.
+    /// Full function body — `AS body [, symbol]`, gram.y's `func_as: Sconst |
+    /// Sconst ',' Sconst`. The second comma-separated form is used for
+    /// C-language functions where the first part names the shared object file
+    /// and the second names the exported C symbol.
     ///
     /// psql's `AS :'regresslib'` is not a form of this: psql substitutes the
     /// variable before the server lexes, so what reaches gram.y is an ordinary
     /// `Sconst`. Render such a script through the `pgtk-psql` crate first.
-    ///
-    /// Variant ordering: dollar-quoted before single-quoted (different first
-    /// chars).
-    #[derive(Debug)]
-    pub enum FuncBodyPart {
-        Dollar(literal::DollarStringLit),
-        String(literal::StringLit),
-    }
-}
-
-recursa::ast_node! {
-    /// Full function body — `AS body [, symbol]`. The second comma-separated
-    /// form is used for C-language functions where the first part names the
-    /// shared object file and the second names the exported C symbol.
     #[derive(Debug)]
     pub struct FuncBody {
-        pub obj_file: FuncBodyPart,
+        pub obj_file: Sconst,
         #[tok(COMMA, this)]
-        pub symbol: Option<FuncBodyPart>,
+        pub symbol: Option<Sconst>,
     }
 }
 
@@ -487,15 +475,10 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// gram.y `opt_routine_body`, the SQL-standard body that follows the option
     /// list of `CREATE FUNCTION` / `CREATE PROCEDURE`: `RETURN a_expr` or
-    /// `BEGIN ATOMIC ... END`. It comes after every option, so the `RETURN`
-    /// expression is never followed by an option such as `NOT LEAKPROOF`.
-    ///
-    /// Only the empty `BEGIN ATOMIC END` shape is modeled; populating the body
-    /// would require a peek-time predicate on the inner statement list to stop
-    /// before the closing `END` keyword. The corpus only exercises the empty
-    /// form (`CREATE PROCEDURE ptest8(x text) BEGIN ATOMIC END`); non-empty
-    /// bodies remain outside the issue-9 strict-statement grammar and surface
-    /// as a structured parse error.
+    /// `BEGIN ATOMIC routine_body_stmt_list END`. It comes after every option,
+    /// so the `RETURN` expression is never followed by an option such as
+    /// `NOT LEAKPROOF`. The rules are the same from 14 (where they were added)
+    /// to 19 (REL_14_24 gram.y 7942-7981, REL_17_11 gram.y 8731-8770).
     #[derive(Debug)]
     #[allow(
         clippy::large_enum_variant,
@@ -504,18 +487,228 @@ recursa::ast_node! {
     pub enum RoutineBody {
         /// `RETURN expr` — SQL-standard single-expression function body.
         Return(ReturnOption),
-        /// `BEGIN ATOMIC END`.
-        BeginAtomicEmpty(BeginAtomicEmpty),
+        /// `BEGIN ATOMIC ... END`.
+        BeginAtomic(BeginAtomicBody),
     }
 }
 
 recursa::ast_node! {
-    /// Empty `BEGIN ATOMIC END` body. Non-empty bodies are not yet modelled —
-    /// see `FuncOption::BeginAtomicEmpty` for the rationale.
+    /// `BEGIN_P ATOMIC routine_body_stmt_list END_P`. The list can be empty
+    /// (`BEGIN ATOMIC END`), and each statement in it ends with a `;`.
     #[derive(Debug)]
-    pub enum BeginAtomicEmpty {
-        #[tok(BEGIN, ATOMIC, END)]
-        Value,
+    #[tok(BEGIN, ATOMIC, this, END)]
+    pub struct BeginAtomicBody {
+        pub statements: zero_or_many!(RoutineBodyItem),
+    }
+}
+
+recursa::ast_node! {
+    /// One element of gram.y `routine_body_stmt_list: routine_body_stmt_list
+    /// routine_body_stmt ';'`. `stmt` can be empty, so a `;` alone is an
+    /// element too; the action discards it, as `stmtmulti` does.
+    #[derive(Debug)]
+    pub enum RoutineBodyItem {
+        #[tok(SEMI)]
+        Empty,
+        Statement(RoutineBodyStatementItem),
+    }
+}
+
+recursa::ast_node! {
+    /// A `routine_body_stmt` and the `;` after it.
+    #[derive(Debug)]
+    pub struct RoutineBodyStatementItem {
+        #[tok(this, SEMI)]
+        pub statement: RoutineBodyStmt,
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `routine_body_stmt: stmt | ReturnStmt`.
+    #[derive(Debug)]
+    pub enum RoutineBodyStmt {
+        /// `RETURN a_expr` (gram.y `ReturnStmt`).
+        Return(ReturnOption),
+        /// A gram.y `stmt`.
+        Statement(boxed!(RoutineBodyStatement)),
+    }
+}
+
+recursa::ast_node! {
+    /// gram.y `stmt`: each [`Statement`](crate::ast::Statement) except
+    /// `TransactionStmtLegacy` (`BEGIN ...` and `END ...`), which only
+    /// `toplevel_stmt` takes (REL_17_11 gram.y 991-998). So an `END` after a
+    /// `;` in a routine body always closes the body. Like
+    /// [`crate::ast::shared::expr::CExpr`], it is not an AST type: a field
+    /// typed `RoutineBodyStatement` holds a `Statement`.
+    #[restricts(crate::ast::Statement)]
+    pub enum RoutineBodyStatement {
+        Explain,
+        CreateFunction,
+        CreateProcedure,
+        CreateTablespace,
+        ImportForeignSchema,
+        CreateConstraintTrigger,
+        CreateTrigger,
+        CreateEventTrigger,
+        CreateAccessMethod,
+        CreateMaterializedView,
+        CreateTextSearch,
+        CreateForeign,
+        CreateIndex,
+        CreateView,
+        CreateRule,
+        CreateGroup,
+        CreateRole,
+        CreateUserMapping,
+        CreateUser,
+        CreateSchema,
+        CreateSequence,
+        CreateType,
+        CreateDomain,
+        CreateAggregate,
+        CreateOperatorClass,
+        CreateOperatorFamily,
+        CreateOperator,
+        CreateCast,
+        CreateTransform,
+        CreateCollation,
+        CreateExtension,
+        CreatePolicy,
+        CreateStatistics,
+        CreatePublication,
+        CreateSubscription,
+        CreateConversion,
+        CreateServer,
+        CreateLanguage,
+        CreateDatabase,
+        CreateTable,
+        DropFunction,
+        DropProcedure,
+        DropRoutine,
+        DropTablespace,
+        DropTrigger,
+        DropEventTrigger,
+        DropAccessMethod,
+        DropMaterializedView,
+        DropTextSearch,
+        DropForeign,
+        DropOwned,
+        DropIndex,
+        DropView,
+        DropRule,
+        DropGroup,
+        DropRole,
+        DropUserMapping,
+        DropUser,
+        DropSchema,
+        DropSequence,
+        DropType,
+        DropDomain,
+        DropAggregate,
+        DropOperatorClass,
+        DropOperatorFamily,
+        DropOperator,
+        DropCast,
+        DropTransform,
+        DropCollation,
+        DropExtension,
+        DropPolicy,
+        DropStatistics,
+        DropPublication,
+        DropSubscription,
+        DropConversion,
+        DropServer,
+        DropLanguage,
+        DropDatabase,
+        DropTable,
+        AlterDefaultPrivileges,
+        AlterForeign,
+        AlterEventTrigger,
+        AlterTrigger,
+        AlterMaterializedView,
+        AlterTextSearch,
+        AlterLargeObject,
+        AlterTablespace,
+        AlterTable,
+        AlterSystem,
+        AlterRule,
+        AlterGroup,
+        AlterRole,
+        AlterUserMapping,
+        AlterUser,
+        AlterSchema,
+        AlterSequence,
+        AlterType,
+        AlterDomain,
+        AlterAggregate,
+        AlterOperatorClass,
+        AlterOperatorFamily,
+        AlterOperator,
+        AlterCollation,
+        AlterExtension,
+        AlterPolicy,
+        AlterStatistics,
+        AlterPublication,
+        AlterSubscription,
+        AlterConversion,
+        AlterServer,
+        AlterLanguage,
+        AlterDatabase,
+        AlterIndex,
+        AlterView,
+        AlterFunction,
+        AlterProcedure,
+        AlterRoutine,
+        Call,
+        Insert,
+        Update,
+        #[config(since = pg15)]
+        Merge,
+        Delete,
+        Rollback,
+        Savepoint,
+        Release,
+        StartTransaction,
+        Commit,
+        Abort,
+        Deallocate,
+        Prepare,
+        Execute,
+        Grant,
+        Revoke,
+        SecurityLabel,
+        Comment,
+        Copy,
+        Truncate,
+        Reindex,
+        Refresh,
+        Cluster,
+        Checkpoint,
+        #[config(since = pg19)]
+        Repack,
+        #[config(since = pg19)]
+        Wait,
+        Vacuum,
+        Lock,
+        Notify,
+        Listen,
+        Unlisten,
+        Discard,
+        Reassign,
+        Do,
+        Declare,
+        Fetch,
+        Close,
+        Move,
+        SetConstraints,
+        Set,
+        Reset,
+        Show,
+        Load,
+        Analyze,
+        Query,
+        With,
     }
 }
 
@@ -663,7 +856,7 @@ impl<'input> CreateFunctionStmt<'input> {
         let lang = self.options.iter().find_map(|opt| match opt {
             FuncOption::Language(l) => Some(match &l.name {
                 LanguageName::Ident(id) => id.text(),
-                LanguageName::String(s) => strip_quotes(s.text()),
+                LanguageName::String(s) => strip_body_delimiters(s),
             }),
             _ => None,
         })?;
@@ -681,10 +874,16 @@ fn strip_quotes(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn strip_body_delimiters<'a>(part: &'a FuncBodyPart<'a>) -> &'a str {
+/// The text of an `Sconst` without its delimiters. The escapes of an
+/// `E'...'` or a `U&'...'` string and the quotes inside a continued string
+/// stay as written.
+fn strip_body_delimiters<'a>(part: &'a Sconst<'a>) -> &'a str {
     match part {
-        FuncBodyPart::Dollar(d) => strip_dollar_quotes(d.text()),
-        FuncBodyPart::String(s) => strip_quotes(s.text()),
+        Sconst::Dollar(d) => strip_dollar_quotes(d.text()),
+        Sconst::Plain(s) => strip_quotes(s.text()),
+        Sconst::Sequence(s) => strip_quotes(s.text()),
+        Sconst::Escape(s) => strip_quotes(&s.text()[1..]),
+        Sconst::Unicode(u) => strip_quotes(&u.lit.text()[2..]),
     }
 }
 

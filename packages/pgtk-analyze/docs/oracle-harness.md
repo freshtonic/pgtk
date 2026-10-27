@@ -17,7 +17,7 @@ the same question in the same terms. The verdict for a statement is one of:
 
 | Verdict | Meaning |
 |---|---|
-| Skipped | Not compared: a psql meta-command, text `pgtk-sql` cannot parse, or the Oracle's session was in a failed transaction. |
+| Skipped | Not compared: a psql submission that is not server SQL, text `pgtk-sql` cannot parse, or the Oracle's session was in a failed transaction. |
 | Unsupported | The Subject cannot analyse it yet. Never a wrong answer. |
 | Agree | Both accepted with the same descriptor, or both rejected with the same SQLSTATE, message and position. |
 | Disagree | Anything else. Written to `target/oracle/<file>.txt` with both answers. |
@@ -35,38 +35,40 @@ This is the pattern `pgtk-sql` uses for its own differential baseline.
 
 The corpus is the `vendor/postgres` submodule, pinned to the same
 PostgreSQL 17.9 commit `pgtk-sql` vendors, so both crates read the same bytes.
-The regression files are psql documents. Ninety-seven of them use
-meta-commands such as `\set`, `\d` and `\if`. The harness reads the statement
-byte ranges `pgtk-sql` froze when it captured its own baseline, copied to
-`baselines/postgresql-17.9-statements.json`, and treats every item that split
-marked as a non-statement as Skipped. The reader reads each file by its frozen
-Git blob ID from the object store of the submodule, which must hold the commit
-the ranges were frozen from.
-The design session chose the document parser as the primary splitter with the
-frozen ranges as a cross-check. That is still reversed. `pgtk-psql` now parses
-the meta-commands of every file of the corpus (freshtonic/pgtk#42), and its
-oracle agrees with psql on 288 of the 327 documents at `pg17`. These steps are
-left before the document parser can split the corpus:
+The regression files are psql documents. The harness reads what psql sends
+to the server: the psql submissions that `pgtk-sql` freezes for its own
+differential test (`packages/pgtk-sql/baselines/postgresql-17.9-submissions.json`,
+freshtonic/pgtk#10). It mounts the same reader,
+`packages/pgtk-sql/tests/support/submissions.rs`, and it reads each file by
+its frozen Git blob ID from the object store of the submodule.
+`pgtk-psql` derives the submissions (`Rendered::submissions`): psql ends a
+query buffer at a `;` outside parentheses and outside a `BEGIN ATOMIC` body
+and at a send command, it sends no COPY data and no meta-command, and it
+rewrites `\;`, a send command and a variable. `packages/pgtk-sql/docs/differential-baseline.md`
+gives the rules and the change from the legacy statement ranges.
 
-- **COPY data.** psql reads the data lines after `COPY ... FROM STDIN` and
-  `\copy ... from stdin` itself. `pgtk-psql` reads them as psql text, so 22
-  files hold data rows that would become statement text. The splitter must
-  skip from such a statement to the `\.` line.
-- **Statement boundaries.** psql does not end a statement at a `;` inside
-  parentheses or inside a `BEGIN ... END` body of `CREATE FUNCTION`.
-  `pgtk-psql` renders one text for the whole document and leaves that split to
-  `pgtk-sql`, so the splitter must use `pgtk-sql`'s statement split of the
-  rendered text, and map each statement back with the source map.
-- **Unknown commands.** psql drops the rest of the line after a command it
-  does not know. `pgtk-psql` keeps the name only. The corpus has such lines
-  in `psql.sql` and `strings.sql`.
-- **A new baseline.** The per-file counts must be pinned again from a full run
-  against the server, and the frozen ranges kept as the cross-check.
+A submission that is not server SQL is Skipped as not a statement: an empty
+query, an interpolation of a variable that is not set (its value comes from
+`\gset`, `\getenv` or `LASTOID` when psql runs the script), or an unknown
+meta-command. A submission can hold more than one statement (`\;`, or a
+variable whose value holds a `;`). A Parse takes one statement, so the
+harness splits such a submission: each statement is the shortest run of
+tokens up to a `;` that `pgtk-sql` parses as one statement, so a `;` in a
+`BEGIN ATOMIC` body does not split it. Each statement is one item. The rest
+of a submission that `pgtk-sql` cannot parse is one item, Skipped because
+the parse failed.
 
-Each item is rendered through `pgtk-psql` before anything else, which strips
-psql's own terminators (`\;`, `\g`, `\gset`, `\crosstabview` and kin) the
-way psql does before sending. That leaves eight statements `pgtk-sql` rejects,
-all of which PostgreSQL rejects at parse too.
+Before #10 the harness read the legacy statement ranges that `pgtk-sql`
+froze, and rendered each one with `pgtk-psql`. The change to the
+submissions moved the pinned totals from 42,902 items to 43,976, and Agree
+from 41,727 to 42,516. Most new items are statements that the legacy split
+dropped because of a colon in a string. The 125 legacy parse-error items
+are now statements, and `pgtk-sql` and the server reject most of them, so
+"not a statement" became "parse failed". The new items found one analyzer
+gap: `SELECT $1` (from `\bind` in `psql.sql`) describes `$1` as `text`,
+because `resolveTargetListUnknowns` coerces the parameter and
+`variable_coerce_param_hook` gives it the type. The analyzer now does the
+same, so Disagree stays at 0.
 
 ## Order, state and parallelism
 

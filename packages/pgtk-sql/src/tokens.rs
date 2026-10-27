@@ -966,13 +966,19 @@ recursa::tokens! {
         // A hand-written `Arbitrary` impl below produces realistic dollar-quoted strings; the
         // auto-generated "echo the fixed spelling" impl would conflict with it (E0119), so it's
         // omitted here.
+        //
+        // A tag is scan.l `dolq_start [A-Za-z\200-\377_]` then `dolq_cont
+        // [A-Za-z\200-\377_0-9]` (REL_17_11 scan.l 299-300; REL_14_24 scan.l
+        // 296-297): a non-ASCII character is a tag character, `$` is not.
         #[node(omit(Arbitrary))]
-        DollarStringLit => same_delimiter(opener = r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$"),
+        DollarStringLit => same_delimiter(opener = r"\$(?:[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_\u{0080}-\u{10FFFF}]*)?\$"),
         // The numeric literals of scan.l. A literal that an identifier
         // character follows directly is a lexical error from 15 (`excluded`,
         // research, PostgreSQL 15, "Lexical and literal syntax"):
         // scan.l `integer_junk`, `numeric_junk` (`decimal_junk` before 16),
-        // `real_junk` and `realfail`.
+        // `real_junk` and `realfail`. The identifier of a `*_junk` rule can
+        // start with a non-ASCII character (scan.l `ident_start`), so the
+        // excluded set has those characters too.
         //
         // An integer is an `ICONST` only when its value fits in `int32`; a
         // larger one is an `FCONST`, so it lexes as `NumericLit` here
@@ -990,9 +996,9 @@ recursa::tokens! {
         // the `0x`/`0o`/`0b` integers, and `_` separators in `numeric` and
         // `real`.
         #[config(since = pg16)]
-        NumericLit => next_exclusion(pattern = r"(?:(?:[0-9](?:_?[0-9])*\.[0-9](?:_?[0-9])*|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*\.[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\.|(?:0[xX](?:(?:_?0)*_?(?:[123456789aAbBcCdDeEfF](?:_?[0-9a-fA-F]){8,}|[89aAbBcCdDeEfF](?:_?[0-9a-fA-F]){7}))|0[oO](?:(?:_?0)*_?(?:[1-7](?:_?[0-7]){11,}|[2-7](?:_?[0-7]){10}))|0[bB](?:(?:_?0)*_?(?:1(?:_?[01]){31,}))|(?:0_?)*(?:[1-9](?:_?[0-9]){10,}|[3-9](?:_?[0-9]){9}|2_?[2-9](?:_?[0-9]){8}|2_?1_?[5-9](?:_?[0-9]){7}|2_?1_?4_?[8-9](?:_?[0-9]){6}|2_?1_?4_?7_?[5-9](?:_?[0-9]){5}|2_?1_?4_?7_?4_?9(?:_?[0-9]){4}|2_?1_?4_?7_?4_?8_?[4-9](?:_?[0-9]){3}|2_?1_?4_?7_?4_?8_?3_?[7-9](?:_?[0-9]){2}|2_?1_?4_?7_?4_?8_?3_?6_?[5-9](?:_?[0-9])|2_?1_?4_?7_?4_?8_?3_?6_?4_?[8-9])))", excluded = r"[A-Za-z0-9_]", priority = 1),
+        NumericLit => next_exclusion(pattern = r"(?:(?:[0-9](?:_?[0-9])*\.[0-9](?:_?[0-9])*|\.[0-9](?:_?[0-9])*)(?:[eE][+-]?[0-9](?:_?[0-9])*)?|[0-9](?:_?[0-9])*\.[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*[eE][+-]?[0-9](?:_?[0-9])*|[0-9](?:_?[0-9])*\.|(?:0[xX](?:(?:_?0)*_?(?:[123456789aAbBcCdDeEfF](?:_?[0-9a-fA-F]){8,}|[89aAbBcCdDeEfF](?:_?[0-9a-fA-F]){7}))|0[oO](?:(?:_?0)*_?(?:[1-7](?:_?[0-7]){11,}|[2-7](?:_?[0-7]){10}))|0[bB](?:(?:_?0)*_?(?:1(?:_?[01]){31,}))|(?:0_?)*(?:[1-9](?:_?[0-9]){10,}|[3-9](?:_?[0-9]){9}|2_?[2-9](?:_?[0-9]){8}|2_?1_?[5-9](?:_?[0-9]){7}|2_?1_?4_?[8-9](?:_?[0-9]){6}|2_?1_?4_?7_?[5-9](?:_?[0-9]){5}|2_?1_?4_?7_?4_?9(?:_?[0-9]){4}|2_?1_?4_?7_?4_?8_?[4-9](?:_?[0-9]){3}|2_?1_?4_?7_?4_?8_?3_?[7-9](?:_?[0-9]){2}|2_?1_?4_?7_?4_?8_?3_?6_?[5-9](?:_?[0-9])|2_?1_?4_?7_?4_?8_?3_?6_?4_?[8-9])))", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]", priority = 1),
         #[config(since = pg16)]
-        IntegerLit => next_exclusion(pattern = r"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|[0-9](?:_?[0-9])*)", excluded = r"[A-Za-z0-9_]"),
+        IntegerLit => next_exclusion(pattern = r"(?:0[xX](?:_?[0-9a-fA-F])+|0[oO](?:_?[0-7])+|0[bB](?:_?[01])+|[0-9](?:_?[0-9])*)", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]"),
         // Before 16 there are no non-decimal integers and no `_` separators:
         // research, PostgreSQL 16, "Lexical and literal syntax" (commits
         // 6fcda9aba, faff8f8e4). REL_15_19 scan.l 395-403: `integer
@@ -1001,9 +1007,9 @@ recursa::tokens! {
         // are `integer_junk`, `1.5_0` is `decimal_junk` and `1e1_0` is
         // `real_junk`, and each is an error.
         #[config(since = pg15, before = pg16)]
-        NumericLit => next_exclusion(pattern = r"(?:[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*)[eE][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*|(?:0*(?:[1-9][0-9]{10,}|[3-9][0-9]{9}|2[2-9][0-9]{8}|21[5-9][0-9]{7}|214[8-9][0-9]{6}|2147[5-9][0-9]{5}|214749[0-9]{4}|214748[4-9][0-9]{3}|2147483[7-9][0-9]{2}|21474836[5-9][0-9]|214748364[8-9]))", excluded = r"[A-Za-z0-9_]", priority = 1),
+        NumericLit => next_exclusion(pattern = r"(?:[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*)[eE][+-]?[0-9]+|[0-9]*\.[0-9]+|[0-9]+\.[0-9]*|(?:0*(?:[1-9][0-9]{10,}|[3-9][0-9]{9}|2[2-9][0-9]{8}|21[5-9][0-9]{7}|214[8-9][0-9]{6}|2147[5-9][0-9]{5}|214749[0-9]{4}|214748[4-9][0-9]{3}|2147483[7-9][0-9]{2}|21474836[5-9][0-9]|214748364[8-9]))", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]", priority = 1),
         #[config(since = pg15, before = pg16)]
-        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        IntegerLit => next_exclusion(pattern = r"[0-9]+", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]"),
         // Before 15 there is no trailing-junk check: research, PostgreSQL 15,
         // "Lexical and literal syntax" (commit 2549f0661). REL_14_24 scan.l
         // 392-399 has the 15 patterns, but no `*_junk` rule, and `realfail1`
@@ -1017,7 +1023,7 @@ recursa::tokens! {
         // A parameter that an identifier character follows directly is a
         // lexical error from 15 (scan.l `param_junk`).
         #[config(since = pg15, before = pg18)]
-        DollarNum => next_exclusion(pattern = r"\$[0-9]+", excluded = r"[A-Za-z0-9_]"),
+        DollarNum => next_exclusion(pattern = r"\$[0-9]+", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]"),
         // Added in 18: a parameter number that does not fit in `int32` is a
         // lexer error, "parameter number too large"
         // (docs/research/postgres-14-19-sql-syntax-changes.md, PostgreSQL 18,
@@ -1026,7 +1032,7 @@ recursa::tokens! {
         // zeros. A longer number matches only an in-range prefix, and the
         // next digit is excluded, so the lexer reports an error.
         #[config(since = pg18)]
-        DollarNum => next_exclusion(pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])", excluded = r"[A-Za-z0-9_]"),
+        DollarNum => next_exclusion(pattern = r"\$0*(?:[0-9]{1,9}|1[0-9]{9}|20[0-9]{8}|21[0-3][0-9]{7}|214[0-6][0-9]{6}|2147[0-3][0-9]{5}|21474[0-7][0-9]{4}|214748[0-2][0-9]{3}|2147483[0-5][0-9]{2}|21474836[0-3][0-9]|214748364[0-7])", excluded = r"[A-Za-z0-9_\u{0080}-\u{10FFFF}]"),
         // Before 15 there is no `param_junk`: `$1abc` is `$1` then `abc`
         // (REL_14_24 scan.l 399 `param \${integer}`; research, PostgreSQL
         // 15, "Lexical and literal syntax").
@@ -1109,6 +1115,9 @@ recursa::tokens! {
         // a column-name closure beside the parameter closure of the new
         // syntax, and LALR merged that state with the target list's.
         IdentOnly = AllWordKinds - AllWordKinds,
+        // The `U&"..."` name of `crate::ast::dml::select::UescapedAliasName`:
+        // no keyword.
+        UescapedName = AllWordKinds - AllWordKinds,
     }
     // Lookahead filters, one per case of PostgreSQL's `base_yylex`
     // (`src/backend/parser/parser.c`): the LR token feed reads the
@@ -1141,13 +1150,6 @@ recursa::tokens! {
         // position, the leading token of a prefix rule included, so the
         // filter lowers everywhere gram.y writes `NOT_LA`.
         NOT_LA = NOT before { BETWEEN, IN, LIKE, ILIKE, SIMILAR },
-        // `parser.c`: after a Unicode string/identifier token, a following
-        // `UESCAPE SCONST` is consumed as its escape clause. The grammar
-        // keeps `UESCAPE` as a bare-label keyword for every other position;
-        // the LR token feed therefore marks only the clause-shaped
-        // spelling. `StringLit` is content-bearing, unlike parser.c's other
-        // fixed-token triggers.
-        UESCAPE_LA = UESCAPE before { StringLit },
         // The function-style typed literal spelling `type(args) 'value'`
         // shares its argument list with an ordinary function call. Mark only
         // the closing delimiter followed by its string payload so the LR
@@ -1164,11 +1166,22 @@ recursa::tokens! {
         // reduce/reduce conflict (the two `lr_conflict` declarations in
         // `crate::ast::shared::expr`).
         //
+        // The triggers are the token kinds of gram.y `Sconst`
+        // (`crate::ast::shared::expr::Sconst`): the plain string, the
+        // continued string, the escape string, the dollar-quoted string and
+        // the Unicode string, which parser.c makes an `SCONST` (issue #93).
+        //
         // The substitution is absolute: each rule whose `)` can stand before a
         // string literal must name the merged kind too. These rules are
         // `TypeModifierClose`, `FunctionCallClose` and `DecoratedOperator`
         // (`OPERATOR(+) '2'`, issue #89).
-        RPAREN_TYPED_LA = RPAREN before { StringLit },
+        RPAREN_TYPED_LA = RPAREN before {
+            StringLit,
+            StringLitSequence,
+            EscapeStringLit,
+            DollarStringLit,
+            UnicodeStringLit,
+        },
         // There is no filter for a `)` before a set operator. parser.c has
         // none: gram.y makes `select_with_parens` its own nonterminal
         // (REL_17_11 gram.y 12658-12663, second production at 12685), so the
@@ -1201,6 +1214,8 @@ recursa::tokens! {
     // below. Only `< > = <= >= <>`, `+ - * / % ^`, `::` and `.` are named by
     // the scanner in their own right and take their own levels.
     precedence {
+        // `UNICODE_END`: see the level of `UESCAPE` at the end of this block.
+        nonassoc(bp = 5) { UNICODE_END },
         // gram.y:830 `%left UNION EXCEPT`: the set operators of
         // `SelectClause`, which is left-recursive as gram.y's `select_clause`
         // is.
@@ -1411,6 +1426,22 @@ recursa::tokens! {
         // operators", high so that they stay usable as function names, and
         // left-associative among the `joined_table` rules themselves.
         left(bp = 230) { JOIN, CROSS, LEFT, FULL, RIGHT, INNER, NATURAL },
+        // Not from gram.y: parser.c (`base_yylex`) reads a `UESCAPE` after a
+        // Unicode string or identifier as its escape clause, before gram.y
+        // sees the tokens (REL_17_11 parser.c 253-274). So after a `U&'...'`
+        // string, `UESCAPE` always shifts into the clause: `U&'x' uescape`
+        // with no string after it is an error ("UESCAPE must be followed by
+        // a simple string literal"), and it is never a label. The rule that
+        // ends a Unicode string with no clause carries the precedence-only
+        // name `UNICODE_END` through `#[parse(prec = UNICODE_END)]`, below
+        // the level of `UESCAPE`. In every other position `UESCAPE` is an
+        // unreserved keyword, so `uescape 'x'` is a typed literal. (A
+        // lookahead filter `UESCAPE_LA = UESCAPE before { strings }` was here
+        // before; it changed each `UESCAPE` before a string, so it refused
+        // `SELECT uescape 'x'`.) A `U&"..."` identifier lexes as each other
+        // identifier spelling, so only `UescapedAliasName` reads a clause
+        // after one.
+        nonassoc(bp = 240) { UESCAPE },
     }
 }
 
@@ -1418,12 +1449,25 @@ recursa::tokens! {
 // spellings. Keep that as one canonical content base; the generated admission
 // types below differ only in which fixed keyword kinds each grammar position
 // may reclaim.
+//
+// A quoted identifier holds at least one character: scan.l refuses `""` and
+// `U&""` with "zero-length delimited identifier" (REL_17_11 scan.l 818 and
+// 828; issue #95). So no identifier pattern matches them, and they are a
+// lexical error.
+//
+// An unquoted identifier is scan.l `identifier {ident_start}{ident_cont}*`,
+// with `ident_start [A-Za-z\200-\377_]` and `ident_cont
+// [A-Za-z\200-\377_0-9\$]` (REL_17_11 scan.l 346-349; REL_14_24 scan.l
+// 344-347). In a UTF-8 source each byte with the high bit set is part of a
+// non-ASCII character, so the patterns take each such character, and `$`
+// continues an identifier: `a$$x$$` is one identifier.
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_col_id, flat = crate::ast::validation::ident_col_id_flat)]
     pub enum ColId {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(ColId)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1450,14 +1494,41 @@ impl ColId<'_> {
     }
 }
 
+recursa::ast_node! {
+    /// The `U&"..."` identifier before a `UESCAPE` clause
+    /// (`crate::ast::dml::select::UescapedAliasName`). It admits no keyword,
+    /// and it has no escape check of its own: the escape character is the
+    /// one of the clause.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum UidentName {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                admits(UescapedName)
+            )]
+            UidentNameText,
+        ),
+    }
+}
+
+impl UidentName<'_> {
+    /// The source text of the identifier token.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+}
+
 // gram.y `ColLabel`: every keyword class, the `attr_name` after a dot in
 // `qualified_name` and `func_name` indirection.
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_col_label, flat = crate::ast::validation::ident_col_label_flat)]
     pub enum ColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(ColLabel)
             )]
             // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1486,10 +1557,11 @@ impl ColLabel<'_> {
 
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_non_reserved_word, flat = crate::ast::validation::ident_non_reserved_word_flat)]
     pub enum NonReservedWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(NonReservedWord)
             )]
             NonReservedWordText,
@@ -1515,10 +1587,11 @@ recursa::ast_node! {
     /// gram.y `RoleSpec` as one word: a `NonReservedWord`, or one of the
     /// reserved keywords `CURRENT_ROLE`, `CURRENT_USER` and `SESSION_USER`.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_spec_word, flat = crate::ast::validation::ident_role_spec_word_flat)]
     pub enum RoleSpecWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleSpecWord)
             )]
             RoleSpecWordText,
@@ -1537,10 +1610,11 @@ impl RoleSpecWord<'_> {
 recursa::ast_node! {
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_type_function_name, flat = crate::ast::validation::ident_type_function_name_flat)]
     pub enum type_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(type_function_name)
             )]
             TypeFunctionNameText,
@@ -1567,14 +1641,24 @@ recursa::ast_node! {
     /// its dedicated SQL-standard table-expression production.
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_table_function_name, flat = crate::ast::validation::ident_table_function_name_flat)]
     pub enum table_function_name {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(TableFunctionName)
             )]
             TableFunctionNameText,
         ),
+    }
+}
+
+impl table_function_name<'_> {
+    /// The source text of the identifier token.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
     }
 }
 
@@ -1587,10 +1671,11 @@ recursa::ast_node! {
     /// modifiers.
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_type_name_ident, flat = crate::ast::validation::ident_type_name_ident_flat)]
     pub enum type_name_ident {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(TypeNameIdent)
             )]
             TypeNameIdentText,
@@ -1608,10 +1693,11 @@ impl type_name_ident<'_> {
 
 recursa::ast_node! {
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_bare_col_label, flat = crate::ast::validation::ident_bare_col_label_flat)]
     pub enum BareColLabel {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(BareColLabel)
             )]
             BareColLabelText,
@@ -1642,10 +1728,11 @@ recursa::ast_node! {
     /// `ADMIN` keyword, which `crate::ast::utility::grant::RevokeRoleOptionName`
     /// keeps as its own variant so the gate can name the spellings 16 adds.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_revoke_option_word, flat = crate::ast::validation::ident_role_revoke_option_word_flat)]
     pub enum RoleRevokeOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleRevokeOptionWord)
             )]
             RoleRevokeOptionWordText,
@@ -1671,10 +1758,11 @@ recursa::ast_node! {
     /// `ADMIN` keyword, which `crate::ast::utility::grant::GrantRoleOptionName`
     /// keeps as its own variant.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_grant_option_word, flat = crate::ast::validation::ident_role_grant_option_word_flat)]
     pub enum RoleGrantOptionWord {
         Text(
             #[lex(
-                pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                 admits(RoleGrantOptionWord)
             )]
             RoleGrantOptionWordText,
@@ -1737,13 +1825,44 @@ pub mod literal {
             pub string_sequence: StringLitSequence,
             #[lex(pattern = r"'[^']*(?:''[^']*)*'")]
             pub string: StringLit,
-            #[lex(pattern = r"(?i:U)&'(?:[^']|'')*'")]
+            // scan.l `<xb,xh,xq,xe,xus>{quote}` (REL_17_11 scan.l 588-606)
+            // enters `xqs` after the closing quote of each string kind, so a
+            // `quotecontinue` continues a Unicode, an escape, a bit and a hex
+            // string too. The continued part keeps the rules of the first
+            // part: `E'a'` newline `'\''` is one escape string. Each kind is
+            // one token with all its parts, as `StringLitSequence` is. The
+            // gaps are the gaps of `StringLitSequence`, with the same version
+            // gate for the vertical tab.
+            //
+            // `xeescape` is `[\\][^0-7]`, a negated class that matches a
+            // newline, so the escape of `EscapeStringLit` is `[\s\S]`.
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:U)&'(?:[^']|'')*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^']|'')*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:U)&'(?:[^']|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^']|'')*')*")
+            )]
             pub unicode_string: UnicodeStringLit,
-            #[lex(pattern = r"(?i:E)'(?:[^'\\]|\\.|'')*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:E)'(?:[^'\\]|\\[\s\S]|'')*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'(?:[^'\\]|\\[\s\S]|'')*')*")
+            )]
             pub escape_string: EscapeStringLit,
-            #[lex(pattern = r"(?i:B)'[^']*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:B)'[^']*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:B)'[^']*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
             pub bit_string: BitStringLit,
-            #[lex(pattern = r"(?i:X)'[^']*'")]
+            #[config_attr(since = pg17,
+                lex(pattern = r"(?i:X)'[^']*'(?:(?:[ \t\f\v]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f\v]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
+            #[config_attr(before = pg17,
+                lex(pattern = r"(?i:X)'[^']*'(?:(?:[ \t\f]|--[^\r\n]*)*(?:\r\n|\r|\n)(?:[ \t\r\n\f]+|--[^\r\n]*(?:\r\n|\r|\n))*'[^']*')*")
+            )]
             pub hex_string: HexStringLit,
             #[lex(matcher)]
             pub dollar_string: DollarStringLit,
@@ -1849,10 +1968,11 @@ pub mod literal {
         /// production. Quoted and unquoted spellings share one lexical base; the
         /// named admission set controls which fixed keywords may occupy it.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_ident, flat = crate::ast::validation::ident_ident_flat)]
         pub enum Ident {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(UnquotedIdent)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_non_keyword_ident`) produces realistic
@@ -1887,10 +2007,11 @@ pub mod literal {
         /// `TEMPLATE`. Every other keyword (`WITH`, `SET`, `REFRESH`, ...) is
         /// the statement's own syntax and must not be reclaimed here.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_create_db_opt_word, flat = crate::ast::validation::ident_create_db_opt_word_flat)]
         pub enum CreateDbOptWord {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(CreateDbOptWord)
                 )]
                 CreateDbOptWordText,
@@ -1915,6 +2036,7 @@ pub mod literal {
         /// `WITH` stay the statement's own syntax, so `EXPLAIN (SELECT 1)` is a
         /// parenthesized statement and not an option list.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_utility_option_name, flat = crate::ast::validation::ident_utility_option_name_flat)]
         pub enum UtilityOptionName {
             /// `FORMAT` immediately before `JSON`, which `base_yylex` reads as
             /// `FORMAT_LA`: gram.y names the merged kind in this very rule
@@ -1933,7 +2055,7 @@ pub mod literal {
             Format,
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(UtilityOptionName)
                 )]
                 UtilityOptionNameText,
@@ -1958,10 +2080,11 @@ pub mod literal {
     recursa::ast_node! {
         /// gram.y `IDENT`: an identifier that is not a keyword.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_ident_only, flat = crate::ast::validation::ident_ident_only_flat)]
         pub enum IdentOnly {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(IdentOnly)
                 )]
                 IdentOnlyText,
@@ -1985,10 +2108,11 @@ pub mod literal {
         /// keyword precedence over interpreting it as a bare alias. Quoted
         /// identifiers and every other `ColId` spelling remain available.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_relation_alias_name, flat = crate::ast::validation::ident_relation_alias_name_flat)]
         pub enum RelationAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(RelationAliasName)
                 )]
                 RelationAliasNameText,
@@ -2013,10 +2137,11 @@ pub mod literal {
         /// admission set encodes that precedence while explicit `AS is` and quoted
         /// `"is"` aliases remain available.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_select_bare_alias_name, flat = crate::ast::validation::ident_select_bare_alias_name_flat)]
         pub enum SelectBareAliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(SelectBareAliasName)
                 )]
                 SelectBareAliasNameText,
@@ -2041,14 +2166,24 @@ pub mod literal {
         /// Modeled as a single-variant enum to preserve the legacy wrapper while
         /// the generated content matcher enforces the named admission set.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_window_ref_name_ident, flat = crate::ast::validation::ident_window_ref_name_ident_flat)]
         pub enum WindowRefNameIdent {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(WindowRefName)
                 )]
                 WindowRefNameText,
             ),
+        }
+    }
+
+    impl<'input> WindowRefNameIdent<'input> {
+        /// The source text of the identifier token.
+        pub fn text(&self) -> &str {
+            match self {
+                WindowRefNameIdent::Text(text) => text.text(),
+            }
         }
     }
 
@@ -2058,10 +2193,11 @@ pub mod literal {
         /// Alias name, including PostgreSQL keywords admitted in bare-label
         /// positions. Quoted and unquoted spellings share the identifier base.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_alias_name, flat = crate::ast::validation::ident_alias_name_flat)]
         pub enum AliasName {
             Text(
                 #[lex(
-                    pattern = r#"[Uu]&"[^"]*(?:""[^"]*)*"|"[^"]*(?:""[^"]*)*"|[A-Za-z_][A-Za-z0-9_]*"#,
+                    pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
                     admits(BareAliasName)
                 )]
                 // A hand-written `Arbitrary` impl below (`arb_ident_str`) produces realistic random

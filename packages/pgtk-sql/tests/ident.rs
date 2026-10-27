@@ -30,6 +30,9 @@ fn folds_each_identifier_form() {
         ("Ärger", "Ärger", true),
         ("ÄRGER", "Ärger", false),
         ("straße", "straße", true),
+        // scan.l `ident_cont` takes `$`, which has no case.
+        ("A$B", "a$b", false),
+        ("a$1", "a$1", true),
         // A keyword in an identifier position: its lowercase spelling.
         ("VALUE", "value", false),
         ("Coalesce", "coalesce", false),
@@ -162,8 +165,8 @@ fn reports_postgresql_errors_for_bad_escapes() {
     );
 }
 
-/// `scan.l` raises "zero-length delimited identifier". pgtk-sql's lexer accepts
-/// `""`, so the fold is where a consumer learns of it.
+/// `scan.l` raises "zero-length delimited identifier". pgtk-sql's lexer
+/// refuses `""` too (issue #95), and the fold reports it for any other text.
 #[test]
 fn rejects_a_zero_length_delimited_identifier() {
     for raw in ["\"\"", "U&\"\"", "u&\"\""] {
@@ -276,7 +279,13 @@ fn identifier_nodes_fold_their_own_text() {
     );
     assert_eq!(folded_name!(type_function_name, "Lower").unwrap(), "lower");
     assert_eq!(folded_name!(Ident, "MyTable").unwrap(), "mytable");
-    assert_eq!(folded_name!(ColId, "\"\""), Err(FoldError::ZeroLength));
+    // The lexer refuses a zero-length quoted identifier (issue #95).
+    for source in ["\"\"", "U&\"\""] {
+        assert!(
+            pgtk_sql::lex(source).errors().next().is_some(),
+            "{source} must not lex"
+        );
+    }
 }
 
 /// PostgreSQL's own scanner, through the `pgtk-oracle` FFI bridge, agrees with

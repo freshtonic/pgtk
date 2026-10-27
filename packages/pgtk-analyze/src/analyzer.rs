@@ -37,13 +37,13 @@ use pgtk_sql::ast::shared::expr::{
     FlatDateTimeCastTypeName, FlatExpr, FlatFixedTypeCastFuncName, FlatFloatPrecision, FlatFuncArg,
     FlatFunctionCallBody, FlatFunctionCallTail, FlatGenericTypeName, FlatIconstPrecision,
     FlatIntervalCastTypeModifier, FlatIntervalQualifier, FlatNumericType,
-    FlatPrecisionSqlValueFuncName, FlatSqlValueFunction, FlatStringLitSeq0, FlatTimeZoneQualifier,
-    FlatTypeCastFunc, FlatTypeModifierSign,
+    FlatPrecisionSqlValueFuncName, FlatSconst, FlatSqlValueFunction, FlatStringLitSeq0,
+    FlatTimeZoneQualifier, FlatTypeCastFunc, FlatTypeModifierSign, FlatUescapeString,
+    FlatUescapeSuffix,
 };
 #[cfg(feature = "since-pg16")]
-use pgtk_sql::ast::shared::expr::{
-    FlatCastType, FlatIntervalLitForm, FlatJsonEncoding, FlatTypeArray,
-};
+use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
+use pgtk_sql::ast::shared::expr::{FlatIntervalLitForm, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
 use pgtk_sql::tokens::FlatColId;
@@ -1382,6 +1382,35 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
 
     fn text_span<K>(&self, handle: Text<K>) -> std::ops::Range<usize> {
         self.ast.text_span(handle).map_or(0..0, span_range)
+    }
+
+    /// The value and the span of a gram.y `Sconst`. A plain or a continued
+    /// string gives its body; the other spellings are returned as written, as
+    /// the string constants of an expression are.
+    fn sconst(&self, handle: Handle<FlatSconst>) -> (String, std::ops::Range<usize>) {
+        match self.get(handle) {
+            FlatSconst::Plain(t) => (string_literal_body(self.text(*t)), self.text_span(*t)),
+            FlatSconst::Sequence(t) => (string_literal_body(self.text(*t)), self.text_span(*t)),
+            FlatSconst::Escape(t) => (self.text(*t).to_owned(), self.text_span(*t)),
+            FlatSconst::Dollar(t) => (self.text(*t).to_owned(), self.text_span(*t)),
+            FlatSconst::Unicode(u) => {
+                let lit = self.get(*u).lit;
+                (self.text(lit).to_owned(), self.text_span(lit))
+            }
+        }
+    }
+
+    /// The value of the string after `UESCAPE`, in each of its spellings.
+    fn uescape_value(&self, handle: Handle<FlatUescapeSuffix>) -> String {
+        let raw = match self.get(self.get(handle).escape_char) {
+            FlatUescapeString::Escape(t) => self.text(*t),
+            FlatUescapeString::Dollar(t) => self.text(*t),
+            FlatUescapeString::Sequence(t) => self.text(*t),
+            FlatUescapeString::Plain(t) => self.text(*t),
+        };
+        pgtk_sql::ident::sconst_bytes(raw)
+            .map(|value| String::from_utf8_lossy(&value).into_owned())
+            .unwrap_or_default()
     }
 
     fn get<N>(&self, handle: Handle<N>) -> &'a N
@@ -6105,9 +6134,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     let cols_given = columns.is_some();
                     match columns {
                         Some(c) => {
-                            let mut seen = std::collections::HashSet::new();
-                            for a in self.list1(self.get(c).0) {
-                                let (name, loc) = self.alias_name(*a)?;
+                            // checkInsertTargets, as for a plain INSERT: a
+                            // column written whole once, or in parts any
+                            // number of times.
+                            let mut wholecols = std::collections::HashSet::new();
+                            let mut partialcols = std::collections::HashSet::new();
+                            for item in self.list1(self.get(c).0) {
+                                let it = self.get(*item);
+                                let (name, loc) = self.col_id(it.name)?;
+                                let parts = self.assignment_indirection(it.indirection)?;
                                 let Some((attnum, ty, typmod)) =
                                     self.target_attnum(relation, &name, false)
                                 else {
@@ -6118,7 +6153,13 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     .at(loc)
                                     .into());
                                 };
-                                if !seen.insert(attnum) {
+                                let duplicate = if parts.is_empty() {
+                                    !wholecols.insert(attnum) || partialcols.contains(&attnum)
+                                } else {
+                                    partialcols.insert(attnum);
+                                    wholecols.contains(&attnum)
+                                };
+                                if duplicate {
                                     return Err(Diagnostic::new(
                                         "42701",
                                         format!("column \"{name}\" specified more than once"),
@@ -6126,7 +6167,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                     .at(loc)
                                     .into());
                                 }
-                                icolumns.push((name, ty, typmod, loc, Vec::new()));
+                                icolumns.push((name, ty, typmod, loc, parts));
                                 attnums.push(attnum);
                             }
                         }
@@ -6263,7 +6304,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 }
                 let value = match opt.value.map(|v| self.get(v)) {
                     Some(FlatExplainOptValue::Ident(c)) => self.col_id(*c)?.0,
-                    Some(FlatExplainOptValue::String(t)) => string_literal_body(self.text(*t)),
+                    Some(FlatExplainOptValue::String(t)) => self.sconst(*t).0,
                     _ => String::new(),
                 };
                 result_type = match value.as_str() {
@@ -6770,10 +6811,32 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         // resolveTargetListUnknowns
         if self.resolve_unknowns {
             let text = self.types().builtin(Builtin::Text);
-            for entry in target_list.iter_mut() {
+            for (index, entry) in target_list.iter_mut().enumerate() {
                 if self.types().is_unknown(entry.ty) {
                     entry.ty = text;
                     entry.typmod = -1;
+                    // coerce_type of a parameter of unknown type calls
+                    // variable_coerce_param_hook, which gives the parameter
+                    // the type: `SELECT $1` describes $1 as text.
+                    if let Some(FlatExpr::PositionalParam(param)) = target_exprs
+                        .get(index)
+                        .copied()
+                        .flatten()
+                        .map(|e| self.get(e))
+                        && self.get(*param).indirection.is_none()
+                        && let Ok(number) = self
+                            .text(self.get(*param).param)
+                            .trim_start_matches('$')
+                            .parse::<usize>()
+                        && number > 0
+                    {
+                        let mut params = self.coercer().params.borrow_mut();
+                        if let Some(slot) = params.get_mut(number - 1)
+                            && slot.is_none_or(|ty| self.types().is_unknown(ty))
+                        {
+                            *slot = Some(text);
+                        }
+                    }
                 }
             }
         }
@@ -9704,11 +9767,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                 FlatAsAliasName::Plain(name) => self.alias_name(*name)?.0,
                                 FlatAsAliasName::Uescaped(u) => {
                                     let u = self.get(*u);
-                                    let FlatAliasName::Text(t) = self.get(u.name);
+                                    let pgtk_sql::tokens::FlatUidentName::Text(t) =
+                                        self.get(u.name);
                                     let raw = self.text(*t);
-                                    let escape = string_literal_body(
-                                        self.text(self.get(u.uescape).escape_char),
-                                    );
+                                    let escape = self.uescape_value(u.uescape);
                                     match pgtk_sql::ident::fold_identifier_with_uescape(
                                         raw, &escape,
                                     ) {
@@ -13539,10 +13601,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::Extract(e) => {
                 let inner = self.get(self.get(*e).inner);
                 let field = match self.get(inner.field) {
-                    FlatExtractField::StringLit(s) => match self.get(*s) {
-                        FlatStringLitSeq0::Single(t) => string_literal_body(self.text(*t)),
-                        FlatStringLitSeq0::Sequence(t) => string_literal_body(self.text(*t)),
-                    },
+                    FlatExtractField::StringLit(s) => self.sconst(*s).0,
                     FlatExtractField::Ident(i) => {
                         let FlatAliasName::Text(t) = self.get(*i);
                         let raw = self.text(*t);
@@ -16876,8 +16935,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 )
             }
         };
-        let string_span = self.text_span(value);
-        let text = string_literal_body(self.text(value));
+        let (text, string_span) = self.sconst(value);
         let arg = make_const(self.types(), LiteralKind::String, &text, string_span.start);
         let (target, target_typmod) = self.typenames.resolve(&tn)?;
         match self.coercer().coerce_to_target_type(
@@ -16909,11 +16967,10 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         &mut self,
         handle: Handle<FlatExpr>,
         tn: TypeName,
-        value: Text<impl Sized>,
+        value: Handle<FlatSconst>,
         cast_location: usize,
     ) -> Result<Typed> {
-        let string_span = self.text_span(value);
-        let text = string_literal_body(self.text(value));
+        let (text, string_span) = self.sconst(value);
         let arg = make_const(self.types(), LiteralKind::String, &text, string_span.start);
         let (target, target_typmod) = self.typenames.resolve(&tn)?;
         match self.coercer().coerce_to_target_type(

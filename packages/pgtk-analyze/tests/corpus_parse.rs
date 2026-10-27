@@ -1,11 +1,11 @@
-//! Diagnostic, no server needed: which frozen corpus statements does
-//! `pgtk-sql` still reject after `pgtk-psql` has rendered them? Run with
+//! Diagnostic, no server needed: which statements of the psql submissions of
+//! the frozen corpus does `pgtk-sql` still reject? Run with
 //! `cargo test --test corpus_parse -- --ignored --nocapture`.
 
 mod support;
 
 use support::corpus::{FrozenSplit, ItemKind, schedule};
-use support::replay::{parse, render};
+use support::replay::{parse, statements};
 
 #[test]
 #[ignore = "diagnostic listing, not a gate"]
@@ -21,15 +21,14 @@ fn list_parse_failures() {
             if item.kind != ItemKind::Statement {
                 continue;
             }
-            let raw = file.text_of(item);
-            let status = match render(raw) {
-                None => "RENDER",
-                Some(sql) if parse(&sql).is_none() => "PARSE ",
-                Some(_) => continue,
-            };
-            total += 1;
-            let shown = raw.replace('\n', " ").chars().take(110).collect::<String>();
-            println!("{status} {name}: {shown}");
+            for sql in statements(file.text_of(item)) {
+                if parse(&sql).is_some() {
+                    continue;
+                }
+                total += 1;
+                let shown = sql.replace('\n', " ").chars().take(110).collect::<String>();
+                println!("PARSE {name}: {shown}");
+            }
         }
     }
     println!("total {total}");

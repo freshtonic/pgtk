@@ -1,33 +1,29 @@
 #[cfg(test)]
 mod tests {
     use crate::ast::shared::expr::{
-        CastType, CastTypeHead, ColumnRef, Expr,
-        FunctionCallBody,
-        FunctionCallTail, ImplicitRow, ParenthesizedDotStar, ParenthesizedExpr,
-        Indirection, IndirectionEl, StringLitSeq0, TypeName,
+        CastType, CastTypeHead, ColumnRef, Expr, FunctionCallBody, FunctionCallTail, ImplicitRow,
+        Indirection, IndirectionEl, ParenthesizedDotStar, ParenthesizedExpr, StringLitSeq0,
+        TypeName,
     };
     // Added in 16: research, PostgreSQL 16, "Queries and expressions".
+    use crate::ast::dml::values::{SelectClause, Subquery};
     #[cfg(feature = "since-pg16")]
     use crate::ast::shared::expr::{JsonKeyValue, JsonObject, JsonObjectLegacyArg};
-    use crate::ast::dml::values::{SelectClause, Subquery};
 
     /// Parse `src` as an `Expr` through the logos lex pass.
     ///
     /// Takes `&'static str` because the returned `Expr` borrows lexical text
     /// from the source for that `'static` lifetime.
     type ExprFamily = <Expr<'static> as recursa::ArenaParse<crate::Input<'static>>>::Family;
-    type TypeNameFamily =
-        <TypeName<'static> as recursa::ArenaParse<crate::Input<'static>>>::Family;
-    type CastTypeFamily =
-        <CastType<'static> as recursa::ArenaParse<crate::Input<'static>>>::Family;
+    type TypeNameFamily = <TypeName<'static> as recursa::ArenaParse<crate::Input<'static>>>::Family;
+    type CastTypeFamily = <CastType<'static> as recursa::ArenaParse<crate::Input<'static>>>::Family;
 
     fn parse_expr_classified(src: &'static str) -> recursa::ArenaParsed<'static, ExprFamily> {
         let lexed = crate::lex(src);
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();
-        let expr_parsed = Expr::parse(&mut input)
-            .unwrap_or_else(|error| panic!("parse {src:?}: {error:?}"))
-            ;
+        let expr_parsed =
+            Expr::parse(&mut input).unwrap_or_else(|error| panic!("parse {src:?}: {error:?}"));
         assert!(
             input.is_eof(),
             "parser cursor after {src:?}: {}",
@@ -43,8 +39,7 @@ mod tests {
         assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
         let mut input = lexed.input();
         let ty_parsed = TypeName::parse(&mut input)
-            .unwrap_or_else(|error| panic!("parse type name {src:?}: {error}"))
-            ;
+            .unwrap_or_else(|error| panic!("parse type name {src:?}: {error}"));
         assert!(
             input.is_eof(),
             "parser cursor after {src:?}: {}",
@@ -60,8 +55,7 @@ mod tests {
         assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
         let mut input = lexed.input();
         let ty_parsed = CastType::parse(&mut input)
-            .unwrap_or_else(|error| panic!("parse cast type {src:?}: {error}"))
-            ;
+            .unwrap_or_else(|error| panic!("parse cast type {src:?}: {error}"));
         assert!(
             input.is_eof(),
             "parser cursor after {src:?}: {}",
@@ -253,7 +247,8 @@ mod tests {
             parse_expr_classified(
                 "(timestamp '2000-11-27', interval '12 hours') \
                  OVERLAPS (timestamp '2000-11-27', interval '12 hours')"
-            ).ast(),
+            )
+            .ast(),
             Expr::Overlaps(..)
         ));
     }
@@ -580,9 +575,8 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|error| panic!("parse {src:?}: {error}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|error| panic!("parse {src:?}: {error}"));
             let expr = expr_parsed.ast();
             match expr {
                 Expr::Func(call) if identifier_led => assert!(
@@ -602,8 +596,14 @@ mod tests {
 
     #[test]
     fn type_name_preserves_legacy_fixed_variants_and_json_ident() {
-        assert!(matches!(parse_type_name_classified("bool").ast(), TypeName::Bool));
-        assert!(matches!(parse_type_name_classified("text").ast(), TypeName::Text));
+        assert!(matches!(
+            parse_type_name_classified("bool").ast(),
+            TypeName::Bool
+        ));
+        assert!(matches!(
+            parse_type_name_classified("text").ast(),
+            TypeName::Text
+        ));
         assert!(matches!(
             parse_type_name_classified("serial").ast(),
             TypeName::Serial
@@ -640,7 +640,10 @@ mod tests {
         let TypeName::Ident(qualified) = qualified_parsed.ast() else {
             panic!("qualified json must remain an identifier type name")
         };
-        assert_eq!(qualified.parts().collect::<Vec<_>>(), ["pg_catalog", "json"]);
+        assert_eq!(
+            qualified.parts().collect::<Vec<_>>(),
+            ["pg_catalog", "json"]
+        );
         assert_eq!(qualified.object(), "json");
 
         assert_cast_type_families_track_type_name_spellings();
@@ -873,15 +876,17 @@ mod tests {
                         Some(FunctionCallBody::All(_)) => "all",
                         Some(FunctionCallBody::Distinct(_)) => "distinct",
                         Some(FunctionCallBody::LeadingVariadic(_)) => "leading-variadic",
-                        Some(FunctionCallBody::Args(args))
-                            if args.trailing_variadic.is_some() =>
-                        {
+                        Some(FunctionCallBody::Args(args)) if args.trailing_variadic.is_some() => {
                             "trailing-variadic"
                         }
                         Some(FunctionCallBody::Args(args)) if args.order_by.is_some() => "ordered",
                         Some(FunctionCallBody::Args(_)) => "args",
                     };
-                    let kind = if tail.within_group.is_some() { "within-group" } else { "plain" };
+                    let kind = if tail.within_group.is_some() {
+                        "within-group"
+                    } else {
+                        "plain"
+                    };
                     (body, kind)
                 }
             };
@@ -911,15 +916,12 @@ mod tests {
         ));
     }
 
-    /// Applications gram.y's `func_expr` admits: `func_application` is one
-    /// production for every argument shape, so an ordered, `DISTINCT` or
-    /// `VARIADIC` argument list before `WITHIN GROUP` is grammatical and only
-    /// parse analysis rejects it (`cannot use multiple ORDER BY clauses with
-    /// WITHIN GROUP`). A typed literal refuses a named argument, as the gram.y
-    /// action does (`crate::ast::validation`), and its inner `ORDER BY` is
-    /// excluded by the grammar.
+    /// The `func_expr` action refuses `WITHIN GROUP` after an argument
+    /// list with an `ORDER BY`, `DISTINCT` or `VARIADIC`: the order clauses
+    /// share one field (REL_17_11 gram.y 15581-15612; issue #95). The raw
+    /// parser refuses them, not parse analysis.
     #[test]
-    fn accept_function_applications_gram_y_admits() {
+    fn reject_within_group_after_an_argument_order_distinct_or_variadic() {
         for src in [
             "f(1 ORDER BY 1) WITHIN GROUP (ORDER BY 1)",
             "f(DISTINCT 1) WITHIN GROUP (ORDER BY 1)",
@@ -928,8 +930,11 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
-            assert!(input.is_eof(), "leftover for {src:?}");
+            let parsed = Expr::parse(&mut input);
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "the func_expr action refuses {src:?}",
+            );
         }
     }
 
@@ -1104,9 +1109,8 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in input");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
             assert!(
                 input.is_eof(),
@@ -1127,8 +1131,7 @@ mod tests {
             assert_eq!(lexed.errors().count(), 0, "lex errors in input");
             let mut input = lexed.input();
             let _stmt_parsed = crate::ast::Statement::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _stmt = _stmt_parsed.ast();
             assert!(
                 input.is_eof(),
@@ -1960,9 +1963,8 @@ mod tests {
             let lexed = crate::lex(source);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {source:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|error| panic!("parse {source:?}: {error}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|error| panic!("parse {source:?}: {error}"));
             let expr = expr_parsed.ast();
             assert!(matches!(expr, Expr::QualRef(_)), "{source:?}");
             assert!(input.is_eof(), "trailing input in {source:?}");
@@ -1982,14 +1984,10 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let expr = expr_parsed.ast();
-            assert!(
-                matches!(expr, Expr::QualRef(_)),
-                "{src:?} must qualify",
-            );
+            assert!(matches!(expr, Expr::QualRef(_)), "{src:?} must qualify",);
         }
         for src in ["union.a", "select.a", "grant.a", "create.*"] {
             let lexed = crate::lex(src);
@@ -3451,10 +3449,7 @@ mod tests {
         let expr = expr_parsed.ast();
         assert!(matches!(expr, Expr::QuantifiedComparisonCmp(..)));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
-        assert_eq!(
-            format_tokens_sql(expr, PrettyConfig::default()).trim(),
-            src,
-        );
+        assert_eq!(format_tokens_sql(expr, PrettyConfig::default()).trim(), src,);
     }
 
     #[test]
@@ -3505,7 +3500,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3547,7 +3548,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3572,9 +3579,8 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in input");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
             assert!(
                 input.is_eof(),
@@ -3592,7 +3598,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3604,7 +3616,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3616,7 +3634,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3628,7 +3652,13 @@ mod tests {
         let mut input = lexed.input();
         let expr_parsed = Expr::parse(&mut input).unwrap();
         let expr = expr_parsed.ast();
-        assert!(matches!(expr, Expr::ColumnRef(ColumnRef { indirection: Some(_), .. })));
+        assert!(matches!(
+            expr,
+            Expr::ColumnRef(ColumnRef {
+                indirection: Some(_),
+                ..
+            })
+        ));
         assert!(input.is_eof(), "parser cursor: {}", input.cursor());
     }
 
@@ -3681,8 +3711,7 @@ mod tests {
             assert_eq!(lexed.errors().count(), 0, "lex errors in input");
             let mut input = lexed.input();
             let _stmt_parsed = crate::ast::Statement::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _stmt = _stmt_parsed.ast();
             assert!(
                 input.is_eof(),
@@ -3713,8 +3742,7 @@ mod tests {
             assert_eq!(lexed.errors().count(), 0, "lex errors in input");
             let mut input = lexed.input();
             let _stmt_parsed = crate::ast::Statement::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _stmt = _stmt_parsed.ast();
             assert!(
                 input.is_eof(),
@@ -3763,11 +3791,7 @@ mod tests {
     /// disjoint from the `JSON ( … )` SQL/JSON value constructor.
     #[test]
     fn parse_json_typed_literal() {
-        for src in [
-            r#"json '{"a": 1}'"#,
-            r#"json '"foo"'"#,
-            r#"jsonb 'null'"#,
-        ] {
+        for src in [r#"json '{"a": 1}'"#, r#"json '"foo"'"#, r#"jsonb 'null'"#] {
             assert!(
                 matches!(parse_expr_classified(src).ast(), Expr::CastFunc(_)),
                 "expected a typed literal for {src:?}",
@@ -3788,11 +3812,14 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
     }
 
@@ -3850,14 +3877,23 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let expr = expr_parsed.ast();
-            assert!(matches!(expr, Expr::Grouping(_)), "expected Grouping for {src:?}");
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                matches!(expr, Expr::Grouping(_)),
+                "expected Grouping for {src:?}"
+            );
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
-        assert!(matches!(parse_expr_classified("grouping").ast(), Expr::ColumnRef(_)));
+        assert!(matches!(
+            parse_expr_classified("grouping").ast(),
+            Expr::ColumnRef(_)
+        ));
     }
 
     /// `substring(x, 3, 1)` — the ordinary function-call spelling that
@@ -3876,12 +3912,18 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let expr = expr_parsed.ast();
-            assert!(matches!(expr, Expr::Substring(_)), "expected Substring for {src:?}");
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                matches!(expr, Expr::Substring(_)),
+                "expected Substring for {src:?}"
+            );
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
     }
 
@@ -3899,11 +3941,14 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
         // Added in 16: research, PostgreSQL 16, "Queries and expressions".
         #[cfg(feature = "since-pg16")]
@@ -3939,11 +3984,14 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
     }
 
@@ -3962,11 +4010,14 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let _expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let _expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let _expr = _expr_parsed.ast();
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
     }
 
@@ -3978,12 +4029,18 @@ mod tests {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
             let mut input = lexed.input();
-            let expr_parsed = Expr::parse(&mut input)
-                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"))
-                ;
+            let expr_parsed =
+                Expr::parse(&mut input).unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
             let expr = expr_parsed.ast();
-            assert!(matches!(expr, Expr::RowExpr(_)), "expected RowExpr for {src:?}");
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                matches!(expr, Expr::RowExpr(_)),
+                "expected RowExpr for {src:?}"
+            );
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
         }
     }
     /// `COALESCE`, `GREATEST`, `LEAST` and `NULLIF` are gram.y
@@ -4110,9 +4167,16 @@ mod tests {
             let mut input = lexed.input();
             let parsed = crate::ast::Statement::parse(&mut input)
                 .unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
-            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            assert!(
+                input.is_eof(),
+                "parser cursor for {src:?}: {}",
+                input.cursor()
+            );
             let tree = format!("{:?}", parsed.ast());
-            assert!(!tree.contains("CoalesceExpr"), "{src:?} built the special form");
+            assert!(
+                !tree.contains("CoalesceExpr"),
+                "{src:?} built the special form"
+            );
         }
     }
 
@@ -4148,12 +4212,18 @@ mod tests {
         };
         assert!(matches!(&**one, Expr::IntegerLit(_)));
         assert!(matches!(&**two, Expr::IntegerLit(_)));
-        assert!(matches!(operator.name(), QualifiedOperatorName::Qualified(_)));
+        assert!(matches!(
+            operator.name(),
+            QualifiedOperatorName::Qualified(_)
+        ));
 
         // `a OPERATOR(pg_catalog.+) (b * c)`: a decorated `+` is below `*`.
         let parsed = parse_expr_classified("a OPERATOR(pg_catalog.+) b * c");
         let Expr::DecoratedInfix(left, _, right) = parsed.ast() else {
-            panic!("expected DecoratedInfix at the root, got {:?}", parsed.ast());
+            panic!(
+                "expected DecoratedInfix at the root, got {:?}",
+                parsed.ast()
+            );
         };
         assert!(matches!(&**left, Expr::ColumnRef(_)));
         assert!(matches!(&**right, Expr::Mul(..)));
@@ -4161,7 +4231,10 @@ mod tests {
         // gram.y:889 `%left Op OPERATOR`.
         let parsed = parse_expr_classified("a OPERATOR(+) b OPERATOR(-) c");
         let Expr::DecoratedInfix(left, operator, right) = parsed.ast() else {
-            panic!("expected DecoratedInfix at the root, got {:?}", parsed.ast());
+            panic!(
+                "expected DecoratedInfix at the root, got {:?}",
+                parsed.ast()
+            );
         };
         assert!(matches!(&**left, Expr::DecoratedInfix(..)));
         assert!(matches!(&**right, Expr::ColumnRef(_)));
@@ -4192,7 +4265,10 @@ mod tests {
     fn parse_decorated_prefix_operator_at_op_precedence() {
         let parsed = parse_expr_classified("OPERATOR(pg_catalog.-) a * b");
         let Expr::DecoratedPrefix(_, operand) = parsed.ast() else {
-            panic!("expected DecoratedPrefix at the root, got {:?}", parsed.ast());
+            panic!(
+                "expected DecoratedPrefix at the root, got {:?}",
+                parsed.ast()
+            );
         };
         assert!(matches!(&**operand, Expr::Mul(..)));
 
@@ -4204,7 +4280,10 @@ mod tests {
 
         let parsed = parse_expr_classified("a OPERATOR(pg_catalog.+) OPERATOR(pg_catalog.-) b");
         let Expr::DecoratedInfix(_, _, right) = parsed.ast() else {
-            panic!("expected DecoratedInfix at the root, got {:?}", parsed.ast());
+            panic!(
+                "expected DecoratedInfix at the root, got {:?}",
+                parsed.ast()
+            );
         };
         assert!(matches!(&**right, Expr::DecoratedPrefix(..)));
     }
@@ -4234,7 +4313,11 @@ mod tests {
         ));
 
         // `=>` is not an operator name, and the parentheses are not optional.
-        for src in ["a OPERATOR(pg_catalog.=>) b", "a OPERATOR pg_catalog.= b", "a OPERATOR() b"] {
+        for src in [
+            "a OPERATOR(pg_catalog.=>) b",
+            "a OPERATOR pg_catalog.= b",
+            "a OPERATOR() b",
+        ] {
             let lexed = crate::lex(src);
             let mut input = lexed.input();
             let parsed = Expr::parse(&mut input);
@@ -4251,7 +4334,11 @@ mod tests {
     /// which variant pgtk-sql built.
     #[test]
     fn parse_xmlconcat_as_its_own_variant() {
-        for src in ["XMLCONCAT(a, b)", "xmlconcat(a)", "xmlconcat('<a/>', NULL, x || y)"] {
+        for src in [
+            "XMLCONCAT(a, b)",
+            "xmlconcat(a)",
+            "xmlconcat('<a/>', NULL, x || y)",
+        ] {
             let parsed = parse_expr_classified(src);
             assert!(
                 matches!(parsed.ast(), Expr::XmlConcat(_)),
@@ -4264,7 +4351,10 @@ mod tests {
             panic!("expected XmlConcat, got {:?}", parsed.ast());
         };
         assert_eq!(concat.args.len(), 3);
-        assert!(matches!(parse_expr_classified("xmlconcat").ast(), Expr::ColumnRef(_)));
+        assert!(matches!(
+            parse_expr_classified("xmlconcat").ast(),
+            Expr::ColumnRef(_)
+        ));
         for src in [
             "xmlconcat()",
             "xmlconcat(*)",
@@ -4317,11 +4407,21 @@ mod tests {
                 panic!("expected Normalize for {src:?}, got {:?}", parsed.ast());
             };
             assert!(matches!(&*normalize.arg, Expr::ColumnRef(_)), "{src:?}");
-            assert_eq!(normalize.form.as_ref().map(form_name), Some(expected), "{src:?}");
+            assert_eq!(
+                normalize.form.as_ref().map(form_name),
+                Some(expected),
+                "{src:?}"
+            );
         }
-        assert!(matches!(parse_expr_classified("normalize").ast(), Expr::ColumnRef(_)));
+        assert!(matches!(
+            parse_expr_classified("normalize").ast(),
+            Expr::ColumnRef(_)
+        ));
         // `nfc` alone is an unreserved keyword: a column like any other.
-        assert!(matches!(parse_expr_classified("nfc").ast(), Expr::ColumnRef(_)));
+        assert!(matches!(
+            parse_expr_classified("nfc").ast(),
+            Expr::ColumnRef(_)
+        ));
         for src in [
             "normalize()",
             "normalize(a, b)",
@@ -4372,10 +4472,22 @@ mod tests {
 
         for (src, negated, modifier) in [
             ("f1 BETWEEN '1997-01-01' AND '1998-01-01'", false, None),
-            ("f1 BETWEEN SYMMETRIC '1997-01-01' AND '1998-01-01'", false, Some(true)),
-            ("f1 BETWEEN ASYMMETRIC '1997-01-01' AND '1998-01-01'", false, Some(false)),
+            (
+                "f1 BETWEEN SYMMETRIC '1997-01-01' AND '1998-01-01'",
+                false,
+                Some(true),
+            ),
+            (
+                "f1 BETWEEN ASYMMETRIC '1997-01-01' AND '1998-01-01'",
+                false,
+                Some(false),
+            ),
             ("f1 NOT BETWEEN '1997-01-01' AND '1998-01-01'", true, None),
-            ("f1 NOT BETWEEN SYMMETRIC '1997-01-01' AND '1998-01-01'", true, Some(true)),
+            (
+                "f1 NOT BETWEEN SYMMETRIC '1997-01-01' AND '1998-01-01'",
+                true,
+                Some(true),
+            ),
             ("f1 not between asymmetric 1 and 2", true, Some(false)),
         ] {
             let parsed = parse_expr_classified(src);
@@ -4419,7 +4531,10 @@ mod tests {
             let lexed = crate::lex(src);
             let mut input = lexed.input();
             let parsed = Expr::parse(&mut input);
-            assert!(parsed.is_err() || !input.is_eof(), "{src:?} parsed completely");
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "{src:?} parsed completely"
+            );
         }
         // Both are bare labels.
         for src in ["SELECT 1 symmetric", "SELECT 1 AS asymmetric"] {
@@ -4487,18 +4602,33 @@ mod tests {
     /// only ever this form.
     #[test]
     fn parse_treat_as_its_own_variant() {
-        for src in ["TREAT(a AS int)", "treat(a + 1 AS s.t)", "treat(a AS numeric(10, 2))"] {
+        for src in [
+            "TREAT(a AS int)",
+            "treat(a + 1 AS s.t)",
+            "treat(a AS numeric(10, 2))",
+        ] {
             assert!(
                 matches!(parse_expr_classified(src).ast(), Expr::Treat(_)),
                 "expected Treat for {src:?}",
             );
         }
-        assert!(matches!(parse_expr_classified("treat").ast(), Expr::ColumnRef(_)));
-        for src in ["treat(a, b)", "treat(a)", "treat(a AS int COLLATE \"C\")", "treat()"] {
+        assert!(matches!(
+            parse_expr_classified("treat").ast(),
+            Expr::ColumnRef(_)
+        ));
+        for src in [
+            "treat(a, b)",
+            "treat(a)",
+            "treat(a AS int COLLATE \"C\")",
+            "treat()",
+        ] {
             let lexed = crate::lex(src);
             let mut input = lexed.input();
             let parsed = Expr::parse(&mut input);
-            assert!(parsed.is_err() || !input.is_eof(), "{src:?} parsed completely");
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "{src:?} parsed completely"
+            );
         }
     }
 
@@ -4517,14 +4647,23 @@ mod tests {
             "json()",
             "json(a) FILTER (WHERE a > 1) OVER ()",
         ] {
-            assert!(matches!(parse_expr_classified(src).ast(), Expr::Func(_)), "{src}");
+            assert!(
+                matches!(parse_expr_classified(src).ast(), Expr::Func(_)),
+                "{src}"
+            );
         }
         for src in ["json '{}'", "json(2) '{}'"] {
             let tree = format!("{:?}", parse_expr_classified(src).ast());
             assert!(!tree.contains("JsonCtor"), "{src}: {tree}");
         }
         for src in ["'1'::json(2)", "CAST('1' AS json(2))", "'1'::json.x"] {
-            assert!(matches!(parse_expr_classified(src).ast(), Expr::Cast(..) | Expr::CastCall(_)), "{src}");
+            assert!(
+                matches!(
+                    parse_expr_classified(src).ast(),
+                    Expr::Cast(..) | Expr::CastCall(_)
+                ),
+                "{src}"
+            );
         }
         crate::ast::test_support::assert_statements_parse(&[
             "SELECT public.json(1)",
@@ -4554,7 +4693,10 @@ mod tests {
             "json_table(1, 2)",
             "merge_action(1)",
         ] {
-            assert!(matches!(parse_expr_classified(src).ast(), Expr::Func(_)), "{src}");
+            assert!(
+                matches!(parse_expr_classified(src).ast(), Expr::Func(_)),
+                "{src}"
+            );
         }
         crate::ast::test_support::assert_statements_parse(&[
             "CREATE FUNCTION json_exists(int) RETURNS int LANGUAGE sql AS 'select 1'",
@@ -4590,7 +4732,10 @@ mod tests {
             "SELECT now() AT LOCAL",
             "SELECT a AT LOCAL + 1 FROM t",
         ]);
-        crate::ast::test_support::assert_statements_parse(&["SELECT now() AT TIME ZONE 'UTC'", "SELECT 1 local"]);
+        crate::ast::test_support::assert_statements_parse(&[
+            "SELECT now() AT TIME ZONE 'UTC'",
+            "SELECT 1 local",
+        ]);
     }
 
     // The words that 17 makes keywords are identifiers before 17: research, PostgreSQL 17,
@@ -4620,7 +4765,10 @@ mod tests {
             ("lag(x) RESPECT NULLS OVER (ORDER BY y)", false),
             ("count(*) FILTER (WHERE x > 1) IGNORE NULLS OVER ()", true),
             ("f(x) respect nulls", false),
-            ("percentile_cont(0.5) WITHIN GROUP (ORDER BY x) IGNORE NULLS", true),
+            (
+                "percentile_cont(0.5) WITHIN GROUP (ORDER BY x) IGNORE NULLS",
+                true,
+            ),
         ] {
             let parsed = parse_expr_classified(src);
             let Expr::Func(call) = parsed.ast() else {
@@ -4633,7 +4781,11 @@ mod tests {
             else {
                 panic!("expected a null treatment for {src:?}");
             };
-            assert_eq!(matches!(treatment, NullTreatment::Ignore), ignore, "{src:?}");
+            assert_eq!(
+                matches!(treatment, NullTreatment::Ignore),
+                ignore,
+                "{src:?}"
+            );
         }
         for src in [
             "lag(x) IGNORE OVER ()",
@@ -4645,7 +4797,10 @@ mod tests {
             let lexed = crate::lex(src);
             let mut input = lexed.input();
             let parsed = Expr::parse(&mut input);
-            assert!(parsed.is_err() || !input.is_eof(), "{src:?} parsed completely");
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "{src:?} parsed completely"
+            );
         }
     }
 
@@ -4657,10 +4812,12 @@ mod tests {
             let lexed = crate::lex(src);
             let mut input = lexed.input();
             let parsed = Expr::parse(&mut input);
-            assert!(parsed.is_err() || !input.is_eof(), "{src:?} parsed completely");
+            assert!(
+                parsed.is_err() || !input.is_eof(),
+                "{src:?} parsed completely"
+            );
         }
     }
-
 
     // Added in 16: research, PostgreSQL 16, "Queries and expressions"
     // (REL_16_15 gram.y `xml_indent_option`).
@@ -4671,7 +4828,10 @@ mod tests {
             "xmlserialize(CONTENT x AS text NO INDENT)",
             "XMLSERIALIZE(DOCUMENT x AS text INDENT)",
         ] {
-            assert!(matches!(parse_expr_classified(src).ast(), Expr::XmlSerialize(_)), "{src}");
+            assert!(
+                matches!(parse_expr_classified(src).ast(), Expr::XmlSerialize(_)),
+                "{src}"
+            );
         }
     }
 
@@ -4742,7 +4902,10 @@ mod tests {
             "json_arrayagg(a) FILTER (WHERE a > 0)",
             "json_objectagg(a, b) OVER ()",
         ] {
-            assert!(matches!(parse_expr_classified(src).ast(), Expr::Func(_)), "{src}");
+            assert!(
+                matches!(parse_expr_classified(src).ast(), Expr::Func(_)),
+                "{src}"
+            );
         }
         crate::ast::test_support::assert_statements_parse(&[
             "CREATE TABLE json_object (json_array int, json_arrayagg int, json_objectagg int)",
@@ -5018,9 +5181,7 @@ mod tests {
     #[test]
     fn float_precision_reads_every_integer_radix() {
         crate::ast::test_support::check_statement_forms(
-            &[
-                "SELECT 1::float(0x35), 1::float(0o1), 1::float(0b1), 1::float(5_3)",
-            ],
+            &["SELECT 1::float(0x35), 1::float(0o1), 1::float(0b1), 1::float(5_3)"],
             &[
                 "SELECT 1::float(0x36)",
                 "SELECT 1::float(0x0)",

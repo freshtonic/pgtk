@@ -90,8 +90,12 @@ let declared = analyzer
     .expect("PostgreSQL accepts it");
 assert_eq!(catalog.as_builtin(declared.result.columns[0].ty), Some(Builtin::Int8));
 
+// A parameter in the target list with no other context is text, as in PostgreSQL.
+let text = analyzer.analyze_sql("SELECT $1", &[], &session).expect("PostgreSQL accepts it");
+assert_eq!(catalog.as_builtin(text.result.params[0]), Some(Builtin::Text));
+
 // A parameter with no context has no type, and PostgreSQL rejects the query. Declare its type.
-match analyzer.analyze_sql("SELECT $1", &[], &session) {
+match analyzer.analyze_sql("SELECT 1 WHERE $1 IS NULL", &[], &session) {
     Err(AnalyzeError::Diagnostic(d)) => assert_eq!(d.sqlstate, "42P18"),
     other => panic!("expected a Diagnostic, got {other:?}"),
 }

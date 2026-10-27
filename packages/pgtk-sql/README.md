@@ -108,6 +108,26 @@ let document = pgtk_sql::document::parse_sql("SELECT 1; INSERT INTO t VALUES (2)
 assert_eq!(document.statements().len(), 2);
 ```
 
+`parse_sql` is a strict parse: it stops at the first statement that PostgreSQL rejects. An editor
+needs one result for each statement. `parse_sql_recovering` continues after each rejection, at the
+next `;` that is not in parentheses, in a string or in a `BEGIN ATOMIC … END` body:
+
+```rust
+use pgtk_sql::document::{RecoveredItem, parse_sql_recovering};
+
+let source = "SELECT 1; SELECT FROM WHERE; SELECT 2;";
+let document = parse_sql_recovering(source).expect("no framing invariant fails");
+for item in document.items() {
+    let text = &source[item.span().range()];
+    match item {
+        RecoveredItem::Statement { .. } => println!("accepted: {text}"),
+        RecoveredItem::Rejected(rejection) => println!("{rejection}"),
+    }
+}
+assert_eq!(document.statements().len(), 2);
+assert_eq!(document.rejections().count(), 1);
+```
+
 Find the oldest PostgreSQL version that accepts a statement:
 
 ```rust
