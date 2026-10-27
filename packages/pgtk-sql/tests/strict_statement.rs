@@ -85,40 +85,47 @@ fn variable_set_stmt_keeps_scope_prefixes_and_special_rests() {
     }
 }
 
-/// `UESCAPE` remains an ordinary bare label unless it introduces the Unicode
-/// string escape-clause shape. The LR token feed classifies the latter
-/// with `UESCAPE_LA` while preserving the source spelling in the AST.
+/// parser.c (`base_yylex`) reads a `UESCAPE` after a Unicode string as its
+/// escape clause, and asks for a simple string after it ("UESCAPE must be
+/// followed by a simple string literal", REL_17_11 parser.c 253-274). In
+/// every other position `UESCAPE` is an unreserved keyword: a label, a type
+/// name before a string (a typed literal), an option name. The `UESCAPE`
+/// precedence level of `crate::tokens` gives this; there is no lookahead
+/// filter.
 #[test]
 fn unicode_escape_clause_and_bare_uescape_label_remain_distinct() {
-    for source in [
+    assert_accepts(&[
         "SELECT U&'d!0061t' UESCAPE '!'",
         "SELECT U&'d\\0061t' UESCAPE '!'",
         "SELECT U&'d\\0061t' /* intervening trivia */ UESCAPE '!'",
-        "SELECT U&'d\\0061t' UESCAPE",
+        "SELECT U&'x' uescape 'y'",
+        "SELECT U&'x' AS uescape",
         "SELECT 1 UESCAPE",
-    ] {
-        let lexed = lex(source);
-        assert!(
-            lexed.errors().next().is_none(),
-            "lexical errors in {source:?}"
-        );
-
-        let mut input = lexed.input();
-        Statement::parse(&mut input)
-            .unwrap_or_else(|error| panic!("strict statement {source:?}: {error}"));
-        assert!(input.is_eof(), "strict parse left input for {source:?}");
-    }
-
-    let source = "SELECT U&'d!0061t' UESCAPE 1";
-    let lexed = lex(source);
-    assert!(
-        lexed.errors().next().is_none(),
-        "lexical errors in {source:?}"
-    );
-    let mut input = lexed.input();
-    assert!(
-        Statement::parse(&mut input).is_err() || !input.is_eof(),
-        "a UESCAPE keyword without a string literal must not consume a numeric literal"
+        "SELECT 'a' uescape",
+        "SELECT uescape FROM t",
+        // A typed literal whose type is named `uescape`.
+        "SELECT uescape 'x'",
+        "SELECT uescape E'x'",
+        "SELECT uescape $$x$$",
+        "SELECT s.uescape 'x'",
+        "SELECT f(uescape 'x')",
+        "CREATE TABLE t (a int DEFAULT uescape 'x')",
+        // An option named `uescape`, with a string value.
+        "EXPLAIN (uescape 'x') SELECT 1",
+        "VACUUM (uescape 'x')",
+        "COPY t FROM STDIN (uescape 'x')",
+        "CREATE SERVER s FOREIGN DATA WRAPPER w OPTIONS (uescape 'x')",
+        "ALTER SERVER s OPTIONS (ADD uescape 'x')",
+        "ALTER SERVER s OPTIONS (SET uescape 'x')",
+    ]);
+    assert_rejects(
+        &[
+            "SELECT U&'d\\0061t' UESCAPE",
+            "SELECT U&'x' uescape, 1",
+            "SELECT 1 FROM t WHERE a = U&'x' uescape",
+            "SELECT U&'d!0061t' UESCAPE 1",
+        ],
+        "a UESCAPE after a Unicode string must have a simple string after it",
     );
 }
 
