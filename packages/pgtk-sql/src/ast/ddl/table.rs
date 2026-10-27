@@ -991,6 +991,7 @@ recursa::ast_node! {
     /// `COMPRESSION`, then `OPTIONS (...)`, and all three come before every
     /// `ColQualList` entry, `COLLATE` included.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_column_def, flat = crate::ast::validation::current_schema_column_def_flat)]
     pub struct ColumnDef {
         pub name: crate::tokens::ColId,
         pub type_name: crate::ast::shared::expr::CastType,

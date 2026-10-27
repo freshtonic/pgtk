@@ -194,6 +194,7 @@ recursa::ast_node! {
     /// `AS alias` on a MERGE target — gram.y `relation_expr_opt_alias:
     /// relation_expr AS ColId`.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_merge_as_alias, flat = crate::ast::validation::current_schema_merge_as_alias_flat)]
     pub struct MergeAsAlias {
         #[tok(AS, this)]
         pub name: crate::tokens::ColId,
