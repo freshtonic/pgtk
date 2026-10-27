@@ -5,6 +5,7 @@ use crate::ast::dml::update::ReturningClause;
 recursa::ast_node! {
     /// Table alias with explicit AS keyword: `AS alias`.
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_delete_as_alias, flat = crate::ast::validation::current_schema_delete_as_alias_flat)]
     pub struct DeleteAsAlias {
         #[tok(AS, this)]
         pub name: crate::tokens::ColId,

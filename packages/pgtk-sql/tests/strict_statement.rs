@@ -2333,3 +2333,70 @@ fn a_unicode_identifier_with_an_incorrect_escape_is_refused() {
         "SELECT 1 AS U&\"d!0061t\" UESCAPE '!'",
     ]);
 }
+
+/// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
+/// kwlist.h 115; REL_14_24 has the same class), so it is no `ColId`.
+/// pgtk-sql lexes it as an identifier, and each rule whose gram.y form is a
+/// `ColId` refuses it by its text: a dotted name, a FROM name with a dot, a
+/// subscript, an alias, a window name, an INSERT target and a column
+/// definition. As an expression and as a function name it is gram.y
+/// `SQLValueFunction` and `type_function_name`, and a quoted
+/// `"current_schema"` is a plain name. Found by diff-agent.
+#[test]
+fn current_schema_is_no_col_id() {
+    assert_rejects(
+        &[
+            "SELECT * FROM current_schema.t",
+            "SELECT current_schema.x FROM t",
+            "SELECT Current_Schema.x FROM t",
+            "SELECT current_schema.*",
+            "SELECT current_schema.f()",
+            "SELECT current_schema.t 'x'",
+            "SELECT current_schema[1]",
+            "SELECT * FROM current_schema.f()",
+            "SELECT * FROM current_schema.b.c.d()",
+            "SELECT * FROM current_schema *",
+            "SELECT * FROM current_schema TABLESAMPLE system (1)",
+            "SELECT * FROM current_schema AS x TABLESAMPLE system (1)",
+            "SELECT * FROM t current_schema",
+            "SELECT * FROM t AS current_schema",
+            "SELECT * FROM generate_series(1, 2) AS current_schema",
+            "SELECT * FROM generate_series(1, 2) current_schema",
+            "SELECT * FROM (SELECT 1) AS current_schema",
+            "SELECT x FROM t WINDOW current_schema AS ()",
+            "SELECT x FROM t WINDOW w AS (current_schema)",
+            "UPDATE t current_schema SET a = 1",
+            "UPDATE t AS current_schema SET a = 1",
+            "DELETE FROM t AS current_schema",
+            "INSERT INTO t (current_schema) VALUES (1)",
+            "CREATE TABLE t (current_schema int)",
+            "ALTER TABLE t ADD COLUMN current_schema int",
+        ],
+        "current_schema is no ColId",
+    );
+    #[cfg(feature = "since-pg15")]
+    assert_rejects(
+        &["MERGE INTO t AS current_schema USING s ON true WHEN MATCHED THEN DELETE"],
+        "current_schema is no ColId",
+    );
+    assert_accepts(&[
+        "SELECT current_schema",
+        "SELECT current_schema()",
+        "SELECT current_schema::text",
+        "SELECT current_schema 'x'",
+        "SELECT CAST(1 AS current_schema)",
+        "SELECT a FROM t ORDER BY current_schema",
+        "SELECT t.current_schema FROM t",
+        "SELECT 1 AS current_schema",
+        "SELECT * FROM current_schema",
+        "SELECT * FROM current_schema AS x",
+        "SELECT * FROM current_schema x",
+        "SELECT * FROM current_schema()",
+        "SELECT * FROM a.b.c.current_schema()",
+        "CREATE INDEX ON t (current_schema)",
+        "SET search_path = current_schema",
+        "SELECT \"current_schema\"[1]",
+        "SELECT * FROM \"current_schema\".t",
+        "SELECT \"current_schema\".x FROM t",
+    ]);
+}

@@ -547,6 +547,7 @@ recursa::ast_node! {
     ///   literal follows the dotted attribute names only
     ///   ([`QualifiedTail::Call`] and [`QualifiedTail::TypedLiteral`]).
     #[derive(Debug)]
+    #[validate(crate::ast::validation::current_schema_qualified_ref, flat = crate::ast::validation::current_schema_qualified_ref_flat)]
     pub struct QualifiedRef {
         pub table: crate::tokens::ColId,
         pub path: QualifiedPath,
@@ -641,6 +642,7 @@ recursa::ast_node! {
     /// cast to an array type and `f(x)[1]` is rejected, as PostgreSQL has it.
     #[derive(Debug)]
     #[flat(pool)]
+    #[validate(crate::ast::validation::current_schema_column_ref, flat = crate::ast::validation::current_schema_column_ref_flat)]
     pub struct ColumnRef {
         pub name: crate::tokens::ColId,
         /// The subscript and the elements after it. A `.*` is the last

@@ -321,12 +321,12 @@ mod tests {
 
     // PostgreSQL rejects the statement and its rendering, and pgtk-sql
     // accepts it: an over-acceptance (#95). `current_schema` is no `ColId`,
-    // and the FROM name of pgtk-sql still admits it. Replace the example
-    // when that is fixed.
+    // and the column names of a table alias in pgtk-sql still admit it.
+    // Replace the example when that is fixed.
     #[cfg(feature = "postgres-oracle")]
     #[test]
     fn pg_rejected_input_fails_when_pgsql_accepts() {
-        match check("SELECT * FROM current_schema.t") {
+        match check("SELECT * FROM t AS x (current_schema)") {
             Outcome::Fail(reason) => assert!(reason.starts_with(OVER_ACCEPTANCE), "{reason}"),
             other => panic!("expected an over-acceptance, got {other:?}"),
         }

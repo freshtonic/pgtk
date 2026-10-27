@@ -1103,11 +1103,181 @@ identifier_hooks! {
     ident_utility_option_name, ident_utility_option_name_flat, UtilityOptionName,
         FlatUtilityOptionName;
     ident_ident_only, ident_ident_only_flat, IdentOnly, FlatIdentOnly;
-    ident_relation_alias_name, ident_relation_alias_name_flat, RelationAliasName,
-        FlatRelationAliasName;
     ident_select_bare_alias_name, ident_select_bare_alias_name_flat, SelectBareAliasName,
         FlatSelectBareAliasName;
-    ident_window_ref_name_ident, ident_window_ref_name_ident_flat, WindowRefNameIdent,
-        FlatWindowRefNameIdent;
     ident_alias_name, ident_alias_name_flat, AliasName, FlatAliasName;
+}
+
+// --- CURRENT_SCHEMA as a ColId ---
+
+/// `syntax error at or near "CURRENT_SCHEMA"`: kwlist.h makes
+/// `current_schema` a `TYPE_FUNC_NAME_KEYWORD`, so it is no `ColId`.
+pub static CURRENT_SCHEMA_COL_ID: RejectionNote = RejectionNote::new(
+    "ColId",
+    Some("42601"),
+    "syntax error at or near \"CURRENT_SCHEMA\"",
+    None,
+    "REL_17_11 kwlist.h 115, current_schema",
+);
+
+/// The refusal of the `ColId` with the source text `raw` at field `field`
+/// when it is the unquoted keyword `CURRENT_SCHEMA`
+/// ([`crate::ident::current_schema_class`]).
+fn current_schema_refusal(raw: &str, field: usize) -> Result<(), Refusal> {
+    if crate::ident::current_schema_class(raw) == Some("current_schema") {
+        return Err(Refusal::new(&CURRENT_SCHEMA_COL_ID).at_field(field));
+    }
+    Ok(())
+}
+
+/// The source text of a flat `ColId`.
+fn flat_col_id_text<'a, R: recursa::__private::FlatNode>(
+    id: FlatColId,
+    ast: &'a FlatAst<'_, R>,
+) -> &'a str {
+    let FlatColId::Text(text) = id;
+    ast[text].as_str()
+}
+
+/// pgtk-sql lexes `current_schema` as an identifier (`crate::tokens`), so
+/// each rule whose gram.y form is a `ColId` refuses the unquoted keyword by
+/// its text: a qualified name or a column reference with a dot, a FROM name
+/// with a dot, an alias, a window name, an INSERT target and a column
+/// definition. `SELECT current_schema` stays an expression, which gram.y
+/// reads as `SQLValueFunction`. Found by diff-agent.
+macro_rules! current_schema_hooks {
+    ($($hook:ident, $hook_flat:ident, $ty:path, $flat:path, $field:ident, $index:literal;)*) => {$(
+        #[doc = concat!("`CURRENT_SCHEMA` is no `ColId` in `", stringify!($ty), "`.")]
+        pub fn $hook(node: &$ty) -> Result<(), Refusal> {
+            current_schema_refusal(node.$field.text(), $index)
+        }
+
+        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
+        pub fn $hook_flat(node: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
+            current_schema_refusal(flat_col_id_text(ast[node.$field], ast), $index)
+        }
+    )*};
+}
+
+current_schema_hooks! {
+    current_schema_qualified_ref, current_schema_qualified_ref_flat, crate::ast::shared::expr::QualifiedRef, crate::ast::shared::expr::FlatQualifiedRef, table, 0;
+    current_schema_named_table_qualified_name, current_schema_named_table_qualified_name_flat, crate::ast::dml::select::NamedTableQualifiedName, crate::ast::dml::select::FlatNamedTableQualifiedName, first, 0;
+    current_schema_long_func_call_name, current_schema_long_func_call_name_flat, crate::ast::dml::select::LongFuncCallName, crate::ast::dml::select::FlatLongFuncCallName, first, 0;
+    current_schema_table_alias_with_as, current_schema_table_alias_with_as_flat, crate::ast::dml::select::TableAliasWithAs, crate::ast::dml::select::FlatTableAliasWithAs, name, 0;
+    current_schema_table_alias_bare, current_schema_table_alias_bare_flat, crate::ast::dml::select::TableAliasBare, crate::ast::dml::select::FlatTableAliasBare, name, 0;
+    current_schema_plain_table_alias_with_as, current_schema_plain_table_alias_with_as_flat, crate::ast::dml::select::PlainTableAliasWithAs, crate::ast::dml::select::FlatPlainTableAliasWithAs, name, 0;
+    current_schema_plain_table_alias_bare, current_schema_plain_table_alias_bare_flat, crate::ast::dml::select::PlainTableAliasBare, crate::ast::dml::select::FlatPlainTableAliasBare, name, 0;
+    current_schema_func_table_alias_as_named, current_schema_func_table_alias_as_named_flat, crate::ast::dml::select::FuncTableAliasAsNamed, crate::ast::dml::select::FlatFuncTableAliasAsNamed, name, 0;
+    current_schema_func_table_alias_named, current_schema_func_table_alias_named_flat, crate::ast::dml::select::FuncTableAliasNamed, crate::ast::dml::select::FlatFuncTableAliasNamed, name, 0;
+    current_schema_window_def, current_schema_window_def_flat, crate::ast::dml::select::WindowDef, crate::ast::dml::select::FlatWindowDef, name, 0;
+    current_schema_delete_as_alias, current_schema_delete_as_alias_flat, crate::ast::dml::delete::DeleteAsAlias, crate::ast::dml::delete::FlatDeleteAsAlias, name, 0;
+    current_schema_update_table_alias_with_as, current_schema_update_table_alias_with_as_flat, crate::ast::dml::update::UpdateTableAliasWithAs, crate::ast::dml::update::FlatUpdateTableAliasWithAs, name, 0;
+    current_schema_insert_column_item, current_schema_insert_column_item_flat, crate::ast::dml::insert::InsertColumnItem, crate::ast::dml::insert::FlatInsertColumnItem, name, 0;
+    current_schema_column_def, current_schema_column_def_flat, crate::ast::ddl::table::ColumnDef, crate::ast::ddl::table::FlatColumnDef, name, 0;
+}
+
+/// A bare `current_schema` is gram.y `SQLValueFunction`, which takes no
+/// indirection, so `current_schema[1]` is a syntax error: only a `ColId`
+/// takes one (`columnref`).
+pub fn current_schema_column_ref(
+    column: &crate::ast::shared::expr::ColumnRef<'_>,
+) -> Result<(), Refusal> {
+    match column.indirection {
+        Some(_) => current_schema_refusal(column.name.text(), 0),
+        None => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_column_ref`].
+pub fn current_schema_column_ref_flat(
+    column: &crate::ast::shared::expr::FlatColumnRef,
+    ast: &FlatAst<'_, crate::ast::shared::expr::FlatColumnRef>,
+) -> Result<(), Refusal> {
+    match column.indirection {
+        Some(_) => current_schema_refusal(flat_col_id_text(ast[column.name], ast), 0),
+        None => Ok(()),
+    }
+}
+
+/// A bare `current_schema` in FROM is gram.y `func_table`
+/// (`func_expr_windowless`), not `relation_expr`: it takes an alias, but no
+/// `*` and no `TABLESAMPLE`, which only a `qualified_name` takes.
+pub fn current_schema_named_table_ref(
+    table: &crate::ast::dml::select::NamedTableRef<'_>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::{NamedTableRefTail, TableFunctionName};
+    let TableFunctionName::Name(name) = &table.name else {
+        return Ok(());
+    };
+    match &table.tail {
+        Some(NamedTableRefTail::Inherited(_) | NamedTableRefTail::Sample(_)) => {
+            current_schema_refusal(name.text(), 0)
+        }
+        Some(NamedTableRefTail::Alias(alias)) if alias.tablesample.is_some() => {
+            current_schema_refusal(name.text(), 0)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// The flat form of [`current_schema_named_table_ref`].
+pub fn current_schema_named_table_ref_flat(
+    table: &crate::ast::dml::select::FlatNamedTableRef,
+    ast: &FlatAst<'_, crate::ast::dml::select::FlatNamedTableRef>,
+) -> Result<(), Refusal> {
+    use crate::ast::dml::select::{FlatNamedTableRefTail, FlatTableFunctionName};
+    let FlatTableFunctionName::Name(name) = ast[table.name] else {
+        return Ok(());
+    };
+    let Flattable_function_name::Text(text) = ast[name];
+    let raw = ast[text].as_str();
+    match table.tail.map(|tail| ast[tail]) {
+        Some(FlatNamedTableRefTail::Inherited(_) | FlatNamedTableRefTail::Sample(_)) => {
+            current_schema_refusal(raw, 0)
+        }
+        Some(FlatNamedTableRefTail::Alias(alias)) if ast[alias].tablesample.is_some() => {
+            current_schema_refusal(raw, 0)
+        }
+        _ => Ok(()),
+    }
+}
+
+/// [`RelationAliasName`] is a `ColId`: an alias with no `AS`. It is checked
+/// as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
+pub fn ident_relation_alias_name(name: &RelationAliasName<'_>) -> Result<(), Refusal> {
+    identifier_refusal(name.text())?;
+    current_schema_refusal(name.text(), 0)
+}
+
+/// The flat form of [`ident_relation_alias_name`].
+pub fn ident_relation_alias_name_flat(
+    name: &FlatRelationAliasName,
+    ast: &FlatAst<'_, FlatRelationAliasName>,
+) -> Result<(), Refusal> {
+    let FlatRelationAliasName::Text(text) = name;
+    identifier_refusal(ast[*text].as_str())?;
+    current_schema_refusal(ast[*text].as_str(), 0)
+}
+
+/// [`WindowRefNameIdent`] is a `ColId`: the name of an existing window. It is
+/// checked as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
+pub fn ident_window_ref_name_ident(name: &WindowRefNameIdent<'_>) -> Result<(), Refusal> {
+    identifier_refusal(name.text())?;
+    current_schema_refusal(name.text(), 0)
+}
+
+/// The flat form of [`ident_window_ref_name_ident`].
+pub fn ident_window_ref_name_ident_flat(
+    name: &FlatWindowRefNameIdent,
+    ast: &FlatAst<'_, FlatWindowRefNameIdent>,
+) -> Result<(), Refusal> {
+    let FlatWindowRefNameIdent::Text(text) = name;
+    identifier_refusal(ast[*text].as_str())?;
+    current_schema_refusal(ast[*text].as_str(), 0)
+}
+
+// Added in 15 with MERGE (REL_15_19 gram.y `MergeStmt`).
+#[cfg(feature = "since-pg15")]
+current_schema_hooks! {
+    current_schema_merge_as_alias, current_schema_merge_as_alias_flat, crate::ast::dml::merge::MergeAsAlias, crate::ast::dml::merge::FlatMergeAsAlias, name, 0;
 }
