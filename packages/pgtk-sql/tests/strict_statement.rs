@@ -2093,3 +2093,66 @@ fn over_acceptances_of_the_strict_differential_check_are_rejected() {
     }
     assert_accepts(&["SELECT 1 AS \"\"\"\"", "SELECT 1 AS \"a\"\"\""]);
 }
+
+/// gram.y `opt_routine_body: BEGIN_P ATOMIC routine_body_stmt_list END_P`,
+/// with `routine_body_stmt_list: routine_body_stmt_list routine_body_stmt ';'
+/// | EMPTY` and `routine_body_stmt: stmt | ReturnStmt`. `stmt` can be empty,
+/// and it does not hold `TransactionStmtLegacy` (`BEGIN`, `END`). The rules
+/// are the same from 14 to 19 (REL_14_24 gram.y 7942-7981, REL_17_11 gram.y
+/// 8731-8770; issue #97).
+#[test]
+fn a_begin_atomic_body_holds_statements_that_end_in_a_semicolon() {
+    let accepted = [
+        "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; END",
+        "CREATE OR REPLACE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC SELECT 1; SELECT 2; END",
+        "CREATE FUNCTION f() RETURNS int LANGUAGE sql BEGIN ATOMIC RETURN 1; END",
+        "CREATE FUNCTION f() RETURNS boolean BEGIN ATOMIC ; END",
+        "CREATE FUNCTION f() RETURNS boolean BEGIN ATOMIC ; ; SELECT 1; ; END",
+        "CREATE FUNCTION f(x int) RETURNS boolean LANGUAGE sql \
+         BEGIN ATOMIC SELECT CASE WHEN x % 2 = 0 THEN true ELSE false END; END",
+        "CREATE FUNCTION f() RETURNS SETOF int LANGUAGE sql STABLE \
+         BEGIN ATOMIC SELECT * FROM t; END",
+        "CREATE FUNCTION f(a int) RETURNS void LANGUAGE sql \
+         BEGIN ATOMIC INSERT INTO t SELECT a + $1; END",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC COMMIT; START TRANSACTION; END",
+        "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC \
+         CREATE FUNCTION g() RETURNS int BEGIN ATOMIC SELECT 1; END; END",
+        "CREATE PROCEDURE p() LANGUAGE sql \
+         BEGIN ATOMIC INSERT INTO t VALUES (1); DELETE FROM t; END",
+        "CREATE OR REPLACE PROCEDURE p(x int) BEGIN ATOMIC UPDATE t SET a = x; END",
+        "CREATE PROCEDURE p() BEGIN ATOMIC END",
+    ];
+    assert_accepts(&accepted);
+    // The formatted text parses again to the same text, and PostgreSQL
+    // accepts it.
+    for source in accepted {
+        let lexed = lex(source);
+        let mut input = lexed.input();
+        let parsed = Statement::parse(&mut input).expect("strict statement");
+        let once = pgtk_sql::formatter::format_tokens_sql(parsed.ast(), Default::default());
+        let relexed = lex(&once);
+        let mut reinput = relexed.input();
+        let reparsed = Statement::parse(&mut reinput)
+            .unwrap_or_else(|error| panic!("formatted {once:?} does not parse: {error}"));
+        assert!(reinput.is_eof(), "formatted {once:?} left input");
+        let twice = pgtk_sql::formatter::format_tokens_sql(reparsed.ast(), Default::default());
+        assert_eq!(once, twice, "formatting {source:?} is not a fixed point");
+        #[cfg(feature = "postgres-oracle")]
+        if let Some(error) = pgtk_oracle::parse_error(&once) {
+            panic!("PostgreSQL rejects the formatted {once:?}: {error}");
+        }
+    }
+    assert_rejects(
+        &[
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1 END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1;",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC BEGIN; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC BEGIN; COMMIT; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END TRANSACTION",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC RETURN; END",
+            "CREATE FUNCTION f() RETURNS int BEGIN ATOMIC SELECT 1; END RETURN 1",
+            "CREATE PROCEDURE p() BEGIN ATOMIC SELECT 1 END",
+        ],
+        "a routine body statement ends in a `;` and is a gram.y `stmt`",
+    );
+}
