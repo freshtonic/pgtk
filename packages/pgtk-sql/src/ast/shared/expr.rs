@@ -3315,7 +3315,11 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `U&'...'` unicode string literal with optional `UESCAPE 'c'` suffix.
     /// parser.c refuses an incorrect Unicode escape (issue #95).
+    ///
+    /// After the string, a `UESCAPE` is always the clause (`UNICODE_END` in
+    /// `crate::tokens`).
     #[derive(Debug)]
+    #[parse(prec = UNICODE_END)]
     #[validate(crate::ast::validation::unicode_string, flat = crate::ast::validation::unicode_string_flat)]
     pub struct UnicodeStringLitWithEscape {
         pub lit: literal::UnicodeStringLit,

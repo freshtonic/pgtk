@@ -1150,21 +1150,6 @@ recursa::tokens! {
         // position, the leading token of a prefix rule included, so the
         // filter lowers everywhere gram.y writes `NOT_LA`.
         NOT_LA = NOT before { BETWEEN, IN, LIKE, ILIKE, SIMILAR },
-        // `parser.c`: after a Unicode string/identifier token, a following
-        // `UESCAPE SCONST` is consumed as its escape clause. The grammar
-        // keeps `UESCAPE` as a bare-label keyword for every other position;
-        // the LR token feed therefore marks only the clause-shaped
-        // spelling. The triggers are content-bearing, unlike parser.c's
-        // other fixed-token triggers. They are the token kinds that
-        // `core_yylex` gives as `SCONST`: the plain, the continued, the
-        // escape and the dollar-quoted string
-        // (`crate::ast::shared::expr::UescapeString`).
-        UESCAPE_LA = UESCAPE before {
-            StringLit,
-            StringLitSequence,
-            EscapeStringLit,
-            DollarStringLit,
-        },
         // The function-style typed literal spelling `type(args) 'value'`
         // shares its argument list with an ordinary function call. Mark only
         // the closing delimiter followed by its string payload so the LR
@@ -1229,6 +1214,8 @@ recursa::tokens! {
     // below. Only `< > = <= >= <>`, `+ - * / % ^`, `::` and `.` are named by
     // the scanner in their own right and take their own levels.
     precedence {
+        // `UNICODE_END`: see the level of `UESCAPE` at the end of this block.
+        nonassoc(bp = 5) { UNICODE_END },
         // gram.y:830 `%left UNION EXCEPT`: the set operators of
         // `SelectClause`, which is left-recursive as gram.y's `select_clause`
         // is.
@@ -1439,6 +1426,22 @@ recursa::tokens! {
         // operators", high so that they stay usable as function names, and
         // left-associative among the `joined_table` rules themselves.
         left(bp = 230) { JOIN, CROSS, LEFT, FULL, RIGHT, INNER, NATURAL },
+        // Not from gram.y: parser.c (`base_yylex`) reads a `UESCAPE` after a
+        // Unicode string or identifier as its escape clause, before gram.y
+        // sees the tokens (REL_17_11 parser.c 253-274). So after a `U&'...'`
+        // string, `UESCAPE` always shifts into the clause: `U&'x' uescape`
+        // with no string after it is an error ("UESCAPE must be followed by
+        // a simple string literal"), and it is never a label. The rule that
+        // ends a Unicode string with no clause carries the precedence-only
+        // name `UNICODE_END` through `#[parse(prec = UNICODE_END)]`, below
+        // the level of `UESCAPE`. In every other position `UESCAPE` is an
+        // unreserved keyword, so `uescape 'x'` is a typed literal. (A
+        // lookahead filter `UESCAPE_LA = UESCAPE before { strings }` was here
+        // before; it changed each `UESCAPE` before a string, so it refused
+        // `SELECT uescape 'x'`.) A `U&"..."` identifier lexes as each other
+        // identifier spelling, so only `UescapedAliasName` reads a clause
+        // after one.
+        nonassoc(bp = 240) { UESCAPE },
     }
 }
 

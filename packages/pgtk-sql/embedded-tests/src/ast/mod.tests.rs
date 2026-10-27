@@ -772,7 +772,9 @@ mod tests {
             "SELECT a FROM t ORDER BY a NULLS FIRST",
             // `NOT_LA`: gram.y `a_expr NOT_LA LIKE a_expr`.
             "SELECT a FROM t WHERE a NOT LIKE 'x'",
-            // `UESCAPE_LA`: the escape clause of a Unicode string.
+            // The escape clause of a Unicode string. It has no lookahead
+            // filter now: the `UESCAPE` precedence level of `crate::tokens`
+            // shifts it.
             "SELECT U&'\\0041' UESCAPE '\\'",
             // `RPAREN_TYPED_LA`, pgtk-sql's own: the `)` of a function-style
             // typed literal, before its string payload.
