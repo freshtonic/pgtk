@@ -1115,6 +1115,9 @@ recursa::tokens! {
         // a column-name closure beside the parameter closure of the new
         // syntax, and LALR merged that state with the target list's.
         IdentOnly = AllWordKinds - AllWordKinds,
+        // The `U&"..."` name of `crate::ast::dml::select::UescapedAliasName`:
+        // no keyword.
+        UescapedName = AllWordKinds - AllWordKinds,
     }
     // Lookahead filters, one per case of PostgreSQL's `base_yylex`
     // (`src/backend/parser/parser.c`): the LR token feed reads the
@@ -1457,6 +1460,7 @@ recursa::tokens! {
 // continues an identifier: `a$$x$$` is one identifier.
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_col_id, flat = crate::ast::validation::ident_col_id_flat)]
     pub enum ColId {
         Text(
             #[lex(
@@ -1487,10 +1491,37 @@ impl ColId<'_> {
     }
 }
 
+recursa::ast_node! {
+    /// The `U&"..."` identifier before a `UESCAPE` clause
+    /// (`crate::ast::dml::select::UescapedAliasName`). It admits no keyword,
+    /// and it has no escape check of its own: the escape character is the
+    /// one of the clause.
+    #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum UidentName {
+        Text(
+            #[lex(
+                pattern = r#"[Uu]&"(?:[^"]|"")+"|"(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
+                admits(UescapedName)
+            )]
+            UidentNameText,
+        ),
+    }
+}
+
+impl UidentName<'_> {
+    /// The source text of the identifier token.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
+    }
+}
+
 // gram.y `ColLabel`: every keyword class, the `attr_name` after a dot in
 // `qualified_name` and `func_name` indirection.
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_col_label, flat = crate::ast::validation::ident_col_label_flat)]
     pub enum ColLabel {
         Text(
             #[lex(
@@ -1523,6 +1554,7 @@ impl ColLabel<'_> {
 
 recursa::ast_node! {
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_non_reserved_word, flat = crate::ast::validation::ident_non_reserved_word_flat)]
     pub enum NonReservedWord {
         Text(
             #[lex(
@@ -1552,6 +1584,7 @@ recursa::ast_node! {
     /// gram.y `RoleSpec` as one word: a `NonReservedWord`, or one of the
     /// reserved keywords `CURRENT_ROLE`, `CURRENT_USER` and `SESSION_USER`.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_spec_word, flat = crate::ast::validation::ident_role_spec_word_flat)]
     pub enum RoleSpecWord {
         Text(
             #[lex(
@@ -1574,6 +1607,7 @@ impl RoleSpecWord<'_> {
 recursa::ast_node! {
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_type_function_name, flat = crate::ast::validation::ident_type_function_name_flat)]
     pub enum type_function_name {
         Text(
             #[lex(
@@ -1604,6 +1638,7 @@ recursa::ast_node! {
     /// its dedicated SQL-standard table-expression production.
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_table_function_name, flat = crate::ast::validation::ident_table_function_name_flat)]
     pub enum table_function_name {
         Text(
             #[lex(
@@ -1612,6 +1647,15 @@ recursa::ast_node! {
             )]
             TableFunctionNameText,
         ),
+    }
+}
+
+impl table_function_name<'_> {
+    /// The source text of the identifier token.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Text(text) => text.text(),
+        }
     }
 }
 
@@ -1624,6 +1668,7 @@ recursa::ast_node! {
     /// modifiers.
     #[allow(non_camel_case_types)]
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_type_name_ident, flat = crate::ast::validation::ident_type_name_ident_flat)]
     pub enum type_name_ident {
         Text(
             #[lex(
@@ -1645,6 +1690,7 @@ impl type_name_ident<'_> {
 
 recursa::ast_node! {
     #[derive(Debug, Clone)]
+    #[validate(crate::ast::validation::ident_bare_col_label, flat = crate::ast::validation::ident_bare_col_label_flat)]
     pub enum BareColLabel {
         Text(
             #[lex(
@@ -1679,6 +1725,7 @@ recursa::ast_node! {
     /// `ADMIN` keyword, which `crate::ast::utility::grant::RevokeRoleOptionName`
     /// keeps as its own variant so the gate can name the spellings 16 adds.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_revoke_option_word, flat = crate::ast::validation::ident_role_revoke_option_word_flat)]
     pub enum RoleRevokeOptionWord {
         Text(
             #[lex(
@@ -1708,6 +1755,7 @@ recursa::ast_node! {
     /// `ADMIN` keyword, which `crate::ast::utility::grant::GrantRoleOptionName`
     /// keeps as its own variant.
     #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    #[validate(crate::ast::validation::ident_role_grant_option_word, flat = crate::ast::validation::ident_role_grant_option_word_flat)]
     pub enum RoleGrantOptionWord {
         Text(
             #[lex(
@@ -1917,6 +1965,7 @@ pub mod literal {
         /// production. Quoted and unquoted spellings share one lexical base; the
         /// named admission set controls which fixed keywords may occupy it.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_ident, flat = crate::ast::validation::ident_ident_flat)]
         pub enum Ident {
             Text(
                 #[lex(
@@ -1955,6 +2004,7 @@ pub mod literal {
         /// `TEMPLATE`. Every other keyword (`WITH`, `SET`, `REFRESH`, ...) is
         /// the statement's own syntax and must not be reclaimed here.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_create_db_opt_word, flat = crate::ast::validation::ident_create_db_opt_word_flat)]
         pub enum CreateDbOptWord {
             Text(
                 #[lex(
@@ -1983,6 +2033,7 @@ pub mod literal {
         /// `WITH` stay the statement's own syntax, so `EXPLAIN (SELECT 1)` is a
         /// parenthesized statement and not an option list.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_utility_option_name, flat = crate::ast::validation::ident_utility_option_name_flat)]
         pub enum UtilityOptionName {
             /// `FORMAT` immediately before `JSON`, which `base_yylex` reads as
             /// `FORMAT_LA`: gram.y names the merged kind in this very rule
@@ -2026,6 +2077,7 @@ pub mod literal {
     recursa::ast_node! {
         /// gram.y `IDENT`: an identifier that is not a keyword.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_ident_only, flat = crate::ast::validation::ident_ident_only_flat)]
         pub enum IdentOnly {
             Text(
                 #[lex(
@@ -2053,6 +2105,7 @@ pub mod literal {
         /// keyword precedence over interpreting it as a bare alias. Quoted
         /// identifiers and every other `ColId` spelling remain available.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_relation_alias_name, flat = crate::ast::validation::ident_relation_alias_name_flat)]
         pub enum RelationAliasName {
             Text(
                 #[lex(
@@ -2081,6 +2134,7 @@ pub mod literal {
         /// admission set encodes that precedence while explicit `AS is` and quoted
         /// `"is"` aliases remain available.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_select_bare_alias_name, flat = crate::ast::validation::ident_select_bare_alias_name_flat)]
         pub enum SelectBareAliasName {
             Text(
                 #[lex(
@@ -2109,6 +2163,7 @@ pub mod literal {
         /// Modeled as a single-variant enum to preserve the legacy wrapper while
         /// the generated content matcher enforces the named admission set.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_window_ref_name_ident, flat = crate::ast::validation::ident_window_ref_name_ident_flat)]
         pub enum WindowRefNameIdent {
             Text(
                 #[lex(
@@ -2120,12 +2175,22 @@ pub mod literal {
         }
     }
 
+    impl<'input> WindowRefNameIdent<'input> {
+        /// The source text of the identifier token.
+        pub fn text(&self) -> &str {
+            match self {
+                WindowRefNameIdent::Text(text) => text.text(),
+            }
+        }
+    }
+
     // --- Alias name (any SQL word — identifier or keyword) ---
 
     recursa::ast_node! {
         /// Alias name, including PostgreSQL keywords admitted in bare-label
         /// positions. Quoted and unquoted spellings share the identifier base.
         #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[validate(crate::ast::validation::ident_alias_name, flat = crate::ast::validation::ident_alias_name_flat)]
         pub enum AliasName {
             Text(
                 #[lex(

@@ -9768,7 +9768,8 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                                 FlatAsAliasName::Plain(name) => self.alias_name(*name)?.0,
                                 FlatAsAliasName::Uescaped(u) => {
                                     let u = self.get(*u);
-                                    let FlatAliasName::Text(t) = self.get(u.name);
+                                    let pgtk_sql::tokens::FlatUidentName::Text(t) =
+                                        self.get(u.name);
                                     let raw = self.text(*t);
                                     let escape = self.uescape_value(u.uescape);
                                     match pgtk_sql::ident::fold_identifier_with_uescape(

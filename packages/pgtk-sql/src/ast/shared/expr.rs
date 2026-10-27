@@ -3276,6 +3276,18 @@ recursa::ast_node! {
     }
 }
 
+impl UescapeString<'_> {
+    /// The source text of the string.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Escape(string) => string.text(),
+            Self::Dollar(string) => string.text(),
+            Self::Sequence(string) => string.text(),
+            Self::Plain(string) => string.text(),
+        }
+    }
+}
+
 recursa::ast_node! {
     /// `UESCAPE 'c'` suffix that may follow a `U&'...'` literal.
     ///
