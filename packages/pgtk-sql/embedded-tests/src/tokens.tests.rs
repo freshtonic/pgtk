@@ -1240,7 +1240,9 @@ mod tests {
         let mut input = lexed.input();
         let id_parsed = WindowRefNameIdent::parse_arena(&mut input).unwrap();
         let id = id_parsed.ast();
-        let WindowRefNameIdent::Text(inner) = &id;
+        let WindowRefNameIdent::Text(inner) = &id else {
+            panic!("w1 has no UESCAPE clause");
+        };
         assert_eq!(inner.text(), "w1");
     }
 

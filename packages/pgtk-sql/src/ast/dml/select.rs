@@ -48,56 +48,21 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
-    /// Alias with explicit AS keyword: `AS name [UESCAPE 'c']`.
+    /// Alias with explicit AS keyword: `AS name`. The name can be a Unicode
+    /// identifier with a `UESCAPE` clause, as every identifier can
+    /// (`crate::tokens::UnicodeIdent`).
     /// Uses AliasName so keywords are accepted (e.g., `SELECT 1 AS true`).
     #[derive(Debug)]
     pub struct AsAlias {
         #[tok(AS, this)]
-        pub name: AsAliasName,
+        pub name: literal::AliasName,
     }
 }
 
 impl<'input> AsAlias<'input> {
     /// The alias name as written, without a `UESCAPE` clause.
     pub fn text(&self) -> &str {
-        match &self.name {
-            AsAliasName::Plain(name) => name.text(),
-            AsAliasName::Uescaped(name) => name.name.text(),
-        }
-    }
-}
-
-recursa::ast_node! {
-    /// The name of an [`AsAlias`]: a name, or a Unicode identifier with a
-    /// `UESCAPE` clause.
-    #[derive(Debug)]
-    pub enum AsAliasName {
-        Uescaped(UescapedAliasName),
-        Plain(literal::AliasName),
-    }
-}
-
-recursa::ast_node! {
-    /// `U&"..." UESCAPE 'c'`. `parser.c` (`base_yylex`) reads `UESCAPE`
-    /// as an escape clause only after a Unicode identifier (`UIDENT`) or a
-    /// Unicode string, so after any other name `UESCAPE` is a syntax error
-    /// (issue #59). pgtk-sql lexes each identifier spelling as one token, so
-    /// the rule refuses the name by its text. The validation hook refuses an
-    /// incorrect escape of the name (`str_udeescape`).
-    #[classify(name, fold = crate::ident::unicode_identifier_class)]
-    #[reject(
-        one_of(name, "plain"),
-        code = "42601",
-        message = "syntax error at or near \"UESCAPE\"",
-        cite = "REL_17_11 parser.c base_yylex, UIDENT UESCAPE",
-    )]
-    #[validate(crate::ast::validation::uescaped_alias_name, flat = crate::ast::validation::uescaped_alias_name_flat)]
-    #[derive(Debug)]
-    pub struct UescapedAliasName {
-        /// The name, which `parser.c` decodes with the escape character of
-        /// the clause, so it has no escape check of its own.
-        pub name: crate::tokens::UidentName,
-        pub uescape: crate::ast::shared::expr::UescapeSuffix,
+        self.name.text()
     }
 }
 

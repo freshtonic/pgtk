@@ -30,7 +30,6 @@ use crate::ast::dml::select::{
     FlatForUpdateWait, FlatLimitLockingClause, FlatLimitOffsetClause, FlatLimitingClause,
     ForLockingClause, ForUpdateWait, LimitLockingClause, LimitOffsetClause, LimitingClause,
 };
-use crate::ast::dml::select::{FlatUescapedAliasName, UescapedAliasName};
 use crate::ast::dml::values::{
     FlatQueryBody, FlatSelectClause, FlatSubquery, QueryBody, SelectClause, Subquery,
 };
@@ -52,9 +51,9 @@ use crate::tokens::literal::{
 };
 use crate::tokens::{
     BareColLabel, ColId, ColLabel, FlatBareColLabel, FlatColId, FlatColLabel, FlatNonReservedWord,
-    FlatRoleSpecWord, FlatUidentName, Flattable_function_name, Flattype_function_name,
-    Flattype_name_ident, NonReservedWord, RoleSpecWord, table_function_name, type_function_name,
-    type_name_ident,
+    FlatRoleSpecWord, FlatUidentName, FlatUnicodeIdent, Flattable_function_name,
+    Flattype_function_name, Flattype_name_ident, NonReservedWord, RoleSpecWord, UnicodeIdent,
+    table_function_name, type_function_name, type_name_ident,
 };
 #[cfg(feature = "since-pg16")]
 use crate::tokens::{
@@ -1035,38 +1034,42 @@ fn identifier_refusal(raw: &str) -> Result<(), Refusal> {
     unicode_refusal(unicode_identifier_error(raw, None), UNICODE_IDENT_NOTES)
 }
 
-/// `parser.c` decodes the name of `AS U&"..." UESCAPE 'c'` with the escape
-/// character of the clause and refuses an incorrect escape.
-pub fn uescaped_alias_name(name: &UescapedAliasName<'_>) -> Result<(), Refusal> {
+/// `parser.c` decodes the name of `U&"..." [UESCAPE 'c']` with the escape
+/// character of the clause, or `\`, and refuses an incorrect escape.
+pub fn unicode_ident(ident: &UnicodeIdent<'_>) -> Result<(), Refusal> {
     unicode_refusal(
-        unicode_identifier_error(name.name.text(), Some(name.uescape.escape_char.text())),
+        unicode_identifier_error(ident.name.text(), ident.uescape_text()),
         UNICODE_IDENT_NOTES,
     )
 }
 
-/// The flat form of [`uescaped_alias_name`].
-pub fn uescaped_alias_name_flat(
-    name: &FlatUescapedAliasName,
-    ast: &FlatAst<'_, FlatUescapedAliasName>,
+/// The flat form of [`unicode_ident`].
+pub fn unicode_ident_flat(
+    ident: &FlatUnicodeIdent,
+    ast: &FlatAst<'_, FlatUnicodeIdent>,
 ) -> Result<(), Refusal> {
-    let FlatUidentName::Text(text) = ast[name.name];
-    let uescape = flat_uescape_text(ast[ast[name.uescape].escape_char], ast);
+    let FlatUidentName::Text(text) = ast[ident.name];
+    let uescape = ident
+        .uescape
+        .map(|uescape| flat_uescape_text(ast[ast[uescape].escape_char], ast));
     unicode_refusal(
-        unicode_identifier_error(ast[text].as_str(), Some(uescape)),
+        unicode_identifier_error(ast[text].as_str(), uescape),
         UNICODE_IDENT_NOTES,
     )
 }
 
-/// The hooks of the identifier types: a `U&"..."` name is checked with the
-/// escape character `\` ([`identifier_refusal`]). Each type holds one token;
-/// a `UESCAPE` clause is part of no identifier type (only of
-/// `UescapedAliasName`).
+/// The hooks of the identifier types: a name of the identifier token is
+/// checked by [`identifier_refusal`]. A `U&"..."` name is a [`UnicodeIdent`],
+/// which has its own hook.
 macro_rules! identifier_hooks {
     ($($(#[$meta:meta])* $hook:ident, $hook_flat:ident, $ty:ident, $flat:ident;)*) => {$(
         $(#[$meta])*
         #[doc = concat!("The `str_udeescape` check of a `", stringify!($ty), "`.")]
         pub fn $hook(name: &$ty<'_>) -> Result<(), Refusal> {
-            identifier_refusal(name.text())
+            match name {
+                $ty::Unicode(_) => Ok(()),
+                _ => identifier_refusal(name.text()),
+            }
         }
 
         $(#[$meta])*
@@ -1130,13 +1133,16 @@ fn current_schema_refusal(raw: &str, field: usize) -> Result<(), Refusal> {
     Ok(())
 }
 
-/// The source text of a flat `ColId`.
+/// The source text of a flat `ColId`, or the empty text for a name with a
+/// `UESCAPE` clause, which is never the keyword `CURRENT_SCHEMA`.
 fn flat_col_id_text<'a, R: recursa::__private::FlatNode>(
     id: FlatColId,
     ast: &'a FlatAst<'_, R>,
 ) -> &'a str {
-    let FlatColId::Text(text) = id;
-    ast[text].as_str()
+    match id {
+        FlatColId::Text(text) => ast[text].as_str(),
+        FlatColId::Unicode(_) => "",
+    }
 }
 
 /// pgtk-sql lexes `current_schema` as an identifier (`crate::tokens`), so
@@ -1179,13 +1185,16 @@ current_schema_hooks! {
     current_schema_join_using_alias, current_schema_join_using_alias_flat, crate::ast::dml::select::JoinUsingAlias, crate::ast::dml::select::FlatJoinUsingAlias, name, 0;
 }
 
-/// The source text of a flat `AliasName`.
+/// The source text of a flat `AliasName`, or the empty text for a name with
+/// `U&"..."` name, which is never the keyword `CURRENT_SCHEMA`.
 fn flat_alias_name_text<'a, R: recursa::__private::FlatNode>(
     name: FlatAliasName,
     ast: &'a FlatAst<'_, R>,
 ) -> &'a str {
-    let FlatAliasName::Text(text) = name;
-    ast[text].as_str()
+    match name {
+        FlatAliasName::Text(text) => ast[text].as_str(),
+        FlatAliasName::Unicode(_) => "",
+    }
 }
 
 /// The column names of a table alias, a CTE, a view, a materialized view, a
@@ -1273,7 +1282,9 @@ pub fn current_schema_named_table_ref_flat(
     let FlatTableFunctionName::Name(name) = ast[table.name] else {
         return Ok(());
     };
-    let Flattable_function_name::Text(text) = ast[name];
+    let Flattable_function_name::Text(text) = ast[name] else {
+        return Ok(());
+    };
     let raw = ast[text].as_str();
     match table.tail.map(|tail| ast[tail]) {
         Some(FlatNamedTableRefTail::Inherited(_) | FlatNamedTableRefTail::Sample(_)) => {
@@ -1319,6 +1330,9 @@ pub fn current_schema_func_table_alias_columns_flat(
 /// [`RelationAliasName`] is a `ColId`: an alias with no `AS`. It is checked
 /// as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
 pub fn ident_relation_alias_name(name: &RelationAliasName<'_>) -> Result<(), Refusal> {
+    if let RelationAliasName::Unicode(_) = name {
+        return Ok(());
+    }
     identifier_refusal(name.text())?;
     current_schema_refusal(name.text(), 0)
 }
@@ -1328,7 +1342,9 @@ pub fn ident_relation_alias_name_flat(
     name: &FlatRelationAliasName,
     ast: &FlatAst<'_, FlatRelationAliasName>,
 ) -> Result<(), Refusal> {
-    let FlatRelationAliasName::Text(text) = name;
+    let FlatRelationAliasName::Text(text) = name else {
+        return Ok(());
+    };
     identifier_refusal(ast[*text].as_str())?;
     current_schema_refusal(ast[*text].as_str(), 0)
 }
@@ -1336,6 +1352,9 @@ pub fn ident_relation_alias_name_flat(
 /// [`WindowRefNameIdent`] is a `ColId`: the name of an existing window. It is
 /// checked as each identifier is, and `CURRENT_SCHEMA` is no `ColId`.
 pub fn ident_window_ref_name_ident(name: &WindowRefNameIdent<'_>) -> Result<(), Refusal> {
+    if let WindowRefNameIdent::Unicode(_) = name {
+        return Ok(());
+    }
     identifier_refusal(name.text())?;
     current_schema_refusal(name.text(), 0)
 }
@@ -1345,7 +1364,9 @@ pub fn ident_window_ref_name_ident_flat(
     name: &FlatWindowRefNameIdent,
     ast: &FlatAst<'_, FlatWindowRefNameIdent>,
 ) -> Result<(), Refusal> {
-    let FlatWindowRefNameIdent::Text(text) = name;
+    let FlatWindowRefNameIdent::Text(text) = name else {
+        return Ok(());
+    };
     identifier_refusal(ast[*text].as_str())?;
     current_schema_refusal(ast[*text].as_str(), 0)
 }
