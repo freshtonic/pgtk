@@ -516,9 +516,6 @@ fn an_empty_begin_atomic_body_is_one_island() {
 }
 
 #[test]
-#[ignore = "the grammar models only the empty `BEGIN ATOMIC END` body (RoutineBody in \
-            src/ast/ddl/function.rs); remove this attribute when it models gram.y \
-            `routine_body_stmt_list`"]
 fn semicolons_in_a_begin_atomic_body_do_not_split_islands() {
     // gram.y: `BEGIN_P ATOMIC routine_body_stmt_list END_P`, and each
     // statement of the list ends with a `;`. The body is one statement of the
