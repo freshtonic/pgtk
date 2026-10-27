@@ -120,8 +120,8 @@ enum FailureKind {
 
 use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
-// The issue of each group of known failures.
-const DECORATED_CLOSE: u32 = 89;
+// The issue of each group of known failures: none at the moment. Give each
+// group a constant here, for example `const GROUP_NAME: u32 = 89;`.
 
 /// One known failure. It matches a failure of its kind when `sql` matches
 /// the rendering (with each run of whitespace made one space) and `detail`
@@ -135,6 +135,7 @@ struct KnownFailure {
     reason: &'static str,
 }
 
+#[allow(dead_code, reason = "KNOWN_FAILURES is empty when no issue is open")]
 const fn known(
     kind: FailureKind,
     issue: u32,
@@ -155,7 +156,6 @@ const fn known(
 /// failure counts it.
 #[rustfmt::skip]
 const KNOWN_FAILURES: &[KnownFailure] = &[
-    known(Parse, DECORATED_CLOSE, r#"OPERATOR\([^()]*\) (E|U&|B|X)?'"#, r#"^unexpected "\)" after "#, "an OPERATOR(op) before a string literal, whose close is the merged kind RPAREN_TYPED_LA"),
 ];
 
 struct Failure {

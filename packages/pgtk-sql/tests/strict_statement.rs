@@ -1647,3 +1647,24 @@ fn an_assignment_target_takes_an_indirection() {
         "INSERT INTO t (a.*, b[1].*, c[1].d) VALUES (1, 2, 3)",
     ]);
 }
+
+/// gram.y `qual_Op: OPERATOR '(' any_operator ')'` stands before an `a_expr`
+/// or a `b_expr`, and a string literal can start it (REL_17_11 gram.y 14844,
+/// 14846, 15324). Before a string literal, the `)` is the merged kind
+/// `RPAREN_TYPED_LA`, and `DecoratedOperator` takes it (issue #89).
+#[test]
+fn an_operator_call_takes_a_string_literal_after_its_close() {
+    assert_accepts(&[
+        "SELECT OPERATOR(@#@) ''",
+        "SELECT 1 OPERATOR(+) '2'",
+        "CREATE TABLE t (CHECK (OPERATOR(@#@) ''))",
+        "SELECT 1 OPERATOR(pg_catalog.+) '2'::int",
+        "SELECT OPERATOR(-) OPERATOR(-) '1'",
+        "SELECT a FROM t WHERE a OPERATOR(=) 'x'",
+        "SELECT 1 BETWEEN 1 OPERATOR(+) '2' AND 3",
+        "CREATE TABLE t (a int DEFAULT 1 OPERATOR(+) '2')",
+        "SELECT 1 OPERATOR(+) E'2', 1 OPERATOR(+) $$2$$",
+        "SELECT 1 OPERATOR(=) ANY ('{1}')",
+        "SELECT a FROM t ORDER BY a USING OPERATOR(<)",
+    ]);
+}

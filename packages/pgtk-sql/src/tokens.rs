@@ -1153,6 +1153,21 @@ recursa::tokens! {
         // the closing delimiter followed by its string payload so the LR
         // table reduces ordinary arguments on `)` and shifts the typed-literal
         // close on this distinct lookahead.
+        //
+        // parser.c has no such filter. gram.y gives the typed literal the
+        // same `func_arg_list opt_sort_clause ')'` as `func_application`, so
+        // the two part only at the `Sconst` after the `)`, and a rule action
+        // refuses a named argument and the ORDER BY (REL_17_11 gram.y 17231).
+        // pgtk-sql's typed literal takes `FunctionArgumentList` only, and a
+        // call reduces `FunctionOrdinaryArguments`, so the two reduce other
+        // nonterminals before the `)`. This filter resolves that
+        // reduce/reduce conflict (the two `lr_conflict` declarations in
+        // `crate::ast::shared::expr`).
+        //
+        // The substitution is absolute: each rule whose `)` can stand before a
+        // string literal must name the merged kind too. These rules are
+        // `TypeModifierClose`, `FunctionCallClose` and `DecoratedOperator`
+        // (`OPERATOR(+) '2'`, issue #89).
         RPAREN_TYPED_LA = RPAREN before { StringLit },
         // There is no filter for a `)` before a set operator. parser.c has
         // none: gram.y makes `select_with_parens` its own nonterminal
