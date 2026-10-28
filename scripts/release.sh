@@ -96,8 +96,12 @@ if [[ $skip_tests == 0 ]]; then
   cargo test --workspace
 fi
 
+# release-plz counts a file that is both committed and in .gitignore as an
+# uncommitted change, and vendor/postgres has one (src/port/win32ver.rc). The
+# check above found the working tree clean, so --allow-dirty lets release-plz
+# skip its own check. CI checks out no submodule, so it does not need this.
 step "release-plz update"
-release-plz update
+release-plz update --allow-dirty
 
 if [[ -n $(git status --porcelain) ]]; then
   git --no-pager diff --stat
@@ -134,7 +138,7 @@ cargo publish --workspace --dry-run
 confirm "Publish to crates.io, push tags, and make the GitHub releases?" || exit 1
 
 step "release-plz release"
-if ! release-plz release --config "$config"; then
+if ! release-plz release --allow-dirty --config "$config"; then
   cat >&2 <<'EOF'
 
 The release did not complete. If crates.io answered 429 (too many new crates),
