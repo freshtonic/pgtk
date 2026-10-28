@@ -23,10 +23,12 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
 
+# The gates run on Ubuntu 24.04, not ubuntu-latest. PostgreSQL 14 and 15 do not compile with the
+# C23 default of the GCC on Ubuntu 26.04.
 jobs:
   pgtk-sql:
     name: pgtk-sql ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -43,7 +45,7 @@ jobs:
 
   pgtk-analyze:
     name: pgtk-analyze ${{ matrix.version }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
