@@ -23,11 +23,16 @@ runs:
       run: packages/pgtk-sql/scripts/fetch-postgres-pins
     - shell: bash
       run: sudo apt-get update && sudo apt-get install --yes bison flex libxml2-dev jq
+    # A build links the shared libraries of the runner image, such as libxml2. The key names the
+    # image release, so a new image does not restore a build that it cannot run.
+    - id: image
+      shell: bash
+      run: echo "release=$(. /etc/os-release && echo "$ID-$VERSION_ID")" >> "$GITHUB_OUTPUT"
     # build-pg.sh builds each pinned release once into this cache. A version that the CI Cargo
     # job does not build (pg18, pg19-beta) gets its own cache entry.
     - uses: actions/cache@v4
       with:
         path: ~/.cache/pgtk-sql/postgres
-        key: postgres-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+        key: postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ inputs.version }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
         restore-keys: |
-          postgres-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
+          postgres-${{ runner.os }}-${{ steps.image.outputs.release }}-${{ runner.arch }}-${{ hashFiles('packages/pgtk-oracle/pins.tsv', 'packages/pgtk-oracle/scripts/build-pg.sh') }}
