@@ -4901,7 +4901,6 @@ recursa::ast_node! {
         QualRef(QualifiedRef),
         /// gram.y:15391 `select_with_parens %prec UMINUS`: the factoring that
         /// absorbs every extra paren into the sub-select.
-        #[parse(prec = UMINUS)]
         SubSelect(crate::ast::dml::values::SelectWithParens),
         /// gram.y:15403 `select_with_parens indirection`, the production
         /// gram.y calls "redundant-looking": `select_with_parens` eats every

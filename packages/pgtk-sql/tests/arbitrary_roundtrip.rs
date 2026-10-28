@@ -120,8 +120,11 @@ enum FailureKind {
 
 use FailureKind::{Fixpoint, Layout, Lex, Oracle, Parse};
 
-// The issue of each group of known failures: none at the moment. Give each
-// group a constant here, for example `const GROUP_NAME: u32 = 89;`.
+// The issue of each group of known failures. Give each group a constant here.
+
+/// A rule action that is a set operation, with a leading operand that needs
+/// parentheses that the `leading` restriction refuses.
+const RULE_ACTION_LEADING_PARENS: u32 = 112;
 
 /// One known failure. It matches a failure of its kind when `sql` matches
 /// the rendering (with each run of whitespace made one space) and `detail`
@@ -156,6 +159,10 @@ const fn known(
 /// failure counts it.
 #[rustfmt::skip]
 const KNOWN_FAILURES: &[KnownFailure] = &[
+    known(Parse, RULE_ACTION_LEADING_PARENS,
+        r"^CREATE (OR REPLACE )?RULE .*\bDO ?((ALSO|INSTEAD) ?)?\(.*\) (UNION|EXCEPT|INTERSECT)\b",
+        r"^trailing input$",
+        "Arbitrary samples a leading set operation that must render in parentheses after DO"),
 ];
 
 struct Failure {
