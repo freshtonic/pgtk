@@ -1747,6 +1747,27 @@ fn an_operator_call_takes_a_string_literal_after_its_close() {
     ]);
 }
 
+/// A target list can start with a string literal, and two lists in
+/// parentheses come before one: `DISTINCT ON (...)` (REL_17_11 gram.y
+/// `distinct_clause`) and, from 18, `RETURNING WITH (...)` (REL_18_6 gram.y
+/// `returning_with_clause`). Before a string literal, the `)` is the merged
+/// kind `RPAREN_TYPED_LA`, and `TargetListClose` takes it (issue #107).
+#[test]
+fn a_target_list_takes_a_string_literal_after_a_close() {
+    assert_accepts(&[
+        "SELECT DISTINCT ON (a) 'x' FROM t",
+        "SELECT DISTINCT ON (a, b) E'x', $$y$$ FROM t",
+        "SELECT DISTINCT ON (a) a FROM t",
+    ]);
+    #[cfg(feature = "since-pg18")]
+    assert_accepts(&[
+        "DELETE FROM t RETURNING WITH (OLD AS o) 'x'",
+        "UPDATE t SET a = 1 RETURNING WITH (NEW AS n) $$x$$ AS y",
+        "INSERT INTO t DEFAULT VALUES RETURNING WITH (OLD AS o, NEW AS n) U&'x' a",
+        "DELETE FROM t RETURNING WITH (OLD AS o) o.a",
+    ]);
+}
+
 /// gram.y `Sconst` is `SCONST`, which scan.l gives for each string spelling:
 /// a plain string, a continued string, an escape string and a dollar-quoted
 /// string. parser.c makes a Unicode string an `SCONST` too (REL_17_11
