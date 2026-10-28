@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Release the published pgtk crates (pgtk-sql, pgtk-catalog, pgtk-analyze) from this machine,
-# without GitHub Actions.
+# Release the published pgtk crates (pgtk-sql, pgtk-psql, pgtk-catalog,
+# pgtk-analyze) from this machine, without GitHub Actions.
 #
 # Run the Release gate on the commit first (ADR 0011 of pgtk-sql): the "Release gate" workflow in the
 # Actions tab, or packages/pgtk-sql/scripts/release-gate and

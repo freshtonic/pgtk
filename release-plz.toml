@@ -85,3 +85,8 @@ publish = false
 name = "pgtk-catalog-xtask"
 release = false
 publish = false
+
+[[package]]
+name = "pgtk-skills"
+release = false
+publish = false

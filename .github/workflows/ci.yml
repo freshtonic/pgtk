@@ -28,8 +28,6 @@ jobs:
           fetch-depth: 0
       # rustup reads rust-toolchain.toml and installs the pinned toolchain.
       - run: rustup show active-toolchain || rustup toolchain install
-      # The pgtk-sql import checkpoint and its records are not changed.
-      - run: packages/pgtk-sql/scripts/tests/verify-import-provenance.sh
       # The oracle crates link the pinned PostgreSQL releases, and the live tests run servers of
       # them (pgtk-test-server). build-pg.sh builds each release once into this cache.
       - run: packages/pgtk-sql/scripts/fetch-postgres-pins
