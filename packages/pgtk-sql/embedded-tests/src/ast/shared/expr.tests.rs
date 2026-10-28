@@ -3752,6 +3752,41 @@ mod tests {
         }
     }
 
+    /// A cast of a sub-select renders with the parentheses it was parsed with.
+    /// `SubSelect` had gram.y's `%prec UMINUS` as its level, and Pretty put
+    /// each cast operand below `TYPECAST` in parentheses. The parser absorbs
+    /// those parentheses into the sub-select, so each round trip added one
+    /// pair: `(SELECT 1)::int` became `((SELECT 1))::int`.
+    #[test]
+    fn paren_subquery_cast_renders_its_own_parentheses() {
+        use crate::formatter::format_tokens_sql;
+        use recursa::PrettyConfig;
+
+        let render = |src: &str| {
+            let lexed = crate::lex(src);
+            let mut input = lexed.input();
+            let parsed = crate::ast::Statement::parse(&mut input)
+                .unwrap_or_else(|e| panic!("parse {src:?}: {e}"));
+            assert!(input.is_eof(), "parser cursor for {src:?}: {}", input.cursor());
+            format_tokens_sql(parsed.ast(), PrettyConfig::default())
+        };
+        for src in [
+            "SELECT (select 1)::int",
+            "SELECT ((select 1))::int",
+            "SELECT (table t offset 1)::int[]",
+            "SELECT -(select 1)::int",
+            "SELECT 1 = ANY(((select 1))::int @> 2)",
+        ] {
+            let once = render(src);
+            assert_eq!(
+                once.matches('(').count(),
+                src.matches('(').count(),
+                "{src:?} renders as {once:?}",
+            );
+            assert_eq!(render(&once), once, "{src:?} has no fixpoint");
+        }
+    }
+
     /// `B'…'` and `X'…'` must parse as a single literal atom and round-trip
     /// through the formatter byte-for-byte. The previous behaviour lexed the
     /// prefix as an identifier followed by an ordinary `StringLit`, which the

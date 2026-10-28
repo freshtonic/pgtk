@@ -843,6 +843,7 @@ embedded-tests/src/ast/shared/expr.tests.rs	parse_overlaps	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_overlay_placing_from	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_overlay_placing_from_for	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_paren_subquery_cast_in_nested_contexts	false	14-
+embedded-tests/src/ast/shared/expr.tests.rs	paren_subquery_cast_renders_its_own_parentheses	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_parenthesized_chained_fields_and_star	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_parenthesized_expr	false	14-
 embedded-tests/src/ast/shared/expr.tests.rs	parse_parenthesized_field_access	false	14-
