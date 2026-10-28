@@ -134,7 +134,7 @@
 ## edge "u&'\\0441'" (9 bytes, 1 records)
 0..9 T UnicodeStringLit "u&'\\0441'"
 ## edge "U&\"d\\0061t\\+000061\"" (19 bytes, 1 records)
-0..19 T ColIdText "U&\"d\\0061t\\+000061\""
+0..19 T UidentNameText "U&\"d\\0061t\\+000061\""
 ## edge "e'\\n'" (5 bytes, 1 records)
 0..5 T EscapeStringLit "e'\\n'"
 ## edge "E'a''b'" (7 bytes, 1 records)
