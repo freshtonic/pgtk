@@ -55,7 +55,9 @@ pub struct Metadata {
     pub encoding: Encoding,
     /// The result of `current_schemas(true)` at the moment of the load.
     pub search_path: Vec<Name>,
-    /// The moment of the load, in seconds since the Unix epoch.
+    /// The moment of the load, in seconds since the Unix epoch, by the
+    /// server's clock. The loader reads no clock of its own, so that it
+    /// runs on targets that have none, such as `wasm32-unknown-unknown`.
     pub loaded_at_unix_secs: u64,
     /// The format version of the catalog.
     ///

@@ -202,7 +202,8 @@ const DATABASE: &str = r#"
 SELECT
     d.datname::text,
     d.encoding::text,
-    pg_catalog.pg_encoding_to_char(d.encoding)::text
+    pg_catalog.pg_encoding_to_char(d.encoding)::text,
+    floor(extract(epoch FROM pg_catalog.now()))::bigint::text
 FROM pg_catalog.pg_database d
 WHERE d.datname = current_database()
 "#;

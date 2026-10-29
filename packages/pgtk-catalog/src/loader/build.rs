@@ -16,7 +16,6 @@
 //! stops the load.
 
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::builder::CatalogBuilder;
 use crate::cast::{Cast, CastContext, CastMethod};
@@ -701,8 +700,9 @@ fn collation_provider(letter: char) -> Option<CollationProvider> {
     }
 }
 
-/// Read the one row of [`QueryId::Database`].
-fn database_row(rows: &HashMap<QueryId, Rows>) -> Result<(Name, Encoding), LoadError> {
+/// Read the one row of [`QueryId::Database`]: the name and the encoding of
+/// the database, and the moment of the load by the server's clock.
+fn database_row(rows: &HashMap<QueryId, Rows>) -> Result<(Name, Encoding, u64), LoadError> {
     let query = QueryId::Database;
     let rows = rows_of(rows, query)?;
     let empty: Vec<Option<String>> = Vec::new();
@@ -711,7 +711,7 @@ fn database_row(rows: &HashMap<QueryId, Rows>) -> Result<(Name, Encoding), LoadE
         id: row.i32(1)?,
         name: row.text(2)?.to_owned(),
     };
-    Ok((row.name(0)?, encoding))
+    Ok((row.name(0)?, encoding, row.u64(3)?))
 }
 
 /// One row of [`QueryId::Constraints`]: one column of one constraint.
@@ -955,6 +955,9 @@ struct Input {
     database: Name,
     /// The encoding of the database.
     encoding: Encoding,
+    /// The moment of the load, in seconds since the Unix epoch, by the
+    /// server's clock.
+    loaded_at_unix_secs: u64,
     /// Every collation.
     collations: Vec<CollationRow>,
     /// The effective search path at the moment of the load.
@@ -1004,10 +1007,11 @@ struct Input {
 impl Input {
     /// Read every query.
     fn read(rows: &HashMap<QueryId, Rows>) -> Result<Self, LoadError> {
-        let (database, encoding) = database_row(rows)?;
+        let (database, encoding, loaded_at_unix_secs) = database_row(rows)?;
         let mut input = Input {
             database,
             encoding,
+            loaded_at_unix_secs,
             collations: collation_rows(rows_of(rows, QueryId::Collations)?)?,
             search_path: first_column(rows, QueryId::SearchPath)?,
             schemas: schema_rows(rows_of(rows, QueryId::Schemas)?)?,
@@ -1046,14 +1050,6 @@ impl Input {
         input.casts.sort_by_key(|row| row.oid);
         Ok(input)
     }
-}
-
-/// The moment of the load, in seconds since the Unix epoch.
-fn now_unix_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| since.as_secs())
-        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------
@@ -1413,7 +1409,7 @@ pub(crate) fn assemble(
         database: input.database.clone(),
         encoding: input.encoding.clone(),
         search_path: input.search_path.clone(),
-        loaded_at_unix_secs: now_unix_secs(),
+        loaded_at_unix_secs: input.loaded_at_unix_secs,
         format_version: Catalog::FORMAT_VERSION,
     };
 
@@ -2457,7 +2453,10 @@ mod tests {
     fn empty_rows() -> HashMap<QueryId, Rows> {
         let mut rows: HashMap<QueryId, Rows> =
             QueryId::ALL.iter().map(|id| (*id, Vec::new())).collect();
-        rows.insert(QueryId::Database, vec![row(&["testdb", "6", "UTF8"])]);
+        rows.insert(
+            QueryId::Database,
+            vec![row(&["testdb", "6", "UTF8", "1761696000"])],
+        );
         rows.insert(
             QueryId::SearchPath,
             vec![row(&["pg_catalog"]), row(&["public"])],
@@ -2617,7 +2616,7 @@ mod tests {
             metadata.search_path,
             vec![Name::new("pg_catalog"), Name::new("public")]
         );
-        assert!(metadata.loaded_at_unix_secs > 1_600_000_000);
+        assert_eq!(metadata.loaded_at_unix_secs, 1_761_696_000);
     }
 
     #[test]
