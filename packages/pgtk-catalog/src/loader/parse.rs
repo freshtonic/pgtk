@@ -121,6 +121,12 @@ impl<'a> Cells<'a> {
         text.parse::<u32>().map_err(|_| self.fail(column, text))
     }
 
+    /// An unsigned 64-bit number, such as a count of seconds.
+    pub(crate) fn u64(&self, column: usize) -> Result<u64, LoadError> {
+        let text = self.text(column)?;
+        text.parse::<u64>().map_err(|_| self.fail(column, text))
+    }
+
     /// A single character, such as `typtype`.
     ///
     /// The cell must hold exactly one character. The meaning of the letter
