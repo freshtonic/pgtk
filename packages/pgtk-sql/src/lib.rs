@@ -26,6 +26,10 @@ recursa::grammar! {
     ),
     derives(Arbitrary, Pretty, Requires, Visit, VisitMut),
     keyword_matching = ascii_insensitive,
+    // Only the breaks that the `#[pretty]` hints put, the separators of a list
+    // and the inside of parentheses can break a line. The space between two
+    // tokens never breaks, so a long clause does not put each token on a line.
+    pretty(breaks = hinted),
     diagrams,
     framing(island = ast::file::SqlDocumentItem, boundary = SEMI),
 }
@@ -50,6 +54,10 @@ recursa::grammar! {
     ),
     derives(Pretty, Requires, Visit, VisitMut),
     keyword_matching = ascii_insensitive,
+    // Only the breaks that the `#[pretty]` hints put, the separators of a list
+    // and the inside of parentheses can break a line. The space between two
+    // tokens never breaks, so a long clause does not put each token on a line.
+    pretty(breaks = hinted),
     diagrams,
     framing(island = ast::file::SqlDocumentItem, boundary = SEMI),
 }

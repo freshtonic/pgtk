@@ -54,18 +54,17 @@ name = "recursa_macros"
 path = "src/lib.rs"
 proc-macro = true
 
-[dependencies.proc-macro-crate]
-version = "3"
+[dependencies]
+proc-macro-crate = "3"
+quote = "1"
 
 [dependencies.proc-macro2]
 version = "1"
 features = ["span-locations"]
 
-[dependencies.quote]
-version = "1"
-
 [dependencies.recursa-diagrams]
 version = "=0.1.6"
+path = "../recursa-diagrams"
 optional = true
 
 [dependencies.syn]

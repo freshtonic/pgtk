@@ -61,6 +61,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[validate(crate::ast::validation::query_with, flat = crate::ast::validation::query_with_flat)]
     pub struct Subquery {
+        #[pretty(break_after = soft)]
         pub with: Option<crate::ast::shared::with_clause::WithClause>,
         pub body: QueryBody,
     }
@@ -120,7 +121,11 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SelectWithParens {
         pub open: crate::ast::shared::expr::ParenthesizedOpen,
+        /// A query too wide for the line starts on the line after `(`, one
+        /// level in, and `)` is on its own line.
+        #[pretty(indent, break_before = soft)]
         pub inner: boxed!(Subquery),
+        #[pretty(break_before = soft)]
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
@@ -146,28 +151,33 @@ recursa::ast_node! {
     ///
     /// The right operand is a `select_clause`, never a sorted or limited
     /// query: `opt_sort_clause` and the other tails belong to [`QueryBody`].
+    ///
+    /// The Node opens no group: the breaks around a set operator and the
+    /// clause breaks of each `SELECT` belong to the query around them
+    /// ([`QueryBody`]), so they break together.
     #[derive(Debug)]
     #[flat(pool)]
+    #[pretty(group = none)]
     pub enum SelectClause {
         /// gram.y:12844 `select_clause UNION set_quantifier select_clause`.
         #[parse(prec = UNION)]
         Union(
             boxed!(Self),
-            #[pretty(break_before = soft)] UnionOp,
+            #[pretty(break_before = soft, break_after = soft)] UnionOp,
             boxed!(Self),
         ),
         /// gram.y:12852 `select_clause EXCEPT set_quantifier select_clause`.
         #[parse(prec = EXCEPT)]
         Except(
             boxed!(Self),
-            #[pretty(break_before = soft)] ExceptOp,
+            #[pretty(break_before = soft, break_after = soft)] ExceptOp,
             boxed!(Self),
         ),
         /// gram.y:12848 `select_clause INTERSECT set_quantifier select_clause`.
         #[parse(prec = INTERSECT)]
         Intersect(
             boxed!(Self),
-            #[pretty(break_before = soft)] IntersectOp,
+            #[pretty(break_before = soft, break_after = soft)] IntersectOp,
             boxed!(Self),
         ),
         /// gram.y:12791 `SELECT opt_all_clause opt_target_list ...` and its
