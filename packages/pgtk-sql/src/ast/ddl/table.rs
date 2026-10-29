@@ -1807,6 +1807,7 @@ recursa::ast_node! {
         #[presence(IF, NOT, EXISTS)]
         pub if_not_exists: bool,
         pub name: crate::ast::shared::names::QualifiedName,
+        #[pretty(break_before = space)]
         pub body: CreateTableBody,
     }
 }

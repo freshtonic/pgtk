@@ -67,6 +67,7 @@ recursa::ast_node! {
     /// with `(`; `Plain` with `OVERRIDING` or a query (which may also start
     /// with `(`, decided by the token after it).
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub enum InsertRest {
         #[tok(DEFAULT, VALUES)]
         Default,
@@ -78,6 +79,7 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `'(' insert_column_list ')' [OVERRIDING ...] source`.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct InsertColumnsRest {
         pub columns: boxed!(ColumnList),
         pub overriding: Option<OverridingClause>,
@@ -89,8 +91,10 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `[OVERRIDING ...] source`.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct InsertPlainRest {
         pub overriding: Option<OverridingClause>,
+        #[pretty(break_before = soft)]
         pub source: boxed!(Subquery),
     }
 }
@@ -271,8 +275,9 @@ recursa::ast_node! {
         /// Optional `[AS] alias` after the target table, used to rebind the
         /// target in ON CONFLICT DO UPDATE expressions.
         pub alias: Option<InsertTableAlias>,
-        /// gram.y `insert_rest`.
-        #[pretty(break_before = soft)]
+        /// gram.y `insert_rest`. The column list stays on the line of the
+        /// table; the query of the rest puts its own break before it.
+        #[pretty(break_before = space)]
         pub rest: InsertRest,
         #[pretty(break_before = soft)]
         pub on_conflict: Option<boxed!(OnConflictClause)>,
@@ -303,10 +308,14 @@ recursa::ast_node! {
         /// either this list or a parenthesized query, and both reduce the same
         /// marker before the next token decides (gram.y `insert_rest`).
         pub open: crate::ast::shared::expr::ParenthesizedOpen,
-        /// gram.y `insert_column_list`: one or more items.
+        /// gram.y `insert_column_list`: one or more items. A list too wide for
+        /// the line starts on the line after `(`, puts each item on its own
+        /// line, one level in, and puts `)` on its own line.
         #[sep(COMMA)]
         #[deref]
+        #[pretty(indent, break_before = soft)]
         pub items: one_or_many!(InsertColumnItem),
+        #[pretty(break_before = soft)]
         pub close: crate::ast::shared::expr::ParenthesizedClose,
     }
 }
