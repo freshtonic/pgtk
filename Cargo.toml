@@ -54,11 +54,11 @@ opt-level = 3
 [profile.bench]
 debug = true
 
-# Until the next recursa release: the pretty-print layout settings that pgtk-sql uses
-# (`pretty(breaks = hinted)`, `group = none`, `break_before = space`).
+# Until the next recursa release: the pretty-print layout settings that pgtk-sql uses, at a
+# commit of recursa main (`pretty(breaks = hinted)`, `group = none`, `break_before = space`).
 [patch.crates-io]
-recursa = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-core = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-codegen = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-macros = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-diagrams = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
+recursa = { git = "https://github.com/freshtonic/recursa", rev = "f6bf9ce61ce95fb75f9c839709d4977c6f706ffe" }
+recursa-core = { git = "https://github.com/freshtonic/recursa", rev = "f6bf9ce61ce95fb75f9c839709d4977c6f706ffe" }
+recursa-codegen = { git = "https://github.com/freshtonic/recursa", rev = "f6bf9ce61ce95fb75f9c839709d4977c6f706ffe" }
+recursa-macros = { git = "https://github.com/freshtonic/recursa", rev = "f6bf9ce61ce95fb75f9c839709d4977c6f706ffe" }
+recursa-diagrams = { git = "https://github.com/freshtonic/recursa", rev = "f6bf9ce61ce95fb75f9c839709d4977c6f706ffe" }

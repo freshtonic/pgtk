@@ -906,7 +906,7 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 [[package]]
 name = "recursa"
 version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+source = "git+https://github.com/freshtonic/recursa?rev=f6bf9ce61ce95fb75f9c839709d4977c6f706ffe#f6bf9ce61ce95fb75f9c839709d4977c6f706ffe"
 dependencies = [
  "recursa-core",
  "recursa-macros",
@@ -915,7 +915,7 @@ dependencies = [
 [[package]]
 name = "recursa-codegen"
 version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+source = "git+https://github.com/freshtonic/recursa?rev=f6bf9ce61ce95fb75f9c839709d4977c6f706ffe#f6bf9ce61ce95fb75f9c839709d4977c6f706ffe"
 dependencies = [
  "phf_codegen",
  "prettyplease",
@@ -931,7 +931,7 @@ dependencies = [
 [[package]]
 name = "recursa-core"
 version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+source = "git+https://github.com/freshtonic/recursa?rev=f6bf9ce61ce95fb75f9c839709d4977c6f706ffe#f6bf9ce61ce95fb75f9c839709d4977c6f706ffe"
 dependencies = [
  "arbitrary",
  "bumpalo",
@@ -944,7 +944,7 @@ dependencies = [
 [[package]]
 name = "recursa-diagrams"
 version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+source = "git+https://github.com/freshtonic/recursa?rev=f6bf9ce61ce95fb75f9c839709d4977c6f706ffe#f6bf9ce61ce95fb75f9c839709d4977c6f706ffe"
 dependencies = [
  "railroad",
 ]
@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "recursa-macros"
 version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+source = "git+https://github.com/freshtonic/recursa?rev=f6bf9ce61ce95fb75f9c839709d4977c6f706ffe#f6bf9ce61ce95fb75f9c839709d4977c6f706ffe"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
