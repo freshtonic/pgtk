@@ -238,6 +238,7 @@ recursa::ast_node! {
     )]
     pub struct WithStatement {
         pub with_clause: WithClause,
+        #[pretty(break_before = soft)]
         pub body: WithBody,
     }
 }

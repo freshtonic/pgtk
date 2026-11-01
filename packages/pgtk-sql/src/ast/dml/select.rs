@@ -94,12 +94,10 @@ recursa::ast_node! {
     /// PostgreSQL's `from_list` is nonempty: `FROM` commits to at least one
     /// `TableRef` (`SELECT FROM` must fail; only the target list may be empty).
     ///
-    /// The clause owns a fit-or-break group so that `FROM <list>` is measured on
-    /// its own. A statement that breaks its target list keeps `FROM` attached to
-    /// the last item while it still fits, and moves `FROM` onto its own line only
-    /// when the clause itself is too wide.
+    /// The statement puts the break before `FROM`. The first table stays on the
+    /// line of `FROM`, and a join too wide for the line starts a line at the
+    /// level of `FROM` ([`TableRef`]).
     #[derive(Debug)]
-    #[pretty(group = consistent)]
     #[tok(FROM, this)]
     pub struct FromClause {
         #[sep(COMMA)]
@@ -175,7 +173,10 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SubqueryRef {
         pub open: SelectLParen,
+        /// Breaks as [`crate::ast::dml::values::SelectWithParens`] does.
+        #[pretty(indent, break_before = soft)]
         pub query: boxed!(Subquery),
+        #[pretty(break_before = soft)]
         pub close: SelectRParen,
         pub alias: Option<TableAlias>,
     }
@@ -262,6 +263,8 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct JoinChain {
         pub base: SimpleTableRef,
+        /// Each join starts a line when the chain is too wide for one line.
+        #[pretty(break_before = soft)]
         pub joins: one_or_many!(JoinSuffix),
     }
 }
@@ -1654,6 +1657,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct TableRef {
         pub base: SimpleTableRef,
+        /// Each join starts a line when the table reference is too wide for one
+        /// line.
+        #[pretty(break_before = soft)]
         pub joins: zero_or_many!(JoinSuffix),
     }
 }
@@ -1700,6 +1706,8 @@ recursa::ast_node! {
     /// is a syntax error (issue #59).
     #[derive(Debug)]
     pub struct WhereClause {
+        /// A condition too wide for one line breaks before each `AND` and `OR`
+        /// ([`Expr`]).
         #[tok(WHERE, this)]
         pub condition: Expr,
     }
@@ -1785,8 +1793,10 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(ORDER, BY, this)]
     pub struct OrderByClause {
-        /// gram.y `sortby_list`: one or more items.
+        /// gram.y `sortby_list`: one or more items. A list too wide for the
+        /// line puts each item on its own line, one level in.
         #[sep(COMMA)]
+        #[pretty(group = consistent, indent, break_before = soft)]
         pub items: one_or_many!(OrderByItem),
     }
 }
@@ -2151,8 +2161,10 @@ recursa::ast_node! {
     pub struct GroupByClause {
         /// Optional `DISTINCT` / `ALL` modifier (Postgres 16+).
         pub modifier: Option<GroupByModifier>,
-        /// gram.y `group_by_list`: one or more items.
+        /// gram.y `group_by_list`: one or more items. A list too wide for the
+        /// line puts each item on its own line, one level in.
         #[sep(COMMA)]
+        #[pretty(group = consistent, indent, break_before = soft)]
         pub items: one_or_many!(GroupByItem),
     }
 }
@@ -2349,19 +2361,19 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// SELECT statement.
     ///
-    /// `indent` covers the whole clause body, so every break the statement is
-    /// forced to take — after `SELECT`, between target items, and before the
-    /// trailing clauses — lands one level in from column zero.
+    /// The statement opens no group of its own: its clause breaks belong to the
+    /// group of the query around it, so that `ORDER BY` and `LIMIT` break with
+    /// `FROM` and `WHERE`. A query too wide for one line puts each clause on a
+    /// line of its own, at the level of `SELECT`. The target list decides on its
+    /// own whether it breaks after `SELECT` (see [`SelectTargetList`]).
     #[derive(Debug)]
     #[flat(pool)]
-    #[pretty(group = consistent, indent)]
+    #[pretty(group = none)]
     #[tok(SELECT, this)]
     pub struct SelectStmt {
         /// gram.y `simple_select: SELECT opt_all_clause opt_target_list ...`.
         /// `opt_target_list` is nullable, so a bare `SELECT` with no targets,
         /// no `INTO` and no `FROM` is a complete `simple_select` (`select;`).
-        ///
-        #[pretty(break_before = soft)]
         pub head: Option<SelectHead>,
         #[pretty(break_before = soft)]
         pub where_clause: Option<boxed!(WhereClause)>,
@@ -2380,6 +2392,7 @@ recursa::ast_node! {
     /// Each qualified alternative owns its fixed prefix directly. This keeps the
     /// prefix nonnullable while sharing the complete target grammar after it.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub enum SelectHead {
         DistinctOn(SelectDistinctOnTargets),
         Distinct(SelectDistinctTargets),
@@ -2395,9 +2408,9 @@ recursa::ast_node! {
     /// the nullable `opt_target_list`: `SELECT ALL FROM t` and a bare `SELECT
     /// ALL` are complete.
     #[derive(Debug)]
+    #[pretty(group = none)]
     #[tok(ALL, this)]
     pub struct SelectAllTargets {
-        #[pretty(break_before = soft)]
         pub targets: Option<SelectTargets>,
     }
 }
@@ -2410,9 +2423,9 @@ recursa::ast_node! {
     /// the `opt_all_clause` form, so `SELECT DISTINCT ON (x) FROM t` is a
     /// syntax error.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct SelectDistinctOnTargets {
         pub qualifier: SelectDistinctOn,
-        #[pretty(break_before = soft)]
         pub targets: SelectTargetList,
     }
 }
@@ -2423,9 +2436,9 @@ recursa::ast_node! {
     /// The list is gram.y's `target_list`, as [`SelectDistinctOnTargets`]
     /// describes: `SELECT DISTINCT FROM t` is a syntax error (errors.sql).
     #[derive(Debug)]
+    #[pretty(group = none)]
     #[tok(DISTINCT, this)]
     pub struct SelectDistinctTargets {
-        #[pretty(break_before = soft)]
         pub targets: SelectTargetList,
     }
 }
@@ -2439,6 +2452,7 @@ recursa::ast_node! {
     /// a target item can never start with either keyword, so the three
     /// alternatives stay disjoint on their first token.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub enum SelectTargets {
         Into(SelectIntoTargets),
         Empty(FromClause),
@@ -2452,11 +2466,10 @@ recursa::ast_node! {
     /// gram.y reaches this through the nullable `opt_target_list` followed by a
     /// present `into_clause`; `create_am.sql` exercises the spelling.
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct SelectIntoTargets {
         pub into: boxed!(SelectIntoClause),
-        /// No break hint here: `FromClause` owns the break before `FROM` inside
-        /// its own group, so the boundary is measured with the clause it belongs
-        /// to.
+        #[pretty(break_before = soft)]
         pub from_clause: Option<boxed!(FromClause)>,
     }
 }
@@ -2464,19 +2477,20 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// A nonempty SELECT target list and the clauses that immediately follow it.
     ///
-    /// The group covers the target list together with the clauses that follow it,
-    /// so the decision to put one target per line is made against the width of
-    /// `<targets> FROM <tables>` rather than the targets alone.
+    /// The Node opens no group: the breaks before `INTO` and `FROM` belong to
+    /// the query, as the other clause breaks of [`SelectStmt`] do. The items
+    /// have their own group. When they are too wide for the line, the list
+    /// starts on the line after `SELECT` and puts each item on its own line,
+    /// one level in.
     #[derive(Debug)]
-    #[pretty(group = consistent)]
+    #[pretty(group = none)]
     pub struct SelectTargetList {
         #[sep(COMMA)]
+        #[pretty(group = consistent, indent, break_before = soft)]
         pub items: one_or_many!(SelectItem),
         #[pretty(break_before = soft)]
         pub into: Option<boxed!(SelectIntoClause)>,
-        /// No break hint here: `FromClause` owns the break before `FROM` inside
-        /// its own group, so the boundary is measured with the clause it belongs
-        /// to.
+        #[pretty(break_before = soft)]
         pub from_clause: Option<boxed!(FromClause)>,
     }
 }
@@ -2558,8 +2572,11 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ValuesRow {
         pub open: ParenthesizedOpen,
+        /// Breaks as the column list of an INSERT does.
         #[sep(COMMA)]
+        #[pretty(indent, break_before = soft)]
         pub values: one_or_many!(Expr),
+        #[pretty(break_before = soft)]
         pub close: ParenthesizedClose,
     }
 }
@@ -2572,7 +2589,10 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(VALUES, this)]
     pub struct ValuesBody {
+        /// When the rows are too wide for one line, each further row is on its
+        /// own line, one level in.
         #[sep(COMMA)]
+        #[pretty(indent)]
         pub rows: one_or_many!(ValuesRow),
     }
 }

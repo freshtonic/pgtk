@@ -1,5 +1,2 @@
-SELECT
-    a,
-    b,
-    c,
-    d FROM t;
+SELECT a, b, c, d
+FROM t;

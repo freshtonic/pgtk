@@ -823,7 +823,7 @@ mod tests {
         );
         assert_eq!(
             format_tokens_sql(expr, PrettyConfig::default()).trim(),
-            "JSON('2000-01-01':: TIMESTAMP WITH UNIQUE KEYS)",
+            "JSON('2000-01-01'::TIMESTAMP WITH UNIQUE KEYS)",
         );
     }
 
@@ -2268,10 +2268,10 @@ mod tests {
     #[test]
     fn reject_direct_parenthesized_set_duplicate_limit_offset_clauses() {
         for src in [
-            "(SELECT 1) UNION VALUES(2) LIMIT 1 LIMIT 1",
-            "(SELECT 1) UNION VALUES(2) OFFSET 1 OFFSET 1",
-            "(SELECT 1) UNION VALUES(2) FETCH FIRST 1 ROWS ONLY FETCH FIRST 1 ROWS ONLY",
-            "(SELECT 1) UNION VALUES(2) LIMIT 1 FETCH FIRST 1 ROWS ONLY",
+            "(SELECT 1) UNION VALUES (2) LIMIT 1 LIMIT 1",
+            "(SELECT 1) UNION VALUES (2) OFFSET 1 OFFSET 1",
+            "(SELECT 1) UNION VALUES (2) FETCH FIRST 1 ROWS ONLY FETCH FIRST 1 ROWS ONLY",
+            "(SELECT 1) UNION VALUES (2) LIMIT 1 FETCH FIRST 1 ROWS ONLY",
         ] {
             let lexed = crate::lex(src);
             assert_eq!(lexed.errors().count(), 0, "lex errors in {src:?}");
@@ -2292,12 +2292,12 @@ mod tests {
     fn parse_direct_parenthesized_set_limit_offset_orders_roundtrip() {
         use crate::ast::test_support::roundtrip;
         for src in [
-            "(SELECT 1) UNION VALUES(2) LIMIT 2 OFFSET 3",
-            "(SELECT 1) UNION VALUES(2) OFFSET 3 LIMIT 2",
-            "(SELECT 1) UNION VALUES(2) OFFSET 3 FETCH FIRST 2 ROWS ONLY",
-            "(SELECT 1) UNION VALUES(2) LIMIT 2",
-            "(SELECT 1) UNION VALUES(2) OFFSET 3",
-            "(SELECT 1) UNION VALUES(2) FETCH FIRST 2 ROWS ONLY",
+            "(SELECT 1) UNION VALUES (2) LIMIT 2 OFFSET 3",
+            "(SELECT 1) UNION VALUES (2) OFFSET 3 LIMIT 2",
+            "(SELECT 1) UNION VALUES (2) OFFSET 3 FETCH FIRST 2 ROWS ONLY",
+            "(SELECT 1) UNION VALUES (2) LIMIT 2",
+            "(SELECT 1) UNION VALUES (2) OFFSET 3",
+            "(SELECT 1) UNION VALUES (2) FETCH FIRST 2 ROWS ONLY",
         ] {
             assert_eq!(roundtrip::<Subquery>(src), src);
         }
@@ -3440,8 +3440,8 @@ mod tests {
         use crate::formatter::format_tokens_sql;
         use recursa::PrettyConfig;
 
-        // `a = ANY(SELECT 1)` — comparison with quantified subquery.
-        let src = "a = ANY(SELECT 1)";
+        // `a = ANY (SELECT 1)` — comparison with quantified subquery.
+        let src = "a = ANY (SELECT 1)";
         let lexed = crate::lex(src);
         assert_eq!(lexed.errors().count(), 0, "lex errors in input");
         let mut input = lexed.input();

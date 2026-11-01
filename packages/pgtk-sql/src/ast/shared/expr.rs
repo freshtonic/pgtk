@@ -670,7 +670,6 @@ recursa::ast_node! {
     #[derive(Debug)]
     #[tok(OVER, this)]
     pub struct WindowSpec {
-        #[pretty(break_before = soft)]
         pub body: WindowSpecBody,
     }
 }
@@ -699,7 +698,9 @@ recursa::ast_node! {
     pub struct InlineWindowSpec {
         pub ref_name: Option<literal::WindowRefNameIdent>,
         pub partition_by: Option<WindowPartitionBy>,
+        #[pretty(break_before = soft)]
         pub order_by: Option<crate::ast::dml::select::OrderByClause>,
+        #[pretty(break_before = soft)]
         pub frame: Option<WindowFrameClause>,
     }
 }
@@ -2135,27 +2136,42 @@ recursa::ast_node! {
 
 recursa::ast_node! {
     /// Searched CASE body: `WHEN cond THEN result [...] [ELSE result]`.
+    ///
+    /// The body opens no group: a CASE too wide for one line puts each arm on
+    /// its own line, one level in ([`CaseExpr`]).
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct CaseSearched {
+        #[pretty(indent, break_before = soft)]
         pub first_arm: CaseWhenArm,
+        #[pretty(indent, break_before = soft)]
         pub rest_arms: zero_or_many!(CaseWhenArm),
+        #[pretty(indent, break_before = soft)]
         pub else_clause: Option<CaseElse>,
     }
 }
 
 recursa::ast_node! {
     /// Simple CASE body: `operand WHEN val THEN result [...] [ELSE result]`.
+    ///
+    /// The operand stays on the line of `CASE`; the arms break as in
+    /// [`CaseSearched`].
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub struct CaseSimple {
         pub operand: boxed!(Expr),
+        #[pretty(indent, break_before = soft)]
         pub first_arm: CaseWhenArm,
+        #[pretty(indent, break_before = soft)]
         pub rest_arms: zero_or_many!(CaseWhenArm),
+        #[pretty(indent, break_before = soft)]
         pub else_clause: Option<CaseElse>,
     }
 }
 
 recursa::ast_node! {
     #[derive(Debug)]
+    #[pretty(group = none)]
     pub enum CaseBody {
         Searched(CaseSearched),
         Simple(CaseSimple),
@@ -4270,6 +4286,11 @@ recursa::ast_node! {
     // fails to compile rather than silently growing the hottest typed pool.
     // Raising it is a measured decision, not a reflex.
     #[flat(pool, max_size = 16)]
+    // An expression opens no group of its own, so the breaks before `AND` and
+    // `OR` belong to the clause that holds the condition: a `WHERE` too wide for
+    // one line puts each `AND` on its own line, one level in. Each Node inside an
+    // expression, such as a function call, still has its own group.
+    #[pretty(group = none)]
     pub enum Expr {
         // --- Prefix ---
         /// gram.y:14853 `NOT a_expr` and gram.y:14855 `NOT_LA a_expr %prec NOT`:
@@ -4680,8 +4701,18 @@ recursa::ast_node! {
         /// Must come before `BitXor` (`#`).
         GeomClosest(boxed!(Self), #[tok(HASHHASH, this)] boxed!(Self)),
 
-        Or(boxed!(Self), #[tok(OR, this)] boxed!(Self)),
-        And(boxed!(Self), #[tok(AND, this)] boxed!(Self)),
+        Or(
+            boxed!(Self),
+            #[tok(OR, this)]
+            #[pretty(indent, break_before = soft)]
+            boxed!(Self),
+        ),
+        And(
+            boxed!(Self),
+            #[tok(AND, this)]
+            #[pretty(indent, break_before = soft)]
+            boxed!(Self),
+        ),
         BangEq(boxed!(Self), #[tok(BANGEQ, this)] boxed!(Self)),
         Neq(boxed!(Self), #[tok(NEQ, this)] boxed!(Self)),
         Lte(boxed!(Self), #[tok(LTE, this)] boxed!(Self)),

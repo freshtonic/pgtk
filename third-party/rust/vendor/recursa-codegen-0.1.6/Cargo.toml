@@ -56,28 +56,22 @@ spans = []
 name = "recursa_codegen"
 path = "src/lib.rs"
 
-[dependencies.phf_codegen]
-version = "0.11.3"
-
-[dependencies.prettyplease]
-version = "0.2"
+[dependencies]
+phf_codegen = "0.11.3"
+prettyplease = "0.2"
+quote = "1"
+regex-automata = "0.4"
+regex-syntax = "0.8"
+unicode-ident = "1"
 
 [dependencies.proc-macro2]
 version = "1"
 features = ["span-locations"]
 
-[dependencies.quote]
-version = "1"
-
 [dependencies.recursa-diagrams]
 version = "=0.1.6"
+path = "../recursa-diagrams"
 optional = true
-
-[dependencies.regex-automata]
-version = "0.4"
-
-[dependencies.regex-syntax]
-version = "0.8"
 
 [dependencies.syn]
 version = "2"
@@ -89,11 +83,6 @@ features = [
     "visit-mut",
 ]
 
-[dependencies.unicode-ident]
-version = "1"
-
-[dev-dependencies.roxmltree]
-version = "0.21"
-
-[dev-dependencies.tempfile]
-version = "3"
+[dev-dependencies]
+roxmltree = "0.21"
+tempfile = "3"

@@ -65,6 +65,8 @@ path = "src/lib.rs"
 
 [dependencies.recursa-core]
 version = "=0.1.6"
+path = "../recursa-core"
 
 [dependencies.recursa-macros]
 version = "=0.1.6"
+path = "../recursa-macros"

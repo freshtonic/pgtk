@@ -9,4 +9,5 @@ SELECT
     X'1'
 'F',
     U&'e'
-'f' FROM t;
+'f'
+FROM t;
