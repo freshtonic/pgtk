@@ -487,7 +487,10 @@ async fn legacy_encryption_error() -> Result<(), Box<dyn Error>> {
             let transport = transport.lock().unwrap().take().unwrap();
             async move { Ok::<_, std::io::Error>(transport) }
         })
-        .tls(ClientTlsPolicy::libpq(pgtk_proto::SslMode::Prefer, LegacyTls))
+        .tls(ClientTlsPolicy::libpq(
+            pgtk_proto::SslMode::Prefer,
+            LegacyTls,
+        ))
         .authentication(TrustClientAuthentication)
         .build()
         .map_err(super::debug_error)?;

@@ -1538,7 +1538,8 @@ impl
         if self.rich_rewrites {
             match &mut reconstructed {
                 FrontendMessage::Parse(parse)
-                    if parse.query.as_ref() == b"SELECT 41::int4 /* pgtk_proto_parse_rewrite */" =>
+                    if parse.query.as_ref()
+                        == b"SELECT 41::int4 /* pgtk_proto_parse_rewrite */" =>
                 {
                     parse.query =
                         Bytes::from_static(b"SELECT 42::int4 /* pgtk_proto_parse_rewritten */");

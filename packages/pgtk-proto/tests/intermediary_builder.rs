@@ -1532,7 +1532,9 @@ impl
                 })
             })
             .collect();
-        Ok(pgtk_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
+        Ok(pgtk_proto::BackendBatchOutput::ReplaceOneToOne(
+            replacements,
+        ))
     }
 }
 

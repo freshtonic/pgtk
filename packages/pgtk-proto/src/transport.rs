@@ -806,6 +806,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     ///
     /// Returns an I/O or decoding error, an illegal peer message, a middleware
     /// policy error, or a phase-legal replacement with an invalid wire shape.
+    #[allow(clippy::result_large_err)] // The error keeps the illegal message for the caller.
     pub(crate) async fn receive_frontend_typed<State, Handler>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
@@ -834,6 +835,7 @@ impl<S: AsyncRead + Unpin, Phase, Cleanliness> Conn<Buffered<S, Frontend>, Phase
     /// # Errors
     ///
     /// Returns an I/O, decoding, middleware-policy, or state-validation error.
+    #[allow(clippy::result_large_err)] // The error keeps the illegal message for the caller.
     pub(crate) async fn receive_frontend_wire_with_middleware<State, Handler, ProtocolState>(
         &mut self,
         middleware: &mut Middleware<State, Handler>,
@@ -877,7 +879,7 @@ impl<S: AsyncRead + Unpin, Cleanliness> Conn<Buffered<S, Frontend>, PreStartup, 
                 <PreStartup as PhaseAssociation<Inbound, ClientRole, PreStartupMessage>>::Message,
                 State,
             >,
-    {
+{
         receive_typed::<ClientRole, PreStartup, PreStartupMessage, _, _, _>(
             self.receive_pre_startup_wire(),
             middleware,
@@ -957,7 +959,7 @@ mod tests {
         transport.push(frame).expect("encodable frame");
         assert_eq!(transport.pending(), &[b'S', 0, 0, 0, 4]);
         transport.flush().await.expect("writable transport");
-        assert!(transport.pending().is_empty());
+        assert_eq!(transport.pending(), b"");
         assert_eq!(transport.into_inner().output, [b'S', 0, 0, 0, 4]);
     }
 
@@ -971,7 +973,7 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
-        assert!(transport.pending().is_empty());
+        assert_eq!(transport.pending(), b"");
     }
 
     #[test]

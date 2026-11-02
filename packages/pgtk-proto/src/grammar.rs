@@ -1231,7 +1231,7 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-        assert!(building.into_transport().is_empty());
+        assert_eq!(building.into_transport(), [] as [crate::codec::Frame; 0]);
     }
 
     #[test]

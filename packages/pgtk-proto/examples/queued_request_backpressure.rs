@@ -62,12 +62,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             return Ok(());
         }
         match session.forward_frontend().await {
-            Err(pgtk_proto::ForwardError::Frontend(pgtk_proto::FrontendProjectionError::Capacity(
-                _,
-            ))) => {
+            Err(pgtk_proto::ForwardError::Frontend(
+                pgtk_proto::FrontendProjectionError::Capacity(_),
+            )) => {
                 println!("capacity reached: the second owned request is retained");
             }
-            Ok(pgtk_proto::FrontendForwarding::Forwarded(pgtk_proto::FrontendMessage::Terminate)) => {
+            Ok(pgtk_proto::FrontendForwarding::Forwarded(
+                pgtk_proto::FrontendMessage::Terminate,
+            )) => {
                 return Ok(());
             }
             Ok(_) => unreachable!("capacity one must reject a second outstanding operation"),
@@ -76,7 +78,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             if matches!(
                 session.forward_backend().await?,
-                pgtk_proto::BackendForwarding::Forwarded(pgtk_proto::BackendMessage::ReadyForQuery(_))
+                pgtk_proto::BackendForwarding::Forwarded(
+                    pgtk_proto::BackendMessage::ReadyForQuery(_)
+                )
             ) {
                 break;
             }

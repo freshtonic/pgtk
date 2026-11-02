@@ -6,7 +6,8 @@ use std::{fs, path::Path};
 fn mode_diagrams_use_rustdoc_safe_urls_and_ship_with_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
-    let base = "https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images";
+    let base =
+        "https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images";
 
     for image in [
         "client-mode.svg",

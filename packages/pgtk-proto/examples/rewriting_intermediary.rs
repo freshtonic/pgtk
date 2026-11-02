@@ -40,16 +40,19 @@ impl
         (): &mut (),
         message: FrontendMessage,
     ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
-        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(match message {
-            FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
-                b"select amount from ledger where visible = true",
-            )),
-            FrontendMessage::Parse(mut parse) => {
-                parse.query = Bytes::from_static(b"select amount from ledger where visible = true");
-                FrontendMessage::Parse(parse)
-            }
-            other => other,
-        }))
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(
+            match message {
+                FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
+                    b"select amount from ledger where visible = true",
+                )),
+                FrontendMessage::Parse(mut parse) => {
+                    parse.query =
+                        Bytes::from_static(b"select amount from ledger where visible = true");
+                    FrontendMessage::Parse(parse)
+                }
+                other => other,
+            },
+        ))
     }
     async fn backend(
         &mut self,
@@ -58,13 +61,15 @@ impl
         (): &mut (),
         message: BackendMessage,
     ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
-        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(match message {
-            BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
-                rows.fields[0].name = Bytes::from_static(b"visible_amount");
-                BackendMessage::RowDescription(rows)
-            }
-            other => other,
-        }))
+        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(
+            match message {
+                BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
+                    rows.fields[0].name = Bytes::from_static(b"visible_amount");
+                    BackendMessage::RowDescription(rows)
+                }
+                other => other,
+            },
+        ))
     }
 }
 

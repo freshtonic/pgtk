@@ -463,7 +463,6 @@ impl<'a> HeldBackendMessages<'a> {
         self.bytes
     }
     /// Iterates over messages in receipt order.
-    #[must_use]
     pub fn iter(self) -> impl ExactSizeIterator<Item = &'a crate::codec::BackendMessage> {
         self.messages.iter()
     }
@@ -505,7 +504,6 @@ impl<'a> AttributedBackendMessages<'a> {
 
     /// Iterates over messages and their originating operation identities.
     /// Asynchronous backend messages carry no operation identity.
-    #[must_use]
     pub fn iter(
         &self,
     ) -> impl ExactSizeIterator<Item = (Option<OperationId>, &'a crate::codec::BackendMessage)> + '_

@@ -423,7 +423,8 @@ pub(crate) async fn run_replay(arguments: &[String]) -> Result<(), Box<dyn Error
         sequence: reduced.clone(),
         completed: 0,
         success: false,
-        replay_command: "pgtk-proto-burn-in replay --input reduction.json --output-dir replay".into(),
+        replay_command: "pgtk-proto-burn-in replay --input reduction.json --output-dir replay"
+            .into(),
         reduced_from: Some(original_len),
         resource_checkpoints: Vec::new(),
         lifecycle_evidence: LifecycleEvidence::default(),
