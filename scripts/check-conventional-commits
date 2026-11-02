@@ -5,7 +5,7 @@
 #
 # A subject is `<type>[(<scope>)][!]: <description>`, for example
 # `fix(pgtk-sql): reject a second WITH in CREATE DATABASE`. Merge commits are
-# not checked.
+# not checked, and the commits that a subtree merge brings in are not checked.
 #
 # Usage: scripts/check-conventional-commits <base> [<head>]
 #   CI gives the base branch of the pull request: origin/main.
@@ -18,13 +18,21 @@ head=${2:-HEAD}
 types='feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert'
 pattern="^(${types})(\([a-z0-9][a-z0-9._/-]*\))?!?: [^ ].*"
 
+# A `git subtree add` or `git subtree merge` brings in the history of another repository. Its
+# merge commit has a `git-subtree-split: <commit>` trailer. The commits of that history are not
+# checked.
+imported=()
+while read -r split; do
+  imported+=("^$split")
+done < <(git log --merges --format='%(trailers:key=git-subtree-split,valueonly)' "$base..$head" | grep .)
+
 bad=0
 while IFS=$'\t' read -r sha subject; do
   if [[ ! $subject =~ $pattern ]]; then
     printf 'error: %s is not a conventional commit: %s\n' "${sha:0:8}" "$subject" >&2
     bad=1
   fi
-done < <(git log --no-merges --format='%H%x09%s' "$base..$head")
+done < <(git log --no-merges --format='%H%x09%s' "$base..$head" "${imported[@]}")
 
 if [[ $bad == 1 ]]; then
   cat >&2 <<MSG
