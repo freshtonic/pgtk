@@ -1,6 +1,6 @@
 [package]
 name = "pgtk-analyze"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "PostgreSQL parse analysis in Rust: the types, columns and errors of a statement, with no server"
@@ -48,8 +48,8 @@ since-pg18 = []
 since-pg19 = []
 
 [dependencies]
-pgtk-sql = { version = "0.1.0", path = "../pgtk-sql", default-features = false, features = ["spans"] }
-pgtk-catalog = { version = "0.1.0", path = "../pgtk-catalog" }
+pgtk-sql = { version = "0.1.1", path = "../pgtk-sql", default-features = false, features = ["spans"] }
+pgtk-catalog = { version = "0.1.1", path = "../pgtk-catalog" }
 recursa.workspace = true
 thiserror.workspace = true
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/freshtonic/pgtk/compare/pgtk-catalog-v0.1.0...pgtk-catalog-v0.1.1) - 2026-11-02
+
+### Fixed
+
+- *(pgtk-catalog)* take the load time from the server, so that the Loader runs in wasm32
+
 ## [0.1.0](https://github.com/freshtonic/pgtk/releases/tag/pgtk-catalog-v0.1.0) - 2026-10-28
 
 ### Added

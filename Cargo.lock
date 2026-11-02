@@ -600,7 +600,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "pgtk-analyze"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pgtk-catalog",
  "pgtk-psql",
@@ -615,7 +615,7 @@ dependencies = [
 
 [[package]]
 name = "pgtk-catalog"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pgtk-test-server",
  "postgres",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "pgtk-psql"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "derive_more",
  "pgtk-psql-oracle",
@@ -678,7 +678,7 @@ dependencies = [
 
 [[package]]
 name = "pgtk-sql"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arbitrary",
  "clap",
