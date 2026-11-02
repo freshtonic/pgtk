@@ -299,7 +299,7 @@ impl<S, C> Conn<S, Ready, C> {
     /// Begins extended-query construction and consumes the ready connection.
     ///
     /// ```rust,compile_fail
-    /// use pg_proto::{Conn, auth::Ready};
+    /// use pgtk_proto::{Conn, auth::Ready};
     /// fn use_after_transition<S, C>(conn: Conn<S, Ready, C>) {
     ///     let _building = conn.begin_extended();
     ///     let _again = conn.begin_extended();
@@ -341,7 +341,7 @@ impl<S> Conn<S, Ready, Pristine> {
     /// Releases only a statically pristine, ready connection to a pool.
     ///
     /// ```rust,compile_fail
-    /// use pg_proto::{Conn, Dirty, auth::Ready};
+    /// use pgtk_proto::{Conn, Dirty, auth::Ready};
     /// fn cannot_release<S>(conn: Conn<S, Ready, Dirty>) {
     ///     let _transport = conn.release();
     /// }
@@ -396,7 +396,7 @@ impl<S, C> Conn<S, Building, C> {
     ///
     /// ```rust,compile_fail
     /// use bytes::Bytes;
-    /// use pg_proto::{Conn, session::Building};
+    /// use pgtk_proto::{Conn, session::Building};
     /// fn execute_without_bind<S, C>(conn: Conn<S, Building, C>) {
     ///     let _ = conn.push_execute(Bytes::new());
     /// }
@@ -544,7 +544,7 @@ impl<S, C> Conn<S, CopyIn, C> {
     /// Query is unavailable in this nested COPY session.
     ///
     /// ```rust,compile_fail
-    /// use pg_proto::{Conn, session::CopyIn};
+    /// use pgtk_proto::{Conn, session::CopyIn};
     /// fn query_during_copy<S, C>(conn: Conn<S, CopyIn, C>) {
     ///     let _ = conn.push_query(b"select 1");
     /// }

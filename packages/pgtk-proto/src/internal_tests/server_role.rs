@@ -1,7 +1,7 @@
 //! Integration coverage for the typed client-facing server role.
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     Conn, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
     ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
     ServerTlsPolicy,
@@ -30,7 +30,7 @@ impl ServerAuthenticationProvider for ScramAuthentication {
             server: ScramServer::with_parameters(
                 b"secret",
                 b"builder scram salt".to_vec(),
-                pg_proto::scram::DEFAULT_ITERATIONS,
+                pgtk_proto::scram::DEFAULT_ITERATIONS,
                 ServerChannelBinding::None,
             )
             .unwrap(),
@@ -143,7 +143,7 @@ async fn builder_server_completes_recursive_scram_with_an_independent_client() {
             server: ScramServer::with_parameters(
                 b"secret",
                 b"builder scram salt".to_vec(),
-                pg_proto::scram::DEFAULT_ITERATIONS,
+                pgtk_proto::scram::DEFAULT_ITERATIONS,
                 ServerChannelBinding::None,
             )
             .unwrap(),
@@ -251,8 +251,8 @@ where
             }
         }
     };
-    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, message, .. } =
-        startup.validate_protocol(message, pg_proto::startup::ProtocolVersion::V3_2)
+    let pgtk_proto::server_auth::ServerProtocolOffer::Supported { conn, message, .. } =
+        startup.validate_protocol(message, pgtk_proto::startup::ProtocolVersion::V3_2)
     else {
         return Err(std::io::Error::other("unsupported startup protocol"));
     };
@@ -287,7 +287,7 @@ where
 }
 
 async fn complete_server_startup<S>(
-    auth: Conn<Buffered<S, pg_proto::codec::Frontend>, pg_proto::server_auth::ServerAuth>,
+    auth: Conn<Buffered<S, pgtk_proto::codec::Frontend>, pgtk_proto::server_auth::ServerAuth>,
 ) -> std::io::Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
@@ -326,8 +326,8 @@ where
             }
         }
     };
-    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } =
-        startup.validate_protocol(message, pg_proto::startup::ProtocolVersion::V3_2)
+    let pgtk_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } =
+        startup.validate_protocol(message, pgtk_proto::startup::ProtocolVersion::V3_2)
     else {
         return Err(std::io::Error::other("unsupported startup protocol"));
     };
@@ -346,7 +346,7 @@ where
     let verifier = ScramServer::with_parameters(
         b"secret",
         b"independent client salt".to_vec(),
-        pg_proto::scram::DEFAULT_ITERATIONS,
+        pgtk_proto::scram::DEFAULT_ITERATIONS,
         ServerChannelBinding::None,
     )?;
     let client_first = initial_response
@@ -408,9 +408,9 @@ where
         Some(&Bytes::from_static(b"proxy_test"))
     );
 
-    let pg_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } = startup
+    let pgtk_proto::server_auth::ServerProtocolOffer::Supported { conn, .. } = startup
         .0
-        .validate_protocol(startup.1, pg_proto::startup::ProtocolVersion::V3_2)
+        .validate_protocol(startup.1, pgtk_proto::startup::ProtocolVersion::V3_2)
     else {
         return Err(std::io::Error::other("unsupported startup protocol"));
     };
@@ -477,7 +477,7 @@ where
 
 fn abort_pre_startup_offer(
     offer: PreStartupOffer<
-        Buffered<impl AsyncRead + AsyncWrite + Unpin, pg_proto::codec::Frontend>,
+        Buffered<impl AsyncRead + AsyncWrite + Unpin, pgtk_proto::codec::Frontend>,
     >,
 ) {
     match offer {

@@ -8,7 +8,7 @@ This deliberately avoids a crate-owned `Hold` variant and keeps `Pipeline` paylo
 
 ## Target and constraints
 
-This proposal is based on `pg-proto-v0.8.0`, where:
+This proposal is based on `pgtk-proto-v0.8.0`, where:
 
 - `IntermediaryMiddleware::backend` is already async and fallible;
 - `BackendMiddlewareOutput` already supports `Forward`, `Expand`, and `Suppress`;

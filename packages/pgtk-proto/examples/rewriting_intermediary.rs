@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy,
     ConnectTarget, FrontendMessage, InitialServerContext, Intermediary, IntermediaryMiddleware,
     Server, ServerConnectionContext, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
@@ -39,8 +39,8 @@ impl
         _: &ClientConnectionContext<()>,
         (): &mut (),
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
-        Ok(pg_proto::FrontendMiddlewareOutput::Forward(match message {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(match message {
             FrontendMessage::Query(_) => FrontendMessage::Query(Bytes::from_static(
                 b"select amount from ledger where visible = true",
             )),
@@ -57,8 +57,8 @@ impl
         _: &ClientConnectionContext<()>,
         (): &mut (),
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
-        Ok(pg_proto::BackendMiddlewareOutput::Forward(match message {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
+        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(match message {
             BackendMessage::RowDescription(mut rows) if !rows.fields.is_empty() => {
                 rows.fields[0].name = Bytes::from_static(b"visible_amount");
                 BackendMessage::RowDescription(rows)
@@ -112,7 +112,7 @@ async fn main() {
         println!("forwarded rewritten message: {forwarded:?}");
         if matches!(
             forwarded,
-            pg_proto::ForwardedMessage::Frontend(FrontendMessage::Terminate)
+            pgtk_proto::ForwardedMessage::Frontend(FrontendMessage::Terminate)
         ) {
             break;
         }

@@ -2,7 +2,7 @@
 
 use std::{convert::Infallible, env, error::Error, io, net::SocketAddr, sync::Arc};
 
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, BoundedPipeline, CancellationPolicy, Client, ClientConnectionContext,
     ClientTlsPolicy, ConnectTarget, ForwardedMessage, FrontendMessage, InitialServerContext,
     Intermediary, IntermediaryMiddleware, Server, ServerConnectionContext, ServerIdentity,
@@ -42,9 +42,9 @@ impl
         _: &ClientConnectionContext<()>,
         state: &mut ProtocolState,
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         println!("[{}] client -> server: {message:?}", state.connection);
-        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
     async fn backend(
@@ -53,9 +53,9 @@ impl
         _: &ClientConnectionContext<()>,
         state: &mut ProtocolState,
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         println!("[{}] server -> client: {message:?}", state.connection);
-        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -113,11 +113,11 @@ impl ExampleUpstream {
                 _container: None,
             });
         }
-        let version = env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
+        let version = env::var("PGTK_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
         if !matches!(version.as_str(), "14" | "15" | "16" | "17" | "18") {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "PG_PROTO_POSTGRES_VERSION must be 14, 15, 16, 17, or 18",
+                "PGTK_PROTO_POSTGRES_VERSION must be 14, 15, 16, 17, or 18",
             )
             .into());
         }

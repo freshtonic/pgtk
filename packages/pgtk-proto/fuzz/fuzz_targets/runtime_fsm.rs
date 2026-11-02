@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use pg_proto::{Client, Intermediary, Server};
+use pgtk_proto::{Client, Intermediary, Server};
 
 fuzz_target!(|data: &[u8]| {
     match data.first().map(|byte| byte % 3) {

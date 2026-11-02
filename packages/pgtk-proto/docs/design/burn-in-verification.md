@@ -3,7 +3,7 @@
 ## Objective
 
 Build a runnable verification system that drives an independent Rust SQL adapter
-through pg-proto's complete public intermediary topology into populated, real
+through pgtk-proto's complete public intermediary topology into populated, real
 PostgreSQL databases:
 
 ```text
@@ -20,7 +20,7 @@ steady-state performance without conflating these different claims.
 
 ## Verification modes
 
-One dedicated `pg-proto-burn-in` workspace binary provides these public commands:
+One dedicated `pgtk-proto-burn-in` workspace binary provides these public commands:
 
 - `conformance`: finite scenarios with deterministic coverage and correctness
   assertions;

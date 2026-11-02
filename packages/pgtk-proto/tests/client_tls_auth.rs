@@ -9,7 +9,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     Client, ClientAuthentication, ClientAuthenticationChallenge, ClientAuthenticationResponse,
     ClientAuthenticationSession, ClientTlsConfig, ClientTlsPolicy, ClientTlsProvider, ConnectError,
     ConnectTarget, SslMode, StartupParameters, TrustClientAuthentication,

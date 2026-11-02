@@ -7,7 +7,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, Client, ClientAuthentication, ClientAuthenticationChallenge,
     ClientAuthenticationResponse, ClientAuthenticationSession, ClientConnectionContext,
     ClientInitialContext, ClientMiddleware, ClientTlsPolicy, ClientTlsStatus, ConnectTarget,
@@ -70,9 +70,9 @@ impl<Evidence> ClientMiddleware<Vec<String>, ClientConnectionContext<Evidence>> 
         &mut self,
         context: &ClientConnectionContext<Evidence>,
         state: &mut Vec<String>,
-        mut message: pg_proto::StartupMessage,
-    ) -> pg_proto::StartupMessage {
-        assert_eq!(context.tls(), Some(pg_proto::ClientTlsStatus::Plaintext));
+        mut message: pgtk_proto::StartupMessage,
+    ) -> pgtk_proto::StartupMessage {
+        assert_eq!(context.tls(), Some(pgtk_proto::ClientTlsStatus::Plaintext));
         assert!(context.identity_if_known().is_none());
         state.push(format!("{}:startup", self.id));
         message.parameters.insert(
@@ -124,7 +124,7 @@ async fn peer(mut io: DuplexStream, expected_application_name: &'static [u8]) {
     let length = io.read_u32().await.unwrap();
     let mut body = vec![0; length as usize - 4];
     io.read_exact(&mut body).await.unwrap();
-    let startup = pg_proto::StartupMessage::decode(
+    let startup = pgtk_proto::StartupMessage::decode(
         [length.to_be_bytes().as_slice(), body.as_slice()]
             .concat()
             .into(),

@@ -13,7 +13,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     CancelKey, CancellationPolicy, CancellationRoute, Client, ClientTlsPolicy, ConnectTarget,
     EstablishmentFailurePolicy, InitialServerContext, Intermediary, IntermediaryAccept,
     IntermediaryCancellationRegistry, PreStartupMessage, Server, ServerConnectionContext,
@@ -87,12 +87,12 @@ struct ObserveCancel(Rc<RefCell<Vec<&'static str>>>);
 impl
     ServerMiddleware<
         Vec<&'static str>,
-        ServerConnectionContext<&'static str, pg_proto::TrustIdentity>,
+        ServerConnectionContext<&'static str, pgtk_proto::TrustIdentity>,
     > for ObserveCancel
 {
     fn pre_startup(
         &mut self,
-        _: &ServerConnectionContext<&'static str, pg_proto::TrustIdentity>,
+        _: &ServerConnectionContext<&'static str, pgtk_proto::TrustIdentity>,
         state: &mut Vec<&'static str>,
         message: PreStartupMessage,
     ) -> PreStartupMessage {
@@ -102,10 +102,10 @@ impl
     }
     fn cancellation(
         &mut self,
-        _: &ServerConnectionContext<&'static str, pg_proto::TrustIdentity>,
+        _: &ServerConnectionContext<&'static str, pgtk_proto::TrustIdentity>,
         state: &mut Vec<&'static str>,
-        request: pg_proto::CancellationRequest,
-    ) -> pg_proto::CancellationRequest {
+        request: pgtk_proto::CancellationRequest,
+    ) -> pgtk_proto::CancellationRequest {
         state.push("cancellation");
         self.0.borrow_mut().push("cancellation");
         request
@@ -114,17 +114,17 @@ impl
 
 #[derive(Clone, Copy)]
 struct RewriteObservedKey;
-impl pg_proto::ClientMiddleware<Vec<&'static str>, pg_proto::ClientConnectionContext<()>>
+impl pgtk_proto::ClientMiddleware<Vec<&'static str>, pgtk_proto::ClientConnectionContext<()>>
     for RewriteObservedKey
 {
     fn backend(
         &mut self,
-        _: &pg_proto::ClientConnectionContext<()>,
+        _: &pgtk_proto::ClientConnectionContext<()>,
         _: &mut Vec<&'static str>,
-        message: pg_proto::BackendMessage,
-    ) -> pg_proto::BackendMessage {
-        if matches!(message, pg_proto::BackendMessage::BackendKeyData { .. }) {
-            pg_proto::BackendMessage::BackendKeyData {
+        message: pgtk_proto::BackendMessage,
+    ) -> pgtk_proto::BackendMessage {
+        if matches!(message, pgtk_proto::BackendMessage::BackendKeyData { .. }) {
+            pgtk_proto::BackendMessage::BackendKeyData {
                 process_id: 999,
                 secret_key: Bytes::from_static(b"middleware-key"),
             }
@@ -159,7 +159,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
         .authentication(TrustServerAuthentication)
         .middleware({
             let observed = observed.clone();
-            move |_: &ServerConnectionContext<&'static str, pg_proto::TrustIdentity>| {
+            move |_: &ServerConnectionContext<&'static str, pgtk_proto::TrustIdentity>| {
                 ObserveCancel(observed.clone())
             }
         })
@@ -175,7 +175,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
         })
         .tls(ClientTlsPolicy::Disabled)
         .authentication(TrustClientAuthentication)
-        .middleware(|_: &pg_proto::ClientInitialContext| RewriteObservedKey)
+        .middleware(|_: &pgtk_proto::ClientInitialContext| RewriteObservedKey)
         .build()
         .unwrap();
     let intermediary = Intermediary::builder()
@@ -189,8 +189,8 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     let downstream_task = tokio::spawn(async move {
         downstream
             .write_all(
-                &pg_proto::StartupMessage {
-                    version: pg_proto::ProtocolVersion::V3_2,
+                &pgtk_proto::StartupMessage {
+                    version: pgtk_proto::ProtocolVersion::V3_2,
                     parameters: std::iter::once((
                         Bytes::from_static(b"user"),
                         Bytes::from_static(b"alice"),
@@ -289,7 +289,7 @@ async fn records_rewrites_resolves_without_routing_and_detaches() {
     };
     assert!(matches!(
         error,
-        pg_proto::IntermediaryAcceptError::CancellationRejected
+        pgtk_proto::IntermediaryAcceptError::CancellationRejected
     ));
     assert_eq!(resolver_calls.load(Ordering::Relaxed), 1);
 }
@@ -309,7 +309,7 @@ fn conservative_failure_and_rejection_are_explicit() {
             .cancellation(CancellationPolicy::Forward)
             .build()
             .unwrap_err(),
-        pg_proto::IntermediaryBuildError::MissingCancellationPolicy,
+        pgtk_proto::IntermediaryBuildError::MissingCancellationPolicy,
     );
 }
 
@@ -324,7 +324,7 @@ impl std::error::Error for SecretError {}
 
 #[test]
 fn every_public_establishment_error_layer_has_a_safe_summary() {
-    type Error = pg_proto::IntermediaryAcceptError<
+    type Error = pgtk_proto::IntermediaryAcceptError<
         SecretError,
         SecretError,
         SecretError,
@@ -334,7 +334,7 @@ fn every_public_establishment_error_layer_has_a_safe_summary() {
     >;
     let errors = [
         Error::Server(SecretError),
-        Error::StartupRoute(pg_proto::StartupResolutionError::Resolver(SecretError)),
+        Error::StartupRoute(pgtk_proto::StartupResolutionError::Resolver(SecretError)),
         Error::CancellationRejected,
         Error::AuthenticatedRoute(SecretError),
         Error::Client(SecretError),
@@ -350,16 +350,16 @@ fn every_public_establishment_error_layer_has_a_safe_summary() {
 
 #[derive(Clone)]
 struct CountDiagnostic(Rc<RefCell<usize>>);
-impl ServerMiddleware<(), ServerConnectionContext<(), pg_proto::TrustIdentity>>
+impl ServerMiddleware<(), ServerConnectionContext<(), pgtk_proto::TrustIdentity>>
     for CountDiagnostic
 {
     fn backend(
         &mut self,
-        _: &ServerConnectionContext<(), pg_proto::TrustIdentity>,
+        _: &ServerConnectionContext<(), pgtk_proto::TrustIdentity>,
         (): &mut (),
-        message: pg_proto::BackendMessage,
-    ) -> pg_proto::BackendMessage {
-        if matches!(message, pg_proto::BackendMessage::ErrorResponse(_)) {
+        message: pgtk_proto::BackendMessage,
+    ) -> pgtk_proto::BackendMessage {
+        if matches!(message, pgtk_proto::BackendMessage::ErrorResponse(_)) {
             *self.0.borrow_mut() += 1;
         }
         message
@@ -375,7 +375,7 @@ async fn safe_diagnostic_is_fixed_redacted_and_intercepted_once() {
         .authentication(TrustServerAuthentication)
         .middleware({
             let count = count.clone();
-            move |_: &ServerConnectionContext<(), pg_proto::TrustIdentity>| {
+            move |_: &ServerConnectionContext<(), pgtk_proto::TrustIdentity>| {
                 CountDiagnostic(count.clone())
             }
         })
@@ -396,8 +396,8 @@ async fn safe_diagnostic_is_fixed_redacted_and_intercepted_once() {
         .build()
         .unwrap();
     peer.write_all(
-        &pg_proto::StartupMessage {
-            version: pg_proto::ProtocolVersion::V3_2,
+        &pgtk_proto::StartupMessage {
+            version: pgtk_proto::ProtocolVersion::V3_2,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),

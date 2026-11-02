@@ -1,7 +1,7 @@
 //! Minimal PostgreSQL-compatible server backed by an in-memory result set.
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, DataRow, FieldDescription, FrontendMessage, RowDescription, Server,
     ServerAccept, ServerConnection, ServerTlsPolicy, TransactionStatus, TrustServerAuthentication,
 };

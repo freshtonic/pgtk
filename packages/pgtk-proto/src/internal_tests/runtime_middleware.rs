@@ -3,7 +3,7 @@
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     Server, ServerAccept, ServerConnectionContext, ServerMiddleware, ServerTlsPolicy,
     TrustIdentity, TrustServerAuthentication,
     codec::FrontendMessage,

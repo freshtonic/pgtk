@@ -2,7 +2,7 @@
 
 Status: accepted
 
-pg-proto will verify its complete public intermediary topology with a dedicated,
+pgtk-proto will verify its complete public intermediary topology with a dedicated,
 multi-process harness rather than one monolithic integration test. A finite
 conformance mode will measure stable generated protocol-transition coverage,
 while duration-based soak modes reuse the proven scenarios to detect retention

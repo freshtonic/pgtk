@@ -49,7 +49,7 @@ the strongest result of the experiment. The public `Hold` spelling is less
 important than the ownership transfer it represents.
 
 The cost predicted by the paper design remains. Teardown becomes fallible or must
-return the hold explicitly, and pg-proto must implement limits, atomic projection,
+return the hold explicitly, and pgtk-proto must implement limits, atomic projection,
 cancellation guards, and barrier handling.
 
 ### Caller-defined connection-state buffering
@@ -60,7 +60,7 @@ decision, then drains that state at the barrier. It naturally supports
 application-specific row representations and teardown already recovers the state.
 
 The contract-violation scenario exposed its weakness. Middleware can report that
-an input was retained without inserting it into state. From pg-proto's side the
+an input was retained without inserting it into state. From pgtk-proto's side the
 decision is indistinguishable from a correct retention, yet the ownership
 invariant fails immediately. The reverse error—storing a row while returning
 `Suppress`—would recreate the double-projection problem when the stored row is
@@ -135,7 +135,7 @@ cardinality can be checked against the authoritative input span. A release must:
 
 Keep application-derived batch data—cryptographic workspaces, decrypted values,
 tenant facts, and spill handles—in caller-defined connection state. Keep the
-authoritative uncommitted `BackendMessage` values in pg-proto. This hybrid assigns
+authoritative uncommitted `BackendMessage` values in pgtk-proto. This hybrid assigns
 each owner the facts it can enforce.
 
 Do not use empty `Expand` as retention, and do not require `Expand` for the

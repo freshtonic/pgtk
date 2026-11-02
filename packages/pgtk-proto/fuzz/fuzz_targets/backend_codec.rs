@@ -5,7 +5,7 @@
 use std::sync::{Arc, Mutex};
 
 use libfuzzer_sys::fuzz_target;
-use pg_proto::{
+use pgtk_proto::{
     Client, ClientTlsPolicy, ConnectTarget, StartupParameters, TrustClientAuthentication,
 };
 use tokio::io::{AsyncWriteExt as _, duplex};

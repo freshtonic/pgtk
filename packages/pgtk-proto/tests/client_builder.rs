@@ -1,6 +1,6 @@
 //! Public behavioural tests for the reusable client-role builder.
 
-use pg_proto::{
+use pgtk_proto::{
     BuildError, Client, ClientTlsPolicy, ConnectTarget, ProtocolLimits, StartupParameters,
     TrustClientAuthentication,
 };
@@ -61,7 +61,7 @@ async fn client_establishes_an_operational_session_and_tears_down_all_parts() {
         let length = peer_io.read_u32().await.unwrap();
         let mut body = vec![0; usize::try_from(length).unwrap() - 4];
         peer_io.read_exact(&mut body).await.unwrap();
-        let startup = pg_proto::StartupMessage::decode(
+        let startup = pgtk_proto::StartupMessage::decode(
             [length.to_be_bytes().as_slice(), body.as_slice()]
                 .concat()
                 .into(),
@@ -137,20 +137,20 @@ async fn client_establishes_an_operational_session_and_tears_down_all_parts() {
         .unwrap();
     assert!(matches!(
         connection.receive_wire().await.unwrap(),
-        pg_proto::BackendMessage::ParameterStatus { name, value }
+        pgtk_proto::BackendMessage::ParameterStatus { name, value }
             if name == "server_version" && value == "test"
     ));
     let (connection, responses) = connection.simple_query(b"SELECT 1").await.unwrap();
     assert!(matches!(
         responses.as_slice(),
         [
-            pg_proto::BackendMessage::CommandComplete(tag),
-            pg_proto::BackendMessage::ReadyForQuery(_)
+            pgtk_proto::BackendMessage::CommandComplete(tag),
+            pgtk_proto::BackendMessage::ReadyForQuery(_)
         ] if tag == "SELECT 1"
     ));
     let (_transport, state, handler, context) = connection.into_parts();
     assert_eq!(state, ["caller-state"]);
-    assert_eq!(handler, pg_proto::IdentityHandler);
+    assert_eq!(handler, pgtk_proto::IdentityHandler);
     assert_eq!(context.target().name(), "in-memory");
     peer.await.unwrap();
 }
@@ -184,7 +184,7 @@ async fn missing_startup_user_is_a_structured_pre_network_error() {
         .authentication(TrustClientAuthentication)
         .build()
         .unwrap();
-    let Err(pg_proto::ConnectError::Startup(error)) = client
+    let Err(pgtk_proto::ConnectError::Startup(error)) = client
         .connect(
             ConnectTarget::new("never-connected"),
             StartupParameters::default(),
@@ -194,7 +194,7 @@ async fn missing_startup_user_is_a_structured_pre_network_error() {
     else {
         panic!("missing startup user was not reported structurally")
     };
-    assert_eq!(error, pg_proto::StartupParameterError::MissingUser);
+    assert_eq!(error, pgtk_proto::StartupParameterError::MissingUser);
     assert!(!connector_called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
@@ -207,7 +207,7 @@ async fn connector_errors_may_borrow_without_global_concurrency_or_static_bounds
         .authentication(TrustClientAuthentication)
         .build()
         .unwrap();
-    let Err(pg_proto::ConnectError::Connector(error)) = client
+    let Err(pgtk_proto::ConnectError::Connector(error)) = client
         .connect(
             ConnectTarget::new("borrowed"),
             StartupParameters::new("alice"),

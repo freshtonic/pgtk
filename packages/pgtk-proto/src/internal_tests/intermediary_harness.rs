@@ -1,7 +1,7 @@
 //! Integration coverage for composing independently typed proxy sides.
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     cancel::{CancelKeyMap, CancelKeyRegistry},
     codec::{FrontendMessage, Parse},
     demux::CancelKey,

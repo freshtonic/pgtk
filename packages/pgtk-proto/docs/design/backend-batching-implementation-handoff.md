@@ -2,7 +2,7 @@
 
 ## Objective
 
-Widen pg-proto's builder-only intermediary interface so CipherStash can retain
+Widen pgtk-proto's builder-only intermediary interface so CipherStash can retain
 multiple PostgreSQL `DataRow` messages, transform them asynchronously as a batch,
 then forward the same number of replacement rows in original order. Each source
 and replacement must affect protocol state exactly once.
@@ -27,7 +27,7 @@ Read these sources before editing:
 - `docs/adr/0002-proxy-interception-boundary.md` requires wire receipt, policy,
   and session advancement to remain separate.
 
-The repository is currently at pg-proto 0.8.0. The design documents are untracked
+The repository is currently at pgtk-proto 0.8.0. The design documents are untracked
 in the working tree at the time of this handoff; preserve them when creating the
 implementation branch.
 
@@ -132,7 +132,7 @@ connection retains the post-client-role-interception source in a private pending
 slot and passes a clone to the existing owned-message hook. If the hook returns
 `Hold`, move the authoritative pending source into the hold. If the future is
 cancelled, the source remains in the connection. Do not require middleware to
-return the authoritative message it is asking pg-proto to retain.
+return the authoritative message it is asking pgtk-proto to retain.
 
 Add explicit builder configuration for non-zero message and byte limits. No
 implicit unbounded hold is acceptable. Existing configurations that never return

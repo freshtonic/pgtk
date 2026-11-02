@@ -1,4 +1,4 @@
-use pg_proto::{
+use pgtk_proto::{
     codec::FrontendMessage,
     grammar::backend::{BuildingExternalMessage, ReadyExternalMessage},
 };

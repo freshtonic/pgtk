@@ -1,6 +1,6 @@
 //! Complete example of backpressure for queued requests.
 
-use pg_proto::{
+use pgtk_proto::{
     BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget,
     InitialServerContext, Intermediary, Server, ServerTlsPolicy, StartupParameters,
     StartupRouteResolver, TrustClientAuthentication, TrustServerAuthentication,
@@ -57,17 +57,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         if matches!(
             session.forward_frontend().await?,
-            pg_proto::FrontendForwarding::Forwarded(pg_proto::FrontendMessage::Terminate)
+            pgtk_proto::FrontendForwarding::Forwarded(pgtk_proto::FrontendMessage::Terminate)
         ) {
             return Ok(());
         }
         match session.forward_frontend().await {
-            Err(pg_proto::ForwardError::Frontend(pg_proto::FrontendProjectionError::Capacity(
+            Err(pgtk_proto::ForwardError::Frontend(pgtk_proto::FrontendProjectionError::Capacity(
                 _,
             ))) => {
                 println!("capacity reached: the second owned request is retained");
             }
-            Ok(pg_proto::FrontendForwarding::Forwarded(pg_proto::FrontendMessage::Terminate)) => {
+            Ok(pgtk_proto::FrontendForwarding::Forwarded(pgtk_proto::FrontendMessage::Terminate)) => {
                 return Ok(());
             }
             Ok(_) => unreachable!("capacity one must reject a second outstanding operation"),
@@ -76,7 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loop {
             if matches!(
                 session.forward_backend().await?,
-                pg_proto::BackendForwarding::Forwarded(pg_proto::BackendMessage::ReadyForQuery(_))
+                pgtk_proto::BackendForwarding::Forwarded(pgtk_proto::BackendMessage::ReadyForQuery(_))
             ) {
                 break;
             }

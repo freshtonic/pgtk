@@ -1,4 +1,4 @@
-use pg_proto::{
+use pgtk_proto::{
     ClientConnection, ClientConnectionContext, ClientMiddleware, ConnectionClean,
 };
 use tokio::io::{AsyncRead, AsyncWrite};

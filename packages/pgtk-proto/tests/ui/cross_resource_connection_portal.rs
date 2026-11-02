@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pg_proto::{Conn, auth::Ready, resources::with_connection_resources};
+use pgtk_proto::{Conn, auth::Ready, resources::with_connection_resources};
 
 fn cross_connections(first: Conn<(), Ready>, second: Conn<(), Ready>) {
     with_connection_resources(first.begin_extended(), |first| {

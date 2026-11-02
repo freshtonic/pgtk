@@ -1,7 +1,7 @@
 //! Offline protocol coverage using sanitised recorded wire fixtures.
 
 use bytes::BytesMut;
-use pg_proto::codec::{
+use pgtk_proto::codec::{
     Authentication, Backend, BackendMessage, Frontend, FrontendMessage, PgCodec,
 };
 use tokio_util::codec::Decoder;
@@ -101,7 +101,7 @@ fn fixtures(input: &str) -> impl Iterator<Item = Fixture<'_>> {
     })
 }
 
-fn decode<D: pg_proto::codec::Direction>(hex: &str) -> D::Message {
+fn decode<D: pgtk_proto::codec::Direction>(hex: &str) -> D::Message {
     let mut bytes = BytesMut::from(hex_bytes(hex).as_slice());
     let message = PgCodec::<D>::default()
         .decode(&mut bytes)

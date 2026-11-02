@@ -1,4 +1,4 @@
-use pg_proto::{ClientConnectionContext, ClientMiddleware, FrontendMessage};
+use pgtk_proto::{ClientConnectionContext, ClientMiddleware, FrontendMessage};
 
 struct Handler;
 struct ExpectedState;

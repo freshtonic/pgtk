@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 
-use pg_proto::{
+use pgtk_proto::{
     CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext, Intermediary,
     Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver, TrustClientAuthentication,
     TrustServerAuthentication,
@@ -59,7 +59,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_session();
     while !matches!(
         session.forward_next().await?,
-        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
+        pgtk_proto::ForwardedMessage::Frontend(pgtk_proto::FrontendMessage::Terminate)
     ) {}
     Ok(())
 }

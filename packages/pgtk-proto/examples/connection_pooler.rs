@@ -1,6 +1,6 @@
 //! Connection-pool release policy driven by protocol and cleanliness evidence.
 
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, Client, ClientConnection, ClientTlsPolicy, ConnectTarget, ConnectionChanged,
     ConnectionClean, StartupParameters, TransactionStatus, TrustClientAuthentication,
 };

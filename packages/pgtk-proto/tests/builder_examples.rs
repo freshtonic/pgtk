@@ -6,13 +6,13 @@ use std::{fs, path::Path};
 fn shipped_examples_do_not_import_legacy_protocol_internals() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("examples");
     let forbidden = [
-        "pg_proto::Conn",
-        "pg_proto::grammar",
-        "pg_proto::intermediary",
-        "pg_proto::middleware",
-        "pg_proto::pipeline",
-        "pg_proto::pre_startup",
-        "pg_proto::transport",
+        "pgtk_proto::Conn",
+        "pgtk_proto::grammar",
+        "pgtk_proto::intermediary",
+        "pgtk_proto::middleware",
+        "pgtk_proto::pipeline",
+        "pgtk_proto::pre_startup",
+        "pgtk_proto::transport",
         "Conn,",
         "grammar::{",
         "SessionPair",

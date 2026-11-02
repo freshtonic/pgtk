@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use pg_proto::{DisabledServerTls, Server, ServerProtocolLimits, TrustServerAuthentication};
+use pgtk_proto::{DisabledServerTls, Server, ServerProtocolLimits, TrustServerAuthentication};
 use tokio::io::{AsyncWriteExt as _, duplex};
 
 fuzz_target!(|data: &[u8]| {

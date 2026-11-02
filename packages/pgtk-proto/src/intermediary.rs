@@ -167,7 +167,7 @@ impl<Downstream, Upstream, Policy: PipelinePolicy> SessionPair<Downstream, Upstr
 
     /// Runs custom synchronous policy with mutable access to both sides.
     ///
-    /// The message and result types are chosen by downstream code; `pg-proto`
+    /// The message and result types are chosen by downstream code; `pgtk-proto`
     /// neither prescribes a rewrite policy nor advances either session implicitly.
     /// This is a low-level escape hatch: prefer
     /// [`crate::middleware::Middleware::intercept_checked`] when rewriting wire

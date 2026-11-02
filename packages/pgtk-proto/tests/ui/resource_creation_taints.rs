@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pg_proto::{Conn, Pristine, auth::Ready, codec::Parse, session::Building};
+use pgtk_proto::{Conn, Pristine, auth::Ready, codec::Parse, session::Building};
 
 fn require_pristine<S>(_: Conn<S, Building, Pristine>) {}
 

@@ -443,13 +443,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "pg-proto"
+name = "pgtk-proto"
 version = "0.10.3"
 dependencies = [
  "base64 0.23.1",
  "bytes",
  "hmac",
- "pg-proto-fsm",
+ "pgtk-proto-fsm",
  "postgres-protocol",
  "rand",
  "rustls",
@@ -464,7 +464,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg-proto-fsm"
+name = "pgtk-proto-fsm"
 version = "0.10.3"
 dependencies = [
  "proc-macro2",
@@ -474,12 +474,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "pg-proto-fuzz"
+name = "pgtk-proto-fuzz"
 version = "0.0.0"
 dependencies = [
  "bytes",
  "libfuzzer-sys",
- "pg-proto",
+ "pgtk-proto",
  "tokio",
  "tokio-util",
 ]

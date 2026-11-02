@@ -9,7 +9,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: pg-proto version
+      label: pgtk-proto version
       placeholder: 0.2.0
     validations:
       required: true

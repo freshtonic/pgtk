@@ -1,6 +1,6 @@
 use std::convert::Infallible;
 
-use pg_proto::{
+use pgtk_proto::{
     grammar::{backend, frontend},
     middleware::{ServerRole, TypedBackendMessage, TypedMiddleware},
 };

@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     codec::{
         BackendMessage, Bind, Close, CopyResponse, DataRow, Describe, DescribeTarget,
         DiagnosticResponse, Execute, FrontendMessage, Parse, TransactionStatus,
@@ -62,7 +62,7 @@ fn error() -> BackendMessage {
     BackendMessage::ErrorResponse(DiagnosticResponse { fields: vec![] })
 }
 
-fn forwarded_id(admission: FrontendAdmission) -> pg_proto::pipeline::OperationId {
+fn forwarded_id(admission: FrontendAdmission) -> pgtk_proto::pipeline::OperationId {
     match admission.into_action() {
         FrontendAction::Forward { id, .. } => id,
         other @ FrontendAction::Discard { .. } => {
@@ -71,7 +71,7 @@ fn forwarded_id(admission: FrontendAdmission) -> pg_proto::pipeline::OperationId
     }
 }
 
-fn local_id(admission: FrontendAdmission) -> pg_proto::pipeline::OperationId {
+fn local_id(admission: FrontendAdmission) -> pgtk_proto::pipeline::OperationId {
     match admission.into_action() {
         FrontendAction::Discard { id } => id,
         other @ FrontendAction::Forward { .. } => {
@@ -357,7 +357,7 @@ async fn capacity_skips_typed_middleware_but_async_backend_traffic_does_not() {
             )
             .await
             .unwrap_err(),
-        pg_proto::pipeline::PipelineMiddlewareError::Projection(
+        pgtk_proto::pipeline::PipelineMiddlewareError::Projection(
             FrontendProjectionError::Capacity(message)
         ) if matches!(&*message, FrontendMessage::Query(body) if body.as_ptr() == pointer)
     ));
@@ -676,7 +676,7 @@ async fn typed_admission_returns_large_payload_without_copying_or_retaining_it()
     let body = Bytes::from(vec![7_u8; 2 * 1024 * 1024]);
     let pointer = body.as_ptr();
     let mut pipeline = bounded(2);
-    let mut middleware = Middleware::new((), pg_proto::middleware::Identity);
+    let mut middleware = Middleware::new((), pgtk_proto::middleware::Identity);
     let admission = pipeline
         .accept_frontend_typed(
             &mut middleware,
@@ -1297,7 +1297,7 @@ fn later_valid_backend_response_is_deferred_not_illegal() {
 async fn typed_and_untyped_paths_commit_the_same_prepared_decisions() {
     let mut untyped = bounded(2);
     let mut typed = bounded(2);
-    let mut middleware = Middleware::new((), pg_proto::middleware::Identity);
+    let mut middleware = Middleware::new((), pgtk_proto::middleware::Identity);
 
     let untyped_frontend = untyped
         .accept_frontend(parse(b"parity"), FrontendHandling::Forward)
@@ -1377,7 +1377,7 @@ async fn rejected_middleware_does_not_commit_a_prepared_decision() {
 
     assert!(matches!(
         error,
-        pg_proto::pipeline::PipelineMiddlewareError::Middleware("rejected")
+        pgtk_proto::pipeline::PipelineMiddlewareError::Middleware("rejected")
     ));
     assert_eq!(pipeline.state(), state);
     assert!(pipeline.is_empty());

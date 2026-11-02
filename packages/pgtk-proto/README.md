@@ -1,12 +1,12 @@
-# pg-proto
+# pgtk-proto
 
-[![CI](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml)
-[![docs.rs](https://docs.rs/pg-proto/badge.svg)](https://docs.rs/pg-proto)
-[![crates.io](https://img.shields.io/crates/v/pg-proto.svg)](https://crates.io/crates/pg-proto)
+[![CI](https://github.com/freshtonic/pgtk/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtonic/pgtk/actions/workflows/ci.yml)
+[![docs.rs](https://docs.rs/pgtk-proto/badge.svg)](https://docs.rs/pgtk-proto)
+[![crates.io](https://img.shields.io/crates/v/pgtk-proto.svg)](https://crates.io/crates/pgtk-proto)
 [![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/freshtonic/pg-proto/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/freshtonic/pgtk/blob/main/packages/pgtk-proto/LICENSE)
 
-`pg-proto` is an asynchronous Rust implementation of the PostgreSQL frontend/backend wire protocol designed for
+`pgtk-proto` is an asynchronous Rust implementation of the PostgreSQL frontend/backend wire protocol designed for
 proxies, poolers, gateways, drivers, and protocol-aware test infrastructure.
 
 Custom middleware can be installed to intercept, rewrite, filter any Postgres wire protocol message type.
@@ -14,36 +14,36 @@ Custom middleware can be installed to intercept, rewrite, filter any Postgres wi
 A builder API configures clients, servers, and intermediaries explicitly; internal typestates make invalid PostgreSQL
 protocol sequences unrepresentable.
 
-`pg-proto` is useful when protocol correctness is part of the architecture rather than merely an implementation detail:
+`pgtk-proto` is useful when protocol correctness is part of the architecture rather than merely an implementation detail:
 the legal next operations are visible in function signatures, illegal compositions are rejected at compile time, and
 proxy policy can still inspect, replace, or reject complete typed messages.
 
 ## Modes of operation
 
-`pg-proto` supports three role-composition archetypes. “External” means a real
+`pgtk-proto` supports three role-composition archetypes. “External” means a real
 PostgreSQL database, an established driver, or any other participant that speaks
 the PostgreSQL frontend/backend wire protocol.
 
 ### Client role
 
-![pg-proto client connected to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/client-mode.svg)
+![pgtk-proto client connected to an external server](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images/client-mode.svg)
 
-`pg-proto` initiates the connection and acts as the protocol client. The external
+`pgtk-proto` initiates the connection and acts as the protocol client. The external
 server is commonly PostgreSQL itself, but may be any compatible server.
 
 ### Server role
 
-![external client connected to a pg-proto server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/server-mode.svg)
+![external client connected to a pgtk-proto server](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images/server-mode.svg)
 
-An external client initiates the connection and `pg-proto` acts as the protocol
+An external client initiates the connection and `pgtk-proto` acts as the protocol
 server. This mode suits PostgreSQL-compatible services, test backends, recorders,
 and protocol conformance tools.
 
 ### Intermediary role
 
-![external client connected through a pg-proto intermediary to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/intermediary-mode.svg)
+![external client connected through a pgtk-proto intermediary to an external server](https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images/intermediary-mode.svg)
 
-`pg-proto` terminates both protocol roles around an intermediary: its server side
+`pgtk-proto` terminates both protocol roles around an intermediary: its server side
 accepts the external client, while its client side establishes an independent
 connection to the external server. Middleware can inspect, edit, replace, or
 reject messages in either direction. Startup and authenticated routing policies
@@ -80,7 +80,7 @@ cancellation storage, telemetry, and failure policy.
 
 ## Why use it?
 
-pg-proto provides protocol-aware guardrails throughout its API, making many
+pgtk-proto provides protocol-aware guardrails throughout its API, making many
 forms of misuse impossible to express. It also exposes accurate connection-state
 evidence, helping infrastructure such as connection pools determine whether a
 connection is safe to reuse.
@@ -121,7 +121,7 @@ For production, use `ClientTlsPolicy::libpq` with `SslMode::VerifyFull` and an
 application-owned reloadable `ClientTlsProvider`; use `ServerTlsPolicy::Required`
 with an application-owned `ServerIdentityProvider`. Supply application-defined
 `ClientAuthentication` and `ServerAuthenticationProvider` implementations that
-return typed identity evidence. `pg-proto` orchestrates the protocol but remains
+return typed identity evidence. `pgtk-proto` orchestrates the protocol but remains
 policy-neutral: it does not store credentials, authorise identities, choose
 authentication mechanisms, or provision certificates.
 
@@ -137,7 +137,7 @@ Build one reusable upstream-facing component, then establish operational
 connections with caller-owned state and per-call startup parameters.
 
 ```rust,no_run
-use pg_proto::{
+use pgtk_proto::{
     Client, ClientTlsPolicy, ConnectTarget, StartupParameters,
     TrustClientAuthentication,
 };
@@ -175,7 +175,7 @@ The server builder owns reusable client-facing policy. The application owns the
 listener, peer metadata, per-connection state, credentials, and authorisation.
 
 ```rust,no_run
-use pg_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
+use pgtk_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -208,7 +208,7 @@ remain explicit application policies.
 
 ```rust,no_run
 use std::convert::Infallible;
-use pg_proto::{
+use pgtk_proto::{
     CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
     Intermediary, Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
     TrustClientAuthentication, TrustServerAuthentication,
@@ -254,7 +254,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_session();
     while !matches!(
         connection.forward_next().await?,
-        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
+        pgtk_proto::ForwardedMessage::Frontend(pgtk_proto::FrontendMessage::Terminate)
     ) {}
     Ok(())
 }
@@ -268,7 +268,7 @@ access to the application-supplied per-connection state. Repeated `.middleware`
 calls compose stages in declaration order.
 
 ```rust
-use pg_proto::{
+use pgtk_proto::{
     Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
     FrontendMessage, TrustClientAuthentication,
 };
@@ -296,7 +296,7 @@ let _client = Client::builder()
     .authentication(TrustClientAuthentication)
     .middleware(|_: &ClientInitialContext| CountQueries)
     .build()?;
-# Ok::<(), pg_proto::BuildError>(())
+# Ok::<(), pgtk_proto::BuildError>(())
 ```
 
 Forwarding-boundary middleware configured by `Intermediary::builder()` is
@@ -337,7 +337,7 @@ proxy composition boundary.
 
 ## Rustdoc entry point
 
-The [crate overview](https://docs.rs/pg-proto/latest/pg_proto/) documents the
+The [crate overview](https://docs.rs/pgtk-proto/latest/pgtk_proto/) documents the
 complete root facade: role builders, nested security configuration, middleware,
 operational connection types, and root message vocabulary.
 
@@ -349,7 +349,7 @@ cargo doc --workspace --no-deps --open
 
 ## Protocol conformance and burn-in
 
-The `pg-proto-burn-in` workspace binary verifies the complete public topology:
+The `pgtk-proto-burn-in` workspace binary verifies the complete public topology:
 an independent Rust SQL driver connects to a separately supervised process that
 builds a public `Server` + `Intermediary` + `Client`, which then connects to a
 real PostgreSQL instance launched by Testcontainers. The supervisor owns the
@@ -404,30 +404,30 @@ sensitive fields before persistence.
 With a Docker-compatible runtime, useful local entry points are:
 
 ```bash
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   --run-all --soak-duration-seconds 3600 \
   --output-dir target/burn-in/manual
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   conformance --profile smoke --postgres-version 18 \
   --output-dir target/burn-in/smoke
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   soak --seed 8675309 --iterations 100 \
   --output-dir target/burn-in/soak
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   replay --input target/burn-in/soak/result.json \
   --output-dir target/burn-in/replay
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   catalogue --approved --as-of "$(date -u +%F)" \
   --output-dir target/burn-in/catalogue
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   make-report --dir target/burn-in
 
-cargo run -p pg-proto-burn-in -- \
+cargo run -p pgtk-proto-burn-in -- \
   trends --dir target/burn-in/history
 ```
 
@@ -450,7 +450,7 @@ Performance artifacts include the runner's hardware manufacturer, model, CPU,
 and physical memory, with the same human-readable fingerprint in `summary.md`.
 Unique device identifiers and serial numbers are not collected.
 The `performance` command transparently builds and delegates to the dedicated
-`pg-proto-burn-in-performance` binary using the optimized `burn-in` Cargo
+`pgtk-proto-burn-in-performance` binary using the optimized `burn-in` Cargo
 profile; ordinary conformance and reporting commands remain development builds.
 
 See the [burn-in design](docs/design/burn-in-verification.md) and
@@ -467,7 +467,7 @@ Both behaviours are covered explicitly.
 Run a selected version locally with a Docker-compatible runtime:
 
 ```bash
-PG_PROTO_POSTGRES_VERSION=18 \
+PGTK_PROTO_POSTGRES_VERSION=18 \
   cargo test --lib internal_tests::postgres_container -- --ignored
 ```
 
@@ -481,7 +481,7 @@ The checklist below follows PostgreSQL's official
 and groups messages by protocol phase and sender. A checked item has a typed,
 lossless representation reachable through the public facade and can be decoded
 and reconstructed; contextual aliases which share a wire tag name the public
-`pg-proto` representation in parentheses. An unchecked item would identify a
+`pgtk-proto` representation in parentheses. An unchecked item would identify a
 known PostgreSQL protocol message which is not yet supported. There are currently
 no unchecked protocol-version-3 message types.
 
@@ -636,4 +636,4 @@ cargo test --lib internal_tests::postgres_container -- --ignored
 
 ## Licence
 
-Licensed under the [MIT License](https://github.com/freshtonic/pg-proto/blob/main/LICENSE).
+Licensed under the [MIT License](https://github.com/freshtonic/pgtk/blob/main/packages/pgtk-proto/LICENSE).

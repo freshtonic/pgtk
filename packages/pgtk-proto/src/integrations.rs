@@ -7,7 +7,7 @@ use bytes::Bytes;
 /// Upgrades a transport after the typed GSSENC negotiation has accepted it.
 ///
 /// Implementations can wrap MIT Kerberos, Heimdal, Windows SSPI, or a remote
-/// credential service without making `pg-proto` select or configure that stack.
+/// credential service without making `pgtk-proto` select or configure that stack.
 pub(crate) trait GssEncUpgrade<Stream> {
     /// Transport produced after GSS encryption negotiation and handshake.
     type SecuredStream;

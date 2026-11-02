@@ -1,6 +1,6 @@
 //! Administrative client whose type records whether session state has changed.
 
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, Client, ClientConnection, ClientTlsPolicy, ConnectTarget, ConnectionChanged,
     StartupParameters, TrustClientAuthentication,
 };

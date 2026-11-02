@@ -1,6 +1,6 @@
 # Supported PostgreSQL versions
 
-`pg-proto` supports PostgreSQL 14, 15, 16, 17, and 18.
+`pgtk-proto` supports PostgreSQL 14, 15, 16, 17, and 18.
 
 Every version runs the same live Testcontainers suite against its official
 Alpine image. The suite covers startup/protocol negotiation, cleartext, MD5,
@@ -13,6 +13,6 @@ PostgreSQL 14–17 negotiate a requested protocol 3.2 startup down to protocol
 Run one version locally with:
 
 ```bash
-PG_PROTO_POSTGRES_VERSION=18 \
+PGTK_PROTO_POSTGRES_VERSION=18 \
   cargo test --lib internal_tests::postgres_container -- --ignored
 ```

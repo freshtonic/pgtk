@@ -132,7 +132,7 @@ work using that feature is complete.
 
 ## 5. Proxy-enabling API and compatibility
 
-`pg-proto` is a protocol library for implementing the next Proxy; it does not
+`pgtk-proto` is a protocol library for implementing the next Proxy; it does not
 absorb Proxy's application logic. CipherStash-specific EQL rewriting, credential
 management, routing, pool orchestration, and deployment remain downstream. The
 work here is to expose sufficiently general primitives and prove them with
@@ -245,7 +245,7 @@ neutral composition harnesses and examples.
   - [x] Document automated container and interactive workflows for both examples.
   - [x] Start and retain the populated test container automatically when no
     explicit upstream is supplied, and preflight explicit upstreams.
-  - [x] Terminate client TLS in the proxy through pg-proto's typed pre-startup
+  - [x] Terminate client TLS in the proxy through pgtk-proto's typed pre-startup
     transport upgrade so policies observe decrypted messages.
 
 - [x] Extend connection-branded outbound construction across repeated Parse/Bind,
@@ -416,7 +416,7 @@ checked middleware belongs on the state-aware session APIs above it.
 - [x] Enforce Clippy's all, pedantic, nursery, and Cargo lint groups, retaining
   narrow exceptions only for unstable or dependency-graph noise.
 
-These are deliberately not completion criteria for `pg-proto`'s current plan.
+These are deliberately not completion criteria for `pgtk-proto`'s current plan.
 They depend on downstream requirements or pursue additional assurance beyond the
 library boundary established above.
 
@@ -424,6 +424,6 @@ library boundary established above.
   downstream Proxy deployment requires them. The library integration traits and
   typed protocol loops are complete.
 - [ ] Implement CipherStash-specific routing, EQL transformation, credential
-  management, and pool policy in the next Proxy, using `pg-proto` as a library.
+  management, and pool policy in the next Proxy, using `pgtk-proto` as a library.
 - [ ] Pursue formal multiparty/proxy verification if its additional assurance
   justifies the research and maintenance cost.

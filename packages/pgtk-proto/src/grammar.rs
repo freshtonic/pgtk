@@ -5,7 +5,7 @@
 //! [`crate::grammar::backend`] to review the grammar alongside its generated
 //! transition API.
 
-use pg_proto_fsm::protocol;
+use pgtk_proto_fsm::protocol;
 
 protocol! {
     pub mod frontend {

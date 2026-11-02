@@ -9,7 +9,7 @@ each required leg and independent application authentication policies.
 
 This companion example forwards the same traffic while printing every decoded
 pre-startup, frontend, and backend message with its direction and connection
-number. `PasswordResponse` uses pg-proto's redacted `Debug` implementation.
+number. `PasswordResponse` uses pgtk-proto's redacted `Debug` implementation.
 Logging is implemented as a core message-middleware stage and composed with the
 SQL and row-statistics stages used by the companion example.
 

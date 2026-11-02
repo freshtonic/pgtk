@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pg_proto::resources::with_resources;
+use pgtk_proto::resources::with_resources;
 
 fn main() {
     with_resources(|mut first| {

@@ -138,7 +138,7 @@ pub use server_component::{
 pub use startup::{ProtocolVersion, StartupMessage};
 
 #[cfg(test)]
-extern crate self as pg_proto;
+extern crate self as pgtk_proto;
 
 #[cfg(test)]
 /// Internal integration coverage that exercises non-public protocol seams.

@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     Conn,
     auth::{AuthCompletion, AuthOffer, AwaitingStartupReady, PasswordResponse, SaslEvent},
     codec::{BackendMessage, NegotiateProtocolVersion},
@@ -33,7 +33,7 @@ use testcontainers_modules::{
 };
 
 fn postgres_tag() -> String {
-    let version = std::env::var("PG_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
+    let version = std::env::var("PGTK_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
     assert!(
         matches!(version.as_str(), "14" | "15" | "16" | "17" | "18"),
         "unsupported PostgreSQL test version"
@@ -63,7 +63,7 @@ async fn startup_and_protocol_negotiation_matches_postgres() -> Result<(), Box<d
                 Bytes::from_static(b"postgres"),
             ),
             (
-                Bytes::from_static(b"_pq_.pg_proto_probe"),
+                Bytes::from_static(b"_pq_.pgtk_proto_probe"),
                 Bytes::from_static(b"1"),
             ),
         ]),
@@ -111,7 +111,7 @@ async fn startup_and_protocol_negotiation_matches_postgres() -> Result<(), Box<d
 }
 
 async fn run_select_42(
-    ready: Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>,
+    ready: Conn<Buffered<tokio::net::TcpStream>, pgtk_proto::auth::Ready>,
 ) -> Result<(), Box<dyn Error>> {
     let (mut query, frame) = ready.push_stateless_query(b"SELECT 42::int4")?;
     query.push_frame(frame)?;
@@ -180,7 +180,7 @@ fn assert_negotiation(negotiation: Option<NegotiateProtocolVersion>) {
     assert_eq!(negotiation.newest, expected);
     assert_eq!(
         negotiation.unsupported_options,
-        [Bytes::from_static(b"_pq_.pg_proto_probe")]
+        [Bytes::from_static(b"_pq_.pgtk_proto_probe")]
     );
 }
 
@@ -402,7 +402,7 @@ async fn connected_startup(
 
 async fn finish_startup(
     mut conn: Conn<Buffered<tokio::net::TcpStream>, AwaitingStartupReady>,
-) -> Result<Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>, Box<dyn Error>> {
+) -> Result<Conn<Buffered<tokio::net::TcpStream>, pgtk_proto::auth::Ready>, Box<dyn Error>> {
     loop {
         let item = conn.receive().await?;
         match conn.offer_ready(item) {
@@ -567,7 +567,7 @@ async fn extended_query_pipeline_matches_postgres() -> Result<(), Box<dyn Error>
 
 async fn trust_ready(
     port: u16,
-) -> Result<Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready>, Box<dyn Error>> {
+) -> Result<Conn<Buffered<tokio::net::TcpStream>, pgtk_proto::auth::Ready>, Box<dyn Error>> {
     let offer = receive_auth_offer(connected_startup(port).await?).await?;
     let AuthOffer::Ok(awaiting_ready) = offer else {
         return Err("PostgreSQL did not use trust authentication".into());
@@ -597,7 +597,7 @@ async fn async_sinks_match_postgres() -> Result<(), Box<dyn Error>> {
     );
 
     let (mut query, frame) = ready.push_query(
-        b"SET application_name = 'pg-proto-live'; DO $$ BEGIN RAISE NOTICE 'sink notice'; END $$",
+        b"SET application_name = 'pgtk-proto-live'; DO $$ BEGIN RAISE NOTICE 'sink notice'; END $$",
     )?;
     query.push_frame(frame)?;
     query.flush().await?;
@@ -635,7 +635,7 @@ async fn async_sinks_match_postgres() -> Result<(), Box<dyn Error>> {
         .pop_parameter_status()
         .expect("application_name ParameterStatus was not retained");
     assert_eq!(status.name, Bytes::from_static(b"application_name"));
-    assert_eq!(status.value, Bytes::from_static(b"pg-proto-live"));
+    assert_eq!(status.value, Bytes::from_static(b"pgtk-proto-live"));
     assert!(ready.parameters_changed());
     ready.into_transport();
     Ok(())
@@ -644,14 +644,14 @@ async fn async_sinks_match_postgres() -> Result<(), Box<dyn Error>> {
 async fn loop_until_ready(
     mut query: Conn<
         Buffered<tokio::net::TcpStream>,
-        pg_proto::session::SimpleQuery,
-        pg_proto::Dirty,
+        pgtk_proto::session::SimpleQuery,
+        pgtk_proto::Dirty,
     >,
-    notice: pg_proto::demux::TaggedNotice,
+    notice: pgtk_proto::demux::TaggedNotice,
 ) -> Result<
     (
-        Conn<Buffered<tokio::net::TcpStream>, pg_proto::auth::Ready, pg_proto::Dirty>,
-        pg_proto::demux::TaggedNotice,
+        Conn<Buffered<tokio::net::TcpStream>, pgtk_proto::auth::Ready, pgtk_proto::Dirty>,
+        pgtk_proto::demux::TaggedNotice,
     ),
     Box<dyn Error>,
 > {

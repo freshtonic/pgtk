@@ -2,7 +2,7 @@
 
 ## Decision being made
 
-`pg-proto` 0.8.0 can immediately replace one PostgreSQL backend message with
+`pgtk-proto` 0.8.0 can immediately replace one PostgreSQL backend message with
 many messages, but it cannot defer a `DataRow` across middleware calls without
 advancing protocol state. This report compares two ways to add deferred batching:
 
@@ -32,7 +32,7 @@ ledger partially advanced.
 | Interface clarity | A deferred input is named directly | Empty `Expand` carries a surprising second meaning |
 | Crate implementation | Larger: queue, limits, cancellation guards, teardown | Smaller payload layer, but pressure and atomic projection remain substantial |
 | Caller implementation | Small and consistent | Each custom adapter owns correct storage, accounting, and draining |
-| Locality | Ownership bugs are fixed once in pg-proto | Storage bugs can be distributed across callers |
+| Locality | Ownership bugs are fixed once in pgtk-proto | Storage bugs can be distributed across callers |
 
 ## Crate-owned hold
 
@@ -52,7 +52,7 @@ tests.
 
 ### Weaknesses
 
-This design makes pg-proto a payload buffer. It must define byte accounting,
+This design makes pgtk-proto a payload buffer. It must define byte accounting,
 capacity behaviour, protocol barriers, cancellation safety, and what teardown
 does with an unflushed batch. It also needs a second middleware hook for batch
 release, which makes the interface broader than the current one-message decision.
@@ -69,7 +69,7 @@ This design uses an ownership facility the intermediary already provides: one
 caller-defined connection state is passed to middleware and recovered on
 teardown. CipherStash can store encrypted blocks, decrypted rows, accounting
 metadata, or spill handles in the representation that matches its policy. The
-pipeline stays payload-free and pg-proto does not become a general-purpose queue.
+pipeline stays payload-free and pgtk-proto does not become a general-purpose queue.
 
 The initial interface change is small. Empty `Expand` can represent “no output or
 projection yet”, while a later expansion drains the state buffer and appends the
@@ -88,7 +88,7 @@ this design it becomes deferred ownership. A named `Retained` outcome would be
 clearer, but it would effectively reintroduce `Hold` without giving the crate
 ownership of the held value.
 
-Backpressure is less local. Because pg-proto cannot inspect arbitrary connection
+Backpressure is less local. Because pgtk-proto cannot inspect arbitrary connection
 state, middleware must expose pressure and draining through an additional
 interface. Custom middleware that bypasses that adapter can allocate without the
 connection knowing when to stop reading.
@@ -104,7 +104,7 @@ This offers the simplest common calling pattern and the greatest locality: the
 crate owns buffering, fairness, ordering, retry, projection, and backpressure. It
 also naturally supports lazy local results. However, it is substantially broader
 than the reported DataRow requirement, complicates COPY and teardown, and moves
-pg-proto from a protocol substrate toward an opinionated runtime. It is better
+pgtk-proto from a protocol substrate toward an opinionated runtime. It is better
 treated as a possible high-level module built over the lower-level receipt and
 projection seam, not as the immediate fix.
 
@@ -113,7 +113,7 @@ projection seam, not as the immediate fix.
 Prefer the **crate-owned hold** design for the public forwarding interface.
 
 The decisive reason is not storage convenience; it is enforceability. Protocol
-advancement and payload ownership are one correctness problem here. If pg-proto
+advancement and payload ownership are one correctness problem here. If pgtk-proto
 owns advancement while arbitrary caller state owns the only evidence that an
 input remains pending, neither side can enforce exact-once handling independently.
 That produces a shallow seam whose correctness depends on undocumented
@@ -123,7 +123,7 @@ The caller-state design remains useful as an implementation technique for
 application-specific decrypted data, but it should sit behind middleware's batch
 release policy rather than carry the authoritative received `BackendMessage`
 ownership. Middleware may derive and retain application data in connection state;
-pg-proto should retain the uncommitted protocol inputs until the release succeeds.
+pgtk-proto should retain the uncommitted protocol inputs until the release succeeds.
 
 Before implementation, prototype the crate-owned design against four tracer
 cases:

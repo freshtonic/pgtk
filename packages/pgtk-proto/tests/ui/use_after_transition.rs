@@ -1,4 +1,4 @@
-use pg_proto::{
+use pgtk_proto::{
     Conn,
     auth::Ready,
     session::Building,

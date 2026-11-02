@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-`pg-proto` is pre-1.0. Security fixes are provided for the latest published
+`pgtk-proto` is pre-1.0. Security fixes are provided for the latest published
 minor release only. Users should upgrade to the newest release before reporting
 or evaluating a possible vulnerability.
 
@@ -16,7 +16,7 @@ This table is updated when a new minor release supersedes the current line.
 ## Reporting a vulnerability
 
 Do not open a public issue. Use GitHub's
-[private vulnerability reporting](https://github.com/freshtonic/pg-proto/security/advisories/new)
+[private vulnerability reporting](https://github.com/freshtonic/pgtk/security/advisories/new)
 to send the affected versions, impact, reproduction steps, and any suggested
 mitigation privately to the maintainer.
 

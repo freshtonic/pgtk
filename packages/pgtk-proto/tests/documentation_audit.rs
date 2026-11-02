@@ -6,7 +6,7 @@ use std::{fs, path::Path};
 fn mode_diagrams_use_rustdoc_safe_urls_and_ship_with_the_crate() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
-    let base = "https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images";
+    let base = "https://raw.githubusercontent.com/freshtonic/pgtk/main/packages/pgtk-proto/docs/images";
 
     for image in [
         "client-mode.svg",
@@ -52,7 +52,7 @@ fn public_docs_reference_only_builder_entry_points() {
     paths.sort();
     paths.dedup();
 
-    let forbidden = ["pg_proto::Conn", "SessionPair", "Middleware::new"];
+    let forbidden = ["pgtk_proto::Conn", "SessionPair", "Middleware::new"];
     let private_modules = [
         "auth",
         "codec",
@@ -80,9 +80,9 @@ fn public_docs_reference_only_builder_entry_points() {
         }
         for module in private_modules {
             for legacy in [
-                format!("pg_proto::{module}::"),
-                format!("pg_proto::{module}as"),
-                format!("pg_proto::{module};"),
+                format!("pgtk_proto::{module}::"),
+                format!("pgtk_proto::{module}as"),
+                format!("pgtk_proto::{module};"),
             ] {
                 assert!(
                     !compact.contains(&legacy),
@@ -101,8 +101,8 @@ fn public_docs_reference_only_builder_entry_points() {
 
 fn contains_grouped_module(source: &str, module: &str) -> bool {
     let mut remaining = source;
-    while let Some(start) = remaining.find("pg_proto::{") {
-        remaining = &remaining[start + "pg_proto::{".len()..];
+    while let Some(start) = remaining.find("pgtk_proto::{") {
+        remaining = &remaining[start + "pgtk_proto::{".len()..];
         let Some(end) = remaining.find('}') else {
             return false;
         };

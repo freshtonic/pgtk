@@ -20,7 +20,7 @@ correctness tests or coupling the library to a particular Proxy deployment.
 
 ## Controlled burn-in measurements
 
-The `pg-proto-burn-in performance` command launches PostgreSQL 18 with
+The `pgtk-proto-burn-in performance` command launches PostgreSQL 18 with
 Testcontainers, drives the public intermediary, and writes both the raw
 `measurements.json` and evaluated `performance.json`, Markdown, and an
 unpromoted candidate baseline. A stable run uses
@@ -37,7 +37,7 @@ machines. Hardware serial numbers and unique device identifiers are never
 captured.
 
 The ordinary CLI transparently delegates `performance --build-mode optimized`
-to the dedicated `pg-proto-burn-in-performance` binary compiled with Cargo
+to the dedicated `pgtk-proto-burn-in-performance` binary compiled with Cargo
 profile `burn-in`. `--build-mode allocator-diagnostic` instead delegates to the
 same dedicated binary compiled with `burn-in-diagnostic`; their results are not
 comparable. The report records the requested profile, inherited Cargo base

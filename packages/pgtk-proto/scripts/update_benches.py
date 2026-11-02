@@ -144,7 +144,7 @@ def render_svg(results: list[Result]) -> str:
 
 def render_markdown(results: list[Result]) -> str:
     rows = "\n".join(
-        f"| [#{result.pr}](https://github.com/freshtonic/pg-proto/pull/{result.pr}) "
+        f"| [#{result.pr}](https://github.com/freshtonic/pgtk/pull/{result.pr}) "
         f"| `{html.escape(result.commit[:12])}` | {html.escape(result.recorded_at)} "
         f"| `{html.escape(measurement.name)}` | {measurement.median_nanoseconds / 1_000_000:.3f} "
         f"| {measurement.elements_per_second:,.0f} |"

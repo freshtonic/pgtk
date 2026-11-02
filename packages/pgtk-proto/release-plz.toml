@@ -3,7 +3,7 @@ changelog_update = true
 git_release_enable = true
 git_tag_enable = true
 release_always = false
-repo_url = "https://github.com/freshtonic/pg-proto"
+repo_url = "https://github.com/freshtonic/pgtk"
 semver_check = true
 
 [changelog]
@@ -23,12 +23,12 @@ commit_parsers = [
 ]
 
 [[package]]
-name = "pg-proto"
-changelog_include = ["pg-proto-fsm"]
+name = "pgtk-proto"
+changelog_include = ["pgtk-proto-fsm"]
 changelog_path = "CHANGELOG.md"
-version_group = "pg-proto"
+version_group = "pgtk-proto"
 
 [[package]]
-name = "pg-proto-fsm"
+name = "pgtk-proto-fsm"
 changelog_update = false
-version_group = "pg-proto"
+version_group = "pgtk-proto"

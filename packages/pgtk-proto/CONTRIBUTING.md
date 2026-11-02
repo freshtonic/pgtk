@@ -1,6 +1,6 @@
-# Contributing to pg-proto
+# Contributing to pgtk-proto
 
-Thank you for helping improve `pg-proto`. By participating, you agree to follow
+Thank you for helping improve `pgtk-proto`. By participating, you agree to follow
 the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Before opening a change

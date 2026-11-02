@@ -7,7 +7,7 @@ explicitly selects plaintext. Both roles use trust authentication solely for
 this local demonstration. Production deployments should provide managed TLS on
 each required leg and independent application authentication policies.
 
-This example is a small, transparent PostgreSQL proxy built with pg-proto's
+This example is a small, transparent PostgreSQL proxy built with pgtk-proto's
 direction-parameterised codecs. It prints every inbound simple-query `Query`
 and extended-query `Parse` statement, then prints the number of `DataRow`
 messages in each result when `CommandComplete` arrives.
@@ -17,7 +17,7 @@ middleware stages chained in deterministic order. Their shared per-connection
 state carries the connection number and accumulated row count.
 
 The example forwards authentication and all tagged protocol messages without
-changing them. It terminates client TLS using pg-proto's typed pre-startup
+changing them. It terminates client TLS using pgtk-proto's typed pre-startup
 transport transition, then inspects and forwards the decrypted messages. The
 demonstration generates a fresh self-signed certificate each time it starts;
 `sslmode=require` encrypts the connection without requiring a persistent CA.
@@ -36,7 +36,7 @@ PostgreSQL 18 is used by default. Select any supported major version with, for
 example:
 
 ```bash
-PG_PROTO_POSTGRES_VERSION=14 \
+PGTK_PROTO_POSTGRES_VERSION=14 \
   cargo test --test logging_proxy_example -- --ignored --nocapture
 ```
 
@@ -66,14 +66,14 @@ The proxy prints output resembling:
 [1] ROWS: 3 (SELECT 3)
 ```
 
-Set `PG_PROTO_POSTGRES_VERSION` to select PostgreSQL 14, 15, 16, 17, or 18.
+Set `PGTK_PROTO_POSTGRES_VERSION` to select PostgreSQL 14, 15, 16, 17, or 18.
 
 ## Use an existing PostgreSQL server
 
 Start PostgreSQL with the sample schema mounted as an initialisation script:
 
 ```bash
-docker run --rm --name pg-proto-orders \
+docker run --rm --name pgtk-proto-orders \
   -e POSTGRES_HOST_AUTH_METHOD=trust \
   -p 5432:5432 \
   -v "$PWD/examples/sql_logging_proxy/customer_orders.sql:/docker-entrypoint-initdb.d/customer_orders.sql:ro" \

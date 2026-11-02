@@ -444,7 +444,7 @@ impl<S, C> Conn<S, AwaitingSslReply, C> {
     /// A pending negotiation cannot send a startup message:
     ///
     /// ```rust,compile_fail
-    /// use pg_proto::Conn;
+    /// use pgtk_proto::Conn;
     /// let (pending, _) = Conn::new(()).ssl_request();
     /// let _ = pending.startup();
     /// ```

@@ -58,7 +58,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run portable diagnostic soak
         run: >-
-          cargo run --release -p pg-proto-burn-in --
+          cargo run --release -p pgtk-proto-burn-in --
           soak --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --output-dir target/burn-in/hosted
@@ -73,7 +73,7 @@ jobs:
   stable-performance:
     name: Stable Linux performance gate
     if: github.event_name == 'schedule' || inputs.runner == 'stable'
-    runs-on: [self-hosted, linux, pg-proto-stable]
+    runs-on: [self-hosted, linux, pgtk-proto-stable]
     timeout-minutes: 540
     env:
       BURN_IN_PROFILE: ${{ github.event_name == 'schedule' && 'scheduled-soak' || inputs.profile }}
@@ -87,13 +87,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Run deterministic stable-runner soak
         run: >-
-          cargo run --release -p pg-proto-burn-in --
+          cargo run --release -p pgtk-proto-burn-in --
           soak --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --output-dir target/burn-in/stable/soak
       - name: Capture controlled stable-runner performance evidence
         run: >-
-          cargo run -p pg-proto-burn-in --
+          cargo run -p pgtk-proto-burn-in --
           performance --profile "$BURN_IN_PROFILE" --seed "$BURN_IN_SEED"
           --duration-seconds "$BURN_IN_DURATION"
           --runner "$RUNNER_NAME" --stable-runner

@@ -2,7 +2,7 @@
 
 use std::convert::Infallible;
 
-use pg_proto::{
+use pgtk_proto::{
     CancellationPolicy, Client, ClientConnectionContext, ClientTlsConfig, ClientTlsPolicy,
     ClientTlsProvider, ConnectTarget, FrontendMessage, FrontendMiddlewareOutput,
     InitialServerContext, Intermediary, IntermediaryAccept, IntermediaryMiddleware, Server,

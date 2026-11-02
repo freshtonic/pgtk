@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     AuthenticatedRouteContext, AuthenticatedRoutePolicy, BackendMessage, Bind, BoundedPipeline,
     CancellationPolicy, Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware,
     ClientTlsPolicy, ConnectTarget, CopyResponse, Execute, FrontendMessage, InitialServerContext,
@@ -133,9 +133,9 @@ fn backend_bytes(message: &BackendMessage) -> Vec<u8> {
         BackendMessage::ReadyForQuery(status) => (
             b'Z',
             vec![match status {
-                pg_proto::TransactionStatus::Idle => b'I',
-                pg_proto::TransactionStatus::InTransaction => b'T',
-                pg_proto::TransactionStatus::FailedTransaction => b'E',
+                pgtk_proto::TransactionStatus::Idle => b'I',
+                pgtk_proto::TransactionStatus::InTransaction => b'T',
+                pgtk_proto::TransactionStatus::FailedTransaction => b'E',
             }],
         ),
         BackendMessage::CopyBothResponse(response) => {
@@ -241,15 +241,15 @@ impl
         _: &mut Vec<&'static str>,
         _: OperationId,
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         self.frontend_calls += 1;
         if matches!(message, FrontendMessage::Execute(_)) {
-            Ok(pg_proto::FrontendMiddlewareOutput::ForwardThenFlush(
+            Ok(pgtk_proto::FrontendMiddlewareOutput::ForwardThenFlush(
                 message,
             ))
         } else {
-            Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+            Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(message))
         }
     }
 
@@ -260,10 +260,10 @@ impl
         _: &mut Vec<&'static str>,
         operation: Option<OperationId>,
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         self.backend_operations.push(operation);
-        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(message))
     }
 
     fn observe_transition(
@@ -316,9 +316,9 @@ impl
         (): &mut (),
         _: OperationId,
         _: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
-        Ok(pg_proto::FrontendMiddlewareOutput::ForwardThenFlush(
+        Ok(pgtk_proto::FrontendMiddlewareOutput::ForwardThenFlush(
             FrontendMessage::Query(Bytes::from_static(b"replacement")),
         ))
     }
@@ -338,10 +338,10 @@ impl
         _: &ClientConnectionContext<()>,
         state: &mut Vec<&'static str>,
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         state.push("boundary-frontend");
-        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(message))
     }
 
     async fn frontend_operation(
@@ -351,7 +351,7 @@ impl
         state: &mut Vec<&'static str>,
         operation: OperationId,
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         self.frontend_operations.push(operation);
         self.frontend(server, client, state, message).await
     }
@@ -362,10 +362,10 @@ impl
         _: &ClientConnectionContext<()>,
         state: &mut Vec<&'static str>,
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         state.push("boundary-backend");
-        Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::BackendMiddlewareOutput::Forward(message))
     }
 
     async fn backend_operation(
@@ -375,7 +375,7 @@ impl
         state: &mut Vec<&'static str>,
         operation: Option<OperationId>,
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         self.backend_operations.push(operation);
         self.backend(server, client, state, message).await
     }
@@ -484,7 +484,7 @@ async fn frontend_flush_expansion_is_atomic_ordered_and_retried_without_reinterc
         );
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
@@ -508,27 +508,27 @@ async fn frontend_flush_expansion_is_atomic_ordered_and_retried_without_reinterc
     .into_session();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
     ));
     assert!(matches!(
         session.forward_frontend().await,
-        Err(pg_proto::ForwardError::Frontend(
-            pg_proto::FrontendProjectionError::Capacity(_)
+        Err(pgtk_proto::ForwardError::Frontend(
+            pgtk_proto::FrontendProjectionError::Capacity(_)
         ))
     ));
     assert!(matches!(
         session.forward_next().await.unwrap(),
-        pg_proto::ForwardedMessage::Backend(BackendMessage::ReadyForQuery(_))
+        pgtk_proto::ForwardedMessage::Backend(BackendMessage::ReadyForQuery(_))
     ));
     let forwarded = session.forward_next().await.unwrap();
     assert!(matches!(
         &forwarded,
-        pg_proto::ForwardedMessage::FrontendExpanded {
+        pgtk_proto::ForwardedMessage::FrontendExpanded {
             source: FrontendMessage::Execute(_),
             messages,
         } if matches!(messages.as_slice(), [FrontendMessage::Execute(_), FrontendMessage::Flush])
     ));
-    let pg_proto::ForwardedMessage::FrontendExpanded { source, messages } = forwarded else {
+    let pgtk_proto::ForwardedMessage::FrontendExpanded { source, messages } = forwarded else {
         unreachable!()
     };
     assert!(matches!(source, FrontendMessage::Execute(_)));
@@ -537,12 +537,12 @@ async fn frontend_flush_expansion_is_atomic_ordered_and_retried_without_reinterc
         [FrontendMessage::Execute(_), FrontendMessage::Flush]
     ));
     assert!(matches!(
-        pg_proto::FrontendForwarding::Expanded { source, messages }.into_message(),
+        pgtk_proto::FrontendForwarding::Expanded { source, messages }.into_message(),
         FrontendMessage::Execute(_)
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
     ));
 
     let (_downstream, _upstream, state, boundary, _handlers, _contexts) = session.teardown();
@@ -555,7 +555,7 @@ async fn frontend_flush_expansion_is_atomic_ordered_and_retried_without_reinterc
         .observations
         .iter()
         .filter(|observation| {
-            observation.direction == pg_proto::ProtocolTransitionDirection::Frontend
+            observation.direction == pgtk_proto::ProtocolTransitionDirection::Frontend
         })
         .map(|observation| observation.operation.unwrap())
         .collect();
@@ -657,8 +657,8 @@ async fn illegal_frontend_flush_expansion_sends_neither_frame() {
         .unwrap();
     assert!(matches!(
         session.forward_frontend().await,
-        Err(pg_proto::ForwardError::Frontend(
-            pg_proto::FrontendProjectionError::Illegal { .. }
+        Err(pgtk_proto::ForwardError::Frontend(
+            pgtk_proto::FrontendProjectionError::Illegal { .. }
         ))
     ));
     check_tx.send(()).unwrap();
@@ -778,8 +778,8 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         .unwrap();
 
     let downstream = tokio::spawn(async move {
-        let startup = pg_proto::StartupMessage {
-            version: pg_proto::ProtocolVersion::V3_2,
+        let startup = pgtk_proto::StartupMessage {
+            version: pgtk_proto::ProtocolVersion::V3_2,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),
@@ -867,7 +867,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
         let length = upstream_peer.read_u32().await.unwrap();
         let mut body = vec![0; usize::try_from(length).unwrap() - 4];
         upstream_peer.read_exact(&mut body).await.unwrap();
-        let startup = pg_proto::StartupMessage::decode(
+        let startup = pgtk_proto::StartupMessage::decode(
             [length.to_be_bytes().as_slice(), body.as_slice()]
                 .concat()
                 .into(),
@@ -908,7 +908,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
             ),
             (
                 b'S',
-                BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
+                BackendMessage::ReadyForQuery(pgtk_proto::TransactionStatus::Idle),
             ),
         ] {
             assert_eq!(read_tagged(&mut upstream_peer).await.0, expected);
@@ -956,7 +956,7 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
             .await
             .unwrap()
             .unwrap(),
-        pg_proto::ForwardedMessage::Backend(BackendMessage::ParameterStatus { name, value })
+        pgtk_proto::ForwardedMessage::Backend(BackendMessage::ParameterStatus { name, value })
             if name == "TimeZone" && value == "UTC"
     ));
     assert_eq!(
@@ -966,31 +966,31 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     let traffic_entries = session.state().len();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 1"
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 1"
     ));
     assert!(matches!(
         session.forward_frontend().await,
-        Err(pg_proto::ForwardError::Frontend(
-            pg_proto::FrontendProjectionError::Capacity(_)
+        Err(pgtk_proto::ForwardError::Frontend(
+            pgtk_proto::FrontendProjectionError::Capacity(_)
         ))
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 1"
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 1"
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
     ));
     assert!(
-        matches!(session.forward_frontend().await.unwrap(), pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 2")
+        matches!(session.forward_frontend().await.unwrap(), pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "SELECT 2")
     );
     assert!(
-        matches!(session.forward_backend().await.unwrap(), pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 2")
+        matches!(session.forward_backend().await.unwrap(), pgtk_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(tag)) if tag == "SELECT 2")
     );
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::ReadyForQuery(_))
     ));
     for (frontend, backend) in [(b'P', b'1'), (b'B', b'2'), (b'E', b'C'), (b'S', b'Z')] {
         assert_eq!(
@@ -1004,17 +1004,17 @@ async fn intermediary_routes_authenticates_and_forwards_a_simple_query() {
     }
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(_))
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::CopyBothResponse(_))
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::CopyBothResponse(_))
     ));
     assert!(
-        matches!(session.forward_next().await.unwrap(), pg_proto::ForwardedMessage::Backend(BackendMessage::CopyData(data)) if data == "w-replication")
+        matches!(session.forward_next().await.unwrap(), pgtk_proto::ForwardedMessage::Backend(BackendMessage::CopyData(data)) if data == "w-replication")
     );
     assert!(
-        matches!(session.forward_next().await.unwrap(), pg_proto::ForwardedMessage::Frontend(FrontendMessage::CopyData(data)) if data == "r-standby-status")
+        matches!(session.forward_next().await.unwrap(), pgtk_proto::ForwardedMessage::Frontend(FrontendMessage::CopyData(data)) if data == "r-standby-status")
     );
     let (_downstream, _upstream, state, boundary, _handlers, contexts) = session.teardown();
     let backend_operations: Vec<_> = boundary
@@ -1086,23 +1086,23 @@ impl
         _: &ClientConnectionContext<()>,
         (): &mut (),
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         match &message {
             FrontendMessage::Query(query) if query == "LOCAL" => {
-                Ok(pg_proto::FrontendMiddlewareOutput::Respond {
+                Ok(pgtk_proto::FrontendMiddlewareOutput::Respond {
                     request: message,
                     responses: vec![
                         BackendMessage::CommandComplete(Bytes::from_static(b"LOCAL")),
-                        BackendMessage::ReadyForQuery(pg_proto::TransactionStatus::Idle),
+                        BackendMessage::ReadyForQuery(pgtk_proto::TransactionStatus::Idle),
                     ],
                 })
             }
             FrontendMessage::Query(query) if query == "DROP" => {
-                Ok(pg_proto::FrontendMiddlewareOutput::Suppress(message))
+                Ok(pgtk_proto::FrontendMiddlewareOutput::Suppress(message))
             }
             FrontendMessage::Query(query) if query == "FAIL" => Err(BoundaryFailure),
-            _ => Ok(pg_proto::FrontendMiddlewareOutput::Forward(message)),
+            _ => Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(message)),
         }
     }
 
@@ -1112,18 +1112,18 @@ impl
         _: &ClientConnectionContext<()>,
         (): &mut (),
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         tokio::task::yield_now().await;
         match message {
-            BackendMessage::DataRow(_) => Ok(pg_proto::BackendMiddlewareOutput::Expand(vec![
-                BackendMessage::DataRow(pg_proto::DataRow {
+            BackendMessage::DataRow(_) => Ok(pgtk_proto::BackendMiddlewareOutput::Expand(vec![
+                BackendMessage::DataRow(pgtk_proto::DataRow {
                     columns: vec![Some(Bytes::from_static(b"clear-one"))],
                 }),
-                BackendMessage::DataRow(pg_proto::DataRow {
+                BackendMessage::DataRow(pgtk_proto::DataRow {
                     columns: vec![Some(Bytes::from_static(b"clear-two"))],
                 }),
             ])),
-            other => Ok(pg_proto::BackendMiddlewareOutput::Forward(other)),
+            other => Ok(pgtk_proto::BackendMiddlewareOutput::Forward(other)),
         }
     }
 }
@@ -1164,8 +1164,8 @@ async fn async_middleware_supports_suppression_local_responses_and_backend_fanou
         .unwrap();
 
     let downstream = tokio::spawn(async move {
-        let startup = pg_proto::StartupMessage {
-            version: pg_proto::ProtocolVersion::V3_0,
+        let startup = pgtk_proto::StartupMessage {
+            version: pgtk_proto::ProtocolVersion::V3_0,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),
@@ -1212,7 +1212,7 @@ async fn async_middleware_supports_suppression_local_responses_and_backend_fanou
         assert_eq!((tag, body.as_slice()), (b'Q', b"FIRST\0".as_slice()));
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::DataRow(
-                pg_proto::DataRow {
+                pgtk_proto::DataRow {
                     columns: vec![Some(Bytes::from_static(b"encrypted-batch"))],
                 },
             )))
@@ -1226,7 +1226,7 @@ async fn async_middleware_supports_suppression_local_responses_and_backend_fanou
             .unwrap();
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
@@ -1245,25 +1245,25 @@ async fn async_middleware_supports_suppression_local_responses_and_backend_fanou
             .into_session();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "FIRST"
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "FIRST"
     ));
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Query(query)) if query == "LOCAL"
+        pgtk_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Query(query)) if query == "LOCAL"
     ));
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Expanded { messages, .. } if messages.len() == 2
+        pgtk_proto::BackendForwarding::Expanded { messages, .. } if messages.len() == 2
     ));
     session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Suppressed(FrontendMessage::Query(query)) if query == "DROP"
+        pgtk_proto::FrontendForwarding::Suppressed(FrontendMessage::Query(query)) if query == "DROP"
     ));
     assert!(matches!(
         session.forward_frontend().await,
-        Err(pg_proto::ForwardError::Middleware(BoundaryFailure))
+        Err(pgtk_proto::ForwardError::Middleware(BoundaryFailure))
     ));
     let _ = session.teardown();
     downstream.await.unwrap();
@@ -1287,16 +1287,16 @@ impl
         _: &ClientConnectionContext<()>,
         (): &mut (),
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         if matches!(&message, FrontendMessage::Parse(parse) if parse.query == "LOCAL ERROR") {
-            return Ok(pg_proto::FrontendMiddlewareOutput::Respond {
+            return Ok(pgtk_proto::FrontendMiddlewareOutput::Respond {
                 request: message,
                 responses: vec![BackendMessage::ErrorResponse(
-                    pg_proto::DiagnosticResponse { fields: vec![] },
+                    pgtk_proto::DiagnosticResponse { fields: vec![] },
                 )],
             });
         }
-        Ok(pg_proto::FrontendMiddlewareOutput::Forward(message))
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(message))
     }
 }
 
@@ -1338,8 +1338,8 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
         .unwrap();
 
     let downstream = tokio::spawn(async move {
-        let startup = pg_proto::StartupMessage {
-            version: pg_proto::ProtocolVersion::V3_0,
+        let startup = pgtk_proto::StartupMessage {
+            version: pgtk_proto::ProtocolVersion::V3_0,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),
@@ -1414,14 +1414,14 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .unwrap();
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
         assert_eq!(read_tagged(&mut upstream_peer).await.0, b'S');
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
@@ -1435,7 +1435,7 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .unwrap();
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
@@ -1448,28 +1448,28 @@ async fn local_extended_error_discards_messages_until_sync_and_reuses_connection
             .into_session();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "BEFORE"
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "BEFORE"
     ));
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Parse(_))
+        pgtk_proto::FrontendForwarding::LocallyHandled(FrontendMessage::Parse(_))
     ));
     for _ in 0..2 {
         assert!(matches!(
             session.forward_frontend().await.unwrap(),
-            pg_proto::FrontendForwarding::Suppressed(_)
+            pgtk_proto::FrontendForwarding::Suppressed(_)
         ));
     }
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Sync)
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Sync)
     ));
     session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();
     assert!(matches!(
         session.forward_frontend().await.unwrap(),
-        pg_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "AFTER"
+        pgtk_proto::FrontendForwarding::Forwarded(FrontendMessage::Query(query)) if query == "AFTER"
     ));
     session.forward_backend().await.unwrap();
     session.forward_backend().await.unwrap();
@@ -1496,11 +1496,11 @@ impl
         _: &ClientConnectionContext<()>,
         _: &mut usize,
         message: BackendMessage,
-    ) -> Result<pg_proto::BackendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::BackendMiddlewareOutput, Self::Error> {
         if matches!(message, BackendMessage::DataRow(_)) {
-            Ok(pg_proto::BackendMiddlewareOutput::Hold)
+            Ok(pgtk_proto::BackendMiddlewareOutput::Hold)
         } else {
-            Ok(pg_proto::BackendMiddlewareOutput::Forward(message))
+            Ok(pgtk_proto::BackendMiddlewareOutput::Forward(message))
         }
     }
 
@@ -1509,10 +1509,10 @@ impl
         _: &ServerConnectionContext<String, TrustIdentity>,
         _: &ClientConnectionContext<()>,
         flushes: &mut usize,
-        held: pg_proto::AttributedBackendMessages<'_>,
-        reason: pg_proto::BackendFlushReason,
-    ) -> Result<pg_proto::BackendBatchOutput, Self::Error> {
-        assert_eq!(reason, pg_proto::BackendFlushReason::ProtocolBarrier);
+        held: pgtk_proto::AttributedBackendMessages<'_>,
+        reason: pgtk_proto::BackendFlushReason,
+    ) -> Result<pgtk_proto::BackendBatchOutput, Self::Error> {
+        assert_eq!(reason, pgtk_proto::BackendFlushReason::ProtocolBarrier);
         *flushes += 1;
         let operation_ids: Vec<_> = held.iter().map(|(operation, _)| operation).collect();
         assert!(operation_ids.iter().all(Option::is_some));
@@ -1527,12 +1527,12 @@ impl
                 let value = row.columns[0].as_ref().unwrap();
                 let mut clear = b"clear-".to_vec();
                 clear.extend_from_slice(value);
-                BackendMessage::DataRow(pg_proto::DataRow {
+                BackendMessage::DataRow(pgtk_proto::DataRow {
                     columns: vec![Some(Bytes::from(clear))],
                 })
             })
             .collect();
-        Ok(pg_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
+        Ok(pgtk_proto::BackendBatchOutput::ReplaceOneToOne(replacements))
     }
 }
 
@@ -1567,13 +1567,13 @@ async fn held_rows_are_released_once_in_order_before_the_protocol_barrier() {
             |_: &ServerConnectionContext<String, TrustIdentity>,
              _: &ClientConnectionContext<()>| OrderedBatch,
         )
-        .backend_batching(pg_proto::BackendHoldLimits::new(8, 4096).unwrap())
+        .backend_batching(pgtk_proto::BackendHoldLimits::new(8, 4096).unwrap())
         .build()
         .unwrap();
 
     let downstream = tokio::spawn(async move {
-        let startup = pg_proto::StartupMessage {
-            version: pg_proto::ProtocolVersion::V3_0,
+        let startup = pgtk_proto::StartupMessage {
+            version: pgtk_proto::ProtocolVersion::V3_0,
             parameters: std::iter::once((
                 Bytes::from_static(b"user"),
                 Bytes::from_static(b"alice"),
@@ -1615,7 +1615,7 @@ async fn held_rows_are_released_once_in_order_before_the_protocol_barrier() {
         for encrypted in [b"one".as_slice(), b"two", b"three"] {
             upstream_peer
                 .write_all(&backend_bytes(&BackendMessage::DataRow(
-                    pg_proto::DataRow {
+                    pgtk_proto::DataRow {
                         columns: vec![Some(Bytes::copy_from_slice(encrypted))],
                     },
                 )))
@@ -1630,7 +1630,7 @@ async fn held_rows_are_released_once_in_order_before_the_protocol_barrier() {
             .unwrap();
         upstream_peer
             .write_all(&backend_bytes(&BackendMessage::ReadyForQuery(
-                pg_proto::TransactionStatus::Idle,
+                pgtk_proto::TransactionStatus::Idle,
             )))
             .await
             .unwrap();
@@ -1645,14 +1645,14 @@ async fn held_rows_are_released_once_in_order_before_the_protocol_barrier() {
     for expected_len in 1..=3 {
         assert_eq!(
             session.forward_backend().await.unwrap(),
-            pg_proto::BackendForwarding::Held
+            pgtk_proto::BackendForwarding::Held
         );
         assert_eq!(session.held_backend_messages().len(), expected_len);
     }
     assert_eq!(*session.state(), 0);
     assert!(matches!(
         session.forward_backend().await.unwrap(),
-        pg_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
+        pgtk_proto::BackendForwarding::Forwarded(BackendMessage::CommandComplete(_))
     ));
     assert_eq!(*session.state(), 1);
     assert!(session.held_backend_messages().is_empty());

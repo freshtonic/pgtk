@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, convert::Infallible};
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, CancellationRequest, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
     ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
     ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,

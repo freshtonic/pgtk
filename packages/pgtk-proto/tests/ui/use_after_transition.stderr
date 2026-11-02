@@ -2,7 +2,7 @@ error[E0382]: use of moved value: `ready`
   --> tests/ui/use_after_transition.rs:13:29
    |
 11 | fn illegal<S, C>(ready: Conn<S, Ready, C>) {
-   |                  ----- move occurs because `ready` has type `Conn<S, pg_proto::auth::Ready, C>`, which does not implement the `Copy` trait
+   |                  ----- move occurs because `ready` has type `Conn<S, pgtk_proto::auth::Ready, C>`, which does not implement the `Copy` trait
 12 |     let _building = transition(ready);
    |                                ----- value moved here
 13 |     let _again = transition(ready);

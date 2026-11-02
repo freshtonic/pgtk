@@ -13,10 +13,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Required pg-proto and next-Proxy compatibility contract.
+        # Required pgtk-proto and next-Proxy compatibility contract.
         version: [14, 15, 16, 17, 18]
     env:
-      PG_PROTO_POSTGRES_VERSION: ${{ matrix.version }}
+      PGTK_PROTO_POSTGRES_VERSION: ${{ matrix.version }}
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
@@ -27,7 +27,7 @@ jobs:
         run: cargo test --lib internal_tests::postgres_container -- --ignored
       - name: Run public intermediary conformance
         run: >-
-          cargo run -p pg-proto-burn-in --
+          cargo run -p pgtk-proto-burn-in --
           conformance --profile smoke --postgres-version ${{ matrix.version }}
           --output-dir target/burn-in/postgres-${{ matrix.version }}
       - name: Upload compatibility evidence

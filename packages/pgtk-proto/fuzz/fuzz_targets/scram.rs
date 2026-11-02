@@ -3,7 +3,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use pg_proto::{
+use pgtk_proto::{
     DisabledServerTls, Server, ServerAuthentication, ServerAuthenticationAction,
     ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
 };

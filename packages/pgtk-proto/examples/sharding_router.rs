@@ -3,7 +3,7 @@
 use std::convert::Infallible;
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     CancellationPolicy, Client, ClientConnectionContext, ClientTlsPolicy, Close, ConnectTarget,
     Describe, Execute, FrontendMessage, InitialServerContext, Intermediary, IntermediaryMiddleware,
     Parse, Server, ServerConnectionContext, ServerTlsPolicy, StartupParameters,
@@ -50,7 +50,7 @@ impl
         _client: &ClientConnectionContext<()>,
         state: &mut ShardState,
         message: FrontendMessage,
-    ) -> Result<pg_proto::FrontendMiddlewareOutput, Self::Error> {
+    ) -> Result<pgtk_proto::FrontendMiddlewareOutput, Self::Error> {
         let rewritten = match message {
             FrontendMessage::Parse(Parse {
                 statement,
@@ -68,8 +68,8 @@ impl
             }
             FrontendMessage::Describe(Describe { target, name }) => {
                 let kind = match target {
-                    pg_proto::DescribeTarget::Statement => b"statement".as_slice(),
-                    pg_proto::DescribeTarget::Portal => b"portal".as_slice(),
+                    pgtk_proto::DescribeTarget::Statement => b"statement".as_slice(),
+                    pgtk_proto::DescribeTarget::Portal => b"portal".as_slice(),
                 };
                 FrontendMessage::Describe(Describe {
                     target,
@@ -84,8 +84,8 @@ impl
             }
             FrontendMessage::Close(Close { target, name }) => {
                 let kind = match target {
-                    pg_proto::DescribeTarget::Statement => b"statement".as_slice(),
-                    pg_proto::DescribeTarget::Portal => b"portal".as_slice(),
+                    pgtk_proto::DescribeTarget::Statement => b"statement".as_slice(),
+                    pgtk_proto::DescribeTarget::Portal => b"portal".as_slice(),
                 };
                 FrontendMessage::Close(Close {
                     target,
@@ -94,7 +94,7 @@ impl
             }
             other => other,
         };
-        Ok(pg_proto::FrontendMiddlewareOutput::Forward(rewritten))
+        Ok(pgtk_proto::FrontendMiddlewareOutput::Forward(rewritten))
     }
 }
 
@@ -146,7 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .into_session();
     while !matches!(
         session.forward_next().await?,
-        pg_proto::ForwardedMessage::Frontend(FrontendMessage::Terminate)
+        pgtk_proto::ForwardedMessage::Frontend(FrontendMessage::Terminate)
     ) {}
     Ok(())
 }

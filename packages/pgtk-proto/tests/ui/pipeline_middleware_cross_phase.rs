@@ -1,4 +1,4 @@
-use pg_proto::grammar::backend;
+use pgtk_proto::grammar::backend;
 
 fn replace_parse_with_bind(
     _message: backend::ParseResponseInternalMessage,

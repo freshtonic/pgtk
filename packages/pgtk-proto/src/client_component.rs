@@ -112,7 +112,7 @@ impl<Provider: ClientTlsProvider> ClientTlsConfiguration for ReloadableClientTls
 /// Application-owned TLS material resolved afresh for a connection attempt.
 ///
 /// The application owns reload and rotation of destination names and trust
-/// anchors. `pg-proto` deliberately constructs the final rustls verifier from
+/// anchors. `pgtk-proto` deliberately constructs the final rustls verifier from
 /// the selected [`SslMode`](crate::SslMode), so a provider cannot silently
 /// weaken `VerifyCa` or `VerifyFull`.
 #[derive(Clone)]

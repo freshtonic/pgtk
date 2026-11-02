@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use pg_proto::{Conn, codec::Execute, session::Building};
+use pgtk_proto::{Conn, codec::Execute, session::Building};
 
 fn illegal<S, C>(building: Conn<S, Building, C>) {
     let execute = Execute {

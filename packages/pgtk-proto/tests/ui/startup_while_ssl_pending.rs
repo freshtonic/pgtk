@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use pg_proto::{Conn, startup::{ProtocolVersion, StartupMessage}};
+use pgtk_proto::{Conn, startup::{ProtocolVersion, StartupMessage}};
 
 fn main() {
     let (pending, _) = Conn::new(()).ssl_request();

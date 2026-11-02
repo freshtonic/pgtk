@@ -14,7 +14,7 @@ the separation in ADR 0002 between wire receipt, policy, and session advancement
 
 ## v0.8.0 baseline
 
-This proposal targets tag `pg-proto-v0.8.0`. At that tag the forwarding-boundary
+This proposal targets tag `pgtk-proto-v0.8.0`. At that tag the forwarding-boundary
 `IntermediaryMiddleware` is already async and fallible. Its backend result supports
 `Forward`, non-empty ordered `Expand`, and `Suppress`. `process_backend` applies
 client-role interception before this hook and server-role interception afterward.

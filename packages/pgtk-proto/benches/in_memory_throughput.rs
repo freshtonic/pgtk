@@ -13,7 +13,7 @@ use std::{
 use bytes::Bytes;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use futures_util::future::join_all;
-use pg_proto::{
+use pgtk_proto::{
     BackendMessage, BoundedPipeline, CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget,
     DataRow, FieldDescription, ForwardedMessage, FrontendMessage, InitialServerContext,
     Intermediary, RowDescription, Server, ServerAccept, ServerTlsPolicy, StartupParameters,
@@ -274,7 +274,7 @@ async fn run(workload: Workload) -> Result<Duration, Box<dyn std::error::Error>>
 }
 
 async fn serve_stub(
-    stub: &mut pg_proto::ServerConnection<DuplexStream, (), (), pg_proto::TrustIdentity>,
+    stub: &mut pgtk_proto::ServerConnection<DuplexStream, (), (), pgtk_proto::TrustIdentity>,
     workload: Workload,
     rows: &[BackendMessage],
     started: Instant,
@@ -318,7 +318,7 @@ async fn serve_stub(
 }
 
 async fn send_rows(
-    stub: &mut pg_proto::ServerConnection<DuplexStream, (), (), pg_proto::TrustIdentity>,
+    stub: &mut pgtk_proto::ServerConnection<DuplexStream, (), (), pgtk_proto::TrustIdentity>,
     query: Bytes,
     rows: &[BackendMessage],
 ) -> io::Result<()> {
@@ -362,7 +362,7 @@ const fn field(name: &'static str, type_oid: u32) -> FieldDescription {
 }
 
 async fn send_command(
-    stub: &mut pg_proto::ServerConnection<DuplexStream, (), (), pg_proto::TrustIdentity>,
+    stub: &mut pgtk_proto::ServerConnection<DuplexStream, (), (), pgtk_proto::TrustIdentity>,
     tag: &'static [u8],
     status: TransactionStatus,
 ) -> io::Result<()> {

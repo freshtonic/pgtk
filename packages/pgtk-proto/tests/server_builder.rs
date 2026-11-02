@@ -10,7 +10,7 @@ use std::{
 };
 
 use bytes::Bytes;
-use pg_proto::{
+use pgtk_proto::{
     BuildServerError, DisabledServerTls, FrontendMessage, NegotiatedServerTls, PreStartupMessage,
     ProtocolVersion, Server, ServerAccept, ServerAuthentication, ServerAuthenticationAction,
     ServerAuthenticationProvider, ServerAuthenticationRequest, ServerAuthenticationResponse,
@@ -391,7 +391,7 @@ async fn required_tls_rejects_plaintext_and_authentication_rejection_is_typed() 
     client.write_all(&startup_with_user("alice")).await.unwrap();
     assert!(matches!(
         server.accept(server_io, "peer", ()).await,
-        Err(pg_proto::AcceptError::TlsRequired)
+        Err(pgtk_proto::AcceptError::TlsRequired)
     ));
     let mut response = Vec::new();
     client.read_to_end(&mut response).await.unwrap();
@@ -420,7 +420,7 @@ async fn required_tls_rejects_plaintext_and_authentication_rejection_is_typed() 
     let (result, ()) = tokio::join!(accept, client_exchange);
     assert!(matches!(
         result,
-        Err(pg_proto::AcceptError::Authentication(
+        Err(pgtk_proto::AcceptError::Authentication(
             AuthenticationFailure("user is required")
         ))
     ));
@@ -440,7 +440,7 @@ async fn tls_identity_provider_errors_remain_typed() {
         .unwrap();
     assert!(matches!(
         server.accept(server_io, (), ()).await,
-        Err(pg_proto::AcceptError::TlsIdentity(IdentityUnavailable))
+        Err(pgtk_proto::AcceptError::TlsIdentity(IdentityUnavailable))
     ));
 }
 
@@ -591,7 +591,7 @@ async fn oversized_policy_continuation_returns_error_without_dropping_live_conne
             .unwrap();
     };
     let (accepted, ()) = tokio::join!(server.accept(server_io, (), ()), client_exchange);
-    assert!(matches!(accepted, Err(pg_proto::AcceptError::Io(_))));
+    assert!(matches!(accepted, Err(pgtk_proto::AcceptError::Io(_))));
 }
 
 #[tokio::test]
@@ -604,7 +604,7 @@ async fn invalid_application_sasl_offer_returns_error_without_dropping_live_conn
     let (mut client, server_io) = tokio::io::duplex(256);
     client.write_all(&startup_with_user("alice")).await.unwrap();
     let error = server.accept(server_io, (), ()).await.unwrap_err();
-    assert!(matches!(error, pg_proto::AcceptError::Io(_)));
+    assert!(matches!(error, pgtk_proto::AcceptError::Io(_)));
 }
 
 #[tokio::test]
@@ -753,7 +753,7 @@ async fn operational_connection_receives_traffic_and_applies_tagged_frame_limit(
 async fn accept_packet(
     server: Server<DisabledServerTls, TrustServerAuthentication>,
     packet: Bytes,
-) -> Result<(), pg_proto::AcceptError> {
+) -> Result<(), pgtk_proto::AcceptError> {
     let (mut client, server_io) = tokio::io::duplex(32 * 1024);
     client.write_all(&packet).await.unwrap();
     let result = server
