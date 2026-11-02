@@ -12,8 +12,8 @@
 [package]
 edition = "2024"
 rust-version = "1.88"
-name = "recursa-diagrams"
-version = "0.1.6"
+name = "recursa"
+version = "0.1.7"
 authors = ["James Sadler"]
 build = false
 include = [
@@ -26,30 +26,45 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Semantic railroad-diagram plans and Rustdoc SVG rendering for Recursa"
-documentation = "https://docs.rs/recursa-diagrams"
+description = "AST-first parser generator for Rust"
+documentation = "https://docs.rs/recursa"
 readme = "README.md"
 keywords = [
     "parser",
+    "parser-generator",
+    "ast",
     "grammar",
-    "railroad",
-    "diagram",
-    "rustdoc",
 ]
-categories = [
-    "parsing",
-    "visualization",
-]
+categories = ["parsing"]
 license = "MIT"
 repository = "https://github.com/freshtonic/recursa"
 
+[features]
+arbitrary = [
+    "recursa-core/arbitrary",
+    "recursa-macros/arbitrary",
+]
+default = []
+diagrams = [
+    "recursa-core/diagrams",
+    "recursa-macros/diagrams",
+]
+explorer = [
+    "recursa-core/explorer",
+    "recursa-macros/explorer",
+]
+serde = [
+    "recursa-core/serde",
+    "recursa-macros/serde",
+]
+spans = ["recursa-core/spans"]
+
 [lib]
-name = "recursa_diagrams"
+name = "recursa"
 path = "src/lib.rs"
 
-[dependencies.railroad]
-version = "=0.3.6"
-default-features = false
+[dependencies.recursa-core]
+version = "=0.1.7"
 
-[dev-dependencies]
-roxmltree = "0.21"
+[dependencies.recursa-macros]
+version = "=0.1.7"

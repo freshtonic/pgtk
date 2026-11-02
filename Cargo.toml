@@ -13,8 +13,8 @@ cc = "1"
 clap = "4"
 derive_more = "2.1.1"
 postgres = "0.19"
-recursa = { version = "0.1.6", default-features = false }
-recursa-codegen = { version = "0.1.6", default-features = false }
+recursa = { version = "0.1.7", default-features = false }
+recursa-codegen = { version = "0.1.7", default-features = false }
 regex = "1"
 serde = "1"
 serde_json = "1"
@@ -53,12 +53,3 @@ opt-level = 3
 # frames in the pgtk-sql flame harness.
 [profile.bench]
 debug = true
-
-# Until the next recursa release: the pretty-print layout settings that pgtk-sql uses
-# (`pretty(breaks = hinted)`, `group = none`, `break_before = space`).
-[patch.crates-io]
-recursa = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-core = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-codegen = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-macros = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }
-recursa-diagrams = { git = "https://github.com/freshtonic/recursa", rev = "42a1152704d1a031d98011d201d4a2cbe5e6980a" }

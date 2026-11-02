@@ -12,16 +12,12 @@
 [package]
 edition = "2024"
 rust-version = "1.88"
-name = "recursa-codegen"
-version = "0.1.6"
+name = "recursa-macros"
+version = "0.1.7"
 authors = ["James Sadler"]
-build = "build.rs"
+build = false
 include = [
-    "build.rs",
     "src/**",
-    "!src/semantic_projection_tests.rs",
-    "!src/source_analysis_contract_tests.rs",
-    "!src/source_analysis_tests.rs",
     "README.md",
     "LICENSE",
 ]
@@ -30,59 +26,51 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Build-time grammar analysis and code generation for Recursa"
-documentation = "https://docs.rs/recursa-codegen"
+description = "Structural proc-macro loaders for Recursa-generated parsers"
+documentation = "https://docs.rs/recursa-macros"
 readme = "README.md"
 keywords = [
     "parser",
     "parser-generator",
+    "procedural-macro",
     "grammar",
-    "code-generation",
 ]
 categories = [
     "parsing",
-    "development-tools::build-utils",
+    "development-tools::procedural-macro-helpers",
 ]
 license = "MIT"
 repository = "https://github.com/freshtonic/recursa"
 
 [features]
+arbitrary = []
 default = []
 diagrams = ["dep:recursa-diagrams"]
 explorer = []
-spans = []
+serde = []
 
 [lib]
-name = "recursa_codegen"
+name = "recursa_macros"
 path = "src/lib.rs"
+proc-macro = true
 
-[dependencies]
-phf_codegen = "0.11.3"
-prettyplease = "0.2"
-quote = "1"
-regex-automata = "0.4"
-regex-syntax = "0.8"
-unicode-ident = "1"
+[dependencies.proc-macro-crate]
+version = "3"
 
 [dependencies.proc-macro2]
 version = "1"
 features = ["span-locations"]
 
+[dependencies.quote]
+version = "1"
+
 [dependencies.recursa-diagrams]
-version = "=0.1.6"
-path = "../recursa-diagrams"
+version = "=0.1.7"
 optional = true
 
 [dependencies.syn]
 version = "2"
 features = [
-    "extra-traits",
     "full",
-    "parsing",
-    "visit",
     "visit-mut",
 ]
-
-[dev-dependencies]
-roxmltree = "0.21"
-tempfile = "3"
