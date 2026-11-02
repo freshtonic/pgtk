@@ -5,10 +5,10 @@ finds changes that need a new major version (a new minor version before 1.0).
 
 ## What is checked
 
-`release-plz.toml` sets `semver_check = true` for `pgtk-catalog` and `pgtk-analyze`. release-plz
+`release-plz.toml` sets `semver_check = true` for `pgtk-catalog`. release-plz
 runs the check when it calculates the next versions, in `scripts/release.sh` and in the Release
 workflow. A breaking change thus gives a new minor version, not a patch version. The check needs a
-release on crates.io to compare with, so it starts with the second release of each crate.
+release on crates.io to compare with, so it starts with the second release.
 
 CI does not run the check on each pull request. Before 1.0, a pull request can break the API on
 purpose, and the version changes only in the release.
@@ -34,3 +34,11 @@ The check is correct for pgtk-sql, but it costs much and it tells us little:
 Thus a release of pgtk-sql that changes the grammar takes a new minor version, by policy. Turn the
 check on for pgtk-sql if a part of its public API that is written by hand (for example
 `document`, `minimum_version` or `TargetVersion`) becomes stable, and needs protection.
+
+## Why pgtk-analyze is not checked
+
+pgtk-analyze has the same six version features as pgtk-sql, and it forwards them to pgtk-sql.
+cargo-semver-checks builds a crate with all of its features, and pgtk-sql stops a build that
+selects more than one version. Thus the check cannot build pgtk-analyze, and release-plz cannot
+calculate the next versions. release-plz has no setting that gives cargo-semver-checks one feature
+set.

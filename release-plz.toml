@@ -21,7 +21,7 @@ pr_labels = ["release"]
 pr_draft = false
 # Publish only from the merged release PR, never from an arbitrary main commit.
 release_always = false
-# Off by default. pgtk-catalog and pgtk-analyze turn it on below.
+# Off by default. pgtk-catalog turns it on below.
 semver_check = false
 
 [changelog]
@@ -45,20 +45,20 @@ commit_parsers = [
 [[package]]
 name = "pgtk-sql"
 
-# Not semver-checked before its second release, as pgtk-catalog was not.
+# Not semver-checked: it has the version features of pgtk-sql, as pgtk-analyze has.
 [[package]]
 name = "pgtk-psql"
 
 # cargo-semver-checks compares the public API with the last release on crates.io, and
 # release-plz sets the next version from the result. It needs a release on crates.io, so it
-# starts with the second release. pgtk-sql is not checked: see docs/semver-checks.md.
+# starts with the second release. pgtk-sql and pgtk-analyze are not checked: see
+# docs/semver-checks.md.
 [[package]]
 name = "pgtk-catalog"
 semver_check = true
 
 [[package]]
 name = "pgtk-analyze"
-semver_check = true
 
 # Never released: the crates with `publish = false`.
 [[package]]
