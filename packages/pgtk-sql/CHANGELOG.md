@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/freshtonic/pgtk/compare/pgtk-sql-v0.1.0...pgtk-sql-v0.1.1) - 2026-11-02
+
+### Added
+
+- *(pgtk-sql)* lay out pretty-printed SQL with one clause on each line
+
 ## [0.1.0](https://github.com/freshtonic/pgtk/releases/tag/pgtk-sql-v0.1.0) - 2026-10-28
 
 ### Added

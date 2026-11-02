@@ -1,6 +1,6 @@
 [package]
 name = "pgtk-psql"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "psql scripts, read as psql reads them: variable interpolation, meta-commands, conditional blocks and rendering to server SQL"
@@ -53,7 +53,7 @@ psql-oracle = ["pgtk-psql-oracle/scanner"]
 # (empty) default feature in the set, recursa is a different build unit from
 # the one pgtk-sql links, and pgtk-sql itself is compiled a second time.
 recursa = { workspace = true, features = ["diagrams", "explorer", "spans"] }
-pgtk-sql = { version = "0.1.0", path = "../pgtk-sql", default-features = false, features = ["spans"] }
+pgtk-sql = { version = "0.1.1", path = "../pgtk-sql", default-features = false, features = ["spans"] }
 derive_more = { workspace = true, features = ["deref"] }
 
 [build-dependencies]

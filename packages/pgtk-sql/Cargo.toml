@@ -1,6 +1,6 @@
 [package]
 name = "pgtk-sql"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.88"
 description = "A PostgreSQL SQL parser that accepts and rejects exactly what PostgreSQL 14 to 19 beta do"
