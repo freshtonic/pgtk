@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.88"
 name = "recursa-core"
-version = "0.1.6"
+version = "0.1.7"
 authors = ["James Sadler"]
 build = false
 include = [
@@ -52,10 +52,6 @@ statistics = []
 name = "recursa_core"
 path = "src/lib.rs"
 
-[dependencies]
-phf = "0.11.3"
-self_cell = "1.2"
-
 [dependencies.arbitrary]
 version = "1"
 optional = true
@@ -75,10 +71,15 @@ features = [
 ]
 default-features = false
 
+[dependencies.phf]
+version = "0.11.3"
+
 [dependencies.recursa-diagrams]
-version = "=0.1.6"
-path = "../recursa-diagrams"
+version = "=0.1.7"
 optional = true
+
+[dependencies.self_cell]
+version = "1.2"
 
 [dependencies.serde]
 version = "1"

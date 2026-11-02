@@ -12,12 +12,16 @@
 [package]
 edition = "2024"
 rust-version = "1.88"
-name = "recursa-macros"
-version = "0.1.6"
+name = "recursa-codegen"
+version = "0.1.7"
 authors = ["James Sadler"]
-build = false
+build = "build.rs"
 include = [
+    "build.rs",
     "src/**",
+    "!src/semantic_projection_tests.rs",
+    "!src/source_analysis_contract_tests.rs",
+    "!src/source_analysis_tests.rs",
     "README.md",
     "LICENSE",
 ]
@@ -26,50 +30,70 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Structural proc-macro loaders for Recursa-generated parsers"
-documentation = "https://docs.rs/recursa-macros"
+description = "Build-time grammar analysis and code generation for Recursa"
+documentation = "https://docs.rs/recursa-codegen"
 readme = "README.md"
 keywords = [
     "parser",
     "parser-generator",
-    "procedural-macro",
     "grammar",
+    "code-generation",
 ]
 categories = [
     "parsing",
-    "development-tools::procedural-macro-helpers",
+    "development-tools::build-utils",
 ]
 license = "MIT"
 repository = "https://github.com/freshtonic/recursa"
 
 [features]
-arbitrary = []
 default = []
 diagrams = ["dep:recursa-diagrams"]
 explorer = []
-serde = []
+spans = []
 
 [lib]
-name = "recursa_macros"
+name = "recursa_codegen"
 path = "src/lib.rs"
-proc-macro = true
 
-[dependencies]
-proc-macro-crate = "3"
-quote = "1"
+[dependencies.phf_codegen]
+version = "0.11.3"
+
+[dependencies.prettyplease]
+version = "0.2"
 
 [dependencies.proc-macro2]
 version = "1"
 features = ["span-locations"]
 
+[dependencies.quote]
+version = "1"
+
 [dependencies.recursa-diagrams]
-version = "=0.1.6"
-path = "../recursa-diagrams"
+version = "=0.1.7"
 optional = true
+
+[dependencies.regex-automata]
+version = "0.4"
+
+[dependencies.regex-syntax]
+version = "0.8"
 
 [dependencies.syn]
 version = "2"
 features = [
+    "extra-traits",
     "full",
+    "parsing",
+    "visit",
     "visit-mut",
 ]
+
+[dependencies.unicode-ident]
+version = "1"
+
+[dev-dependencies.roxmltree]
+version = "0.21"
+
+[dev-dependencies.tempfile]
+version = "3"

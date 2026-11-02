@@ -905,8 +905,9 @@ checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
 name = "recursa"
-version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b1e5973d0977d20c95e44c8f215dbfefa80fb2dd700360ca71098f42ad8bf9ec"
 dependencies = [
  "recursa-core",
  "recursa-macros",
@@ -914,8 +915,9 @@ dependencies = [
 
 [[package]]
 name = "recursa-codegen"
-version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f9cfdf3b5042a54162ee1180b317c874644c89df2f3a68e3aa408e91d368b821"
 dependencies = [
  "phf_codegen",
  "prettyplease",
@@ -930,8 +932,9 @@ dependencies = [
 
 [[package]]
 name = "recursa-core"
-version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9a7883143f661134d5c9924f9d910cd139beab7c83fdc4b3b4af52d427b8caaa"
 dependencies = [
  "arbitrary",
  "bumpalo",
@@ -943,16 +946,18 @@ dependencies = [
 
 [[package]]
 name = "recursa-diagrams"
-version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8e1068a9c18a8cca44b0aae358bbd5b0e5d2eab56e1a4363cd419bb8945407e9"
 dependencies = [
  "railroad",
 ]
 
 [[package]]
 name = "recursa-macros"
-version = "0.1.6"
-source = "git+https://github.com/freshtonic/recursa?rev=42a1152704d1a031d98011d201d4a2cbe5e6980a#42a1152704d1a031d98011d201d4a2cbe5e6980a"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2e9daaf37e88fe87455b66ae15e2181e0530ad38d8da0384131278d2e39082e"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
