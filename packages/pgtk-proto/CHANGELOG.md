@@ -1,0 +1,381 @@
+# Changelog
+
+All notable changes to this project will be documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## Unreleased
+
+## [0.12.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.3...pg-proto-v0.12.0) - 2026-08-25
+
+### Added
+
+- atomically forward frontend flush expansions
+
+### Maintenance
+
+- update benchmark results
+- update benchmark results
+
+## [0.11.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.2...pg-proto-v0.11.3) - 2026-08-19
+
+### Changed
+
+- retain pull request benchmark history
+- split test jobs and cache Rust builds
+
+### Documentation
+
+- simplify README
+
+### Fixed
+
+- *(ci)* read benchmark results from Criterion
+- *(ci)* prevent modified workflows from pushing
+- *(security)* update h2 past RUSTSEC-2026-0258
+- *(ci)* aggregate split test results
+
+### Maintenance
+
+- update benchmark results
+- update benchmark results
+
+## [0.11.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.1...pg-proto-v0.11.2) - 2026-08-18
+
+### Changed
+
+- add in-memory protocol throughput suite
+- use criterion for in-memory throughput
+- remove builder performance budget
+
+### Documentation
+
+- document public and private modules
+- explain benchmark orchestration
+- simplify builder API introduction
+- tighten protocol correctness introduction
+- explain direction-dependent wire tags
+- clarify pooling evidence
+- simplify typestate benefits
+- explain queued-request backpressure
+- add runnable architecture examples
+
+## [0.11.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.11.0...pg-proto-v0.11.1) - 2026-08-17
+
+### Added
+
+- modernize burn-in command interface
+- run every burn-in profile from the CLI
+- run exhaustive burn-in profile matrix
+- chart historical burn-in performance
+- record performance runner hardware
+- delegate performance runs to optimized binary
+
+## [0.11.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.7...pg-proto-v0.11.0) - 2026-08-17
+
+### Added
+
+- generate stable protocol transition ids
+- add burn-in smoke harness
+- report generated protocol coverage
+- add deterministic burn-in fixtures
+- cover query lifecycles in burn-in harness
+- cover real COPY flows in burn-in harness
+- add controlled performance evidence
+- capture controlled intermediary load
+- audit reviewed protocol dispositions
+
+### Changed
+
+- integrate burn-in verification workflows
+- require scripted malformed conformance
+- run controlled performance capture
+- isolate bounded container test profiles
+
+### Documentation
+
+- design protocol burn-in verification
+- review transition observation facade
+- describe burn-in verification suite
+
+### Fixed
+
+- terminate rejected startup routes
+
+### Testing
+
+- exercise TLS authentication profiles
+
+## [0.10.7](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.6...pg-proto-v0.10.7) - 2026-08-14
+
+### Fixed
+
+- forward startup parameter statuses
+- keep startup statuses outside query middleware
+
+## [0.10.6](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.5...pg-proto-v0.10.6) - 2026-08-14
+
+### Added
+
+- make intermediary futures sendable
+
+### Changed
+
+- pin fuzz jobs to dated nightly
+
+### Documentation
+
+- require sync peer in intermediary example
+
+## [0.10.5](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.4...pg-proto-v0.10.5) - 2026-08-13
+
+### Fixed
+
+- project deferred local errors before emission
+
+## [0.10.4](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.3...pg-proto-v0.10.4) - 2026-08-13
+
+### Fixed
+
+- discard failed extended-query messages locally
+
+## [0.10.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.2...pg-proto-v0.10.3) - 2026-08-12
+
+### Fixed
+
+- diagnose plaintext startup when TLS is required
+
+## [0.10.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.1...pg-proto-v0.10.2) - 2026-08-12
+
+### Added
+
+- add reusable intermediary protocol adapters
+
+### Fixed
+
+- restore rustdoc grammar and diagrams
+- review proxy adapter facade exports
+
+## [0.10.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.10.0...pg-proto-v0.10.1) - 2026-08-11
+
+### Added
+
+- expose intermediary operation correlation
+
+## [0.10.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.9.0...pg-proto-v0.10.0) - 2026-08-11
+
+### Fixed
+
+- preserve projected state across pipelined responses
+
+## [0.9.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.8.0...pg-proto-v0.9.0) - 2026-08-10
+
+### Added
+
+- add ordered backend batch holding
+
+## [0.8.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.7.0...pg-proto-v0.8.0) - 2026-08-10
+
+### Added
+
+- support backend middleware fan-out
+
+### Fixed
+
+- preserve fuzz checks when reusing CI
+
+## [0.7.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.6.2...pg-proto-v0.7.0) - 2026-08-09
+
+### Added
+
+- expose async intermediary middleware decisions
+
+### Documentation
+
+- illustrate modes of operation
+
+## [0.6.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.6.1...pg-proto-v0.6.2) - 2026-08-09
+
+### Documentation
+
+- inventory supported protocol messages
+
+## [0.6.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.6.0...pg-proto-v0.6.1) - 2026-08-09
+
+### Changed
+
+- preserve explicit Rust toolchain policy
+
+### Documentation
+
+- link official PostgreSQL protocol references
+
+## [0.6.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.5.0...pg-proto-v0.6.0) - 2026-08-09
+
+### Added
+
+- add operational client builder
+- add plaintext trust server builder ([#32](https://github.com/freshtonic/pg-proto/pull/32))
+- add client TLS and pluggable authentication ([#31](https://github.com/freshtonic/pg-proto/pull/31))
+- add server TLS and pluggable authentication ([#33](https://github.com/freshtonic/pg-proto/pull/33))
+- run role middleware across connection lifecycle
+- add intermediary role connection seams
+- add operational intermediary forwarding
+- forward intermediary cancellation safely
+- migrate examples to builder facade
+
+### Changed
+
+- Merge branch 'main' into dependabot/cargo/base64-0.23.0
+- Merge branch 'main' into dependabot/cargo/tokio-postgres-rustls-0.14.0
+- refactor connections around state-free cores
+- make builders the only public API
+- make logging proxies builder-native
+
+### Documentation
+
+- centre builder facade and release gates
+- preserve builder domain decisions
+- verify and label code snippets
+
+### Fixed
+
+- connect generated railroad diagrams
+- align CI with builder-only test layout
+- close and pipeline logging proxy sessions
+
+### Testing
+
+- initialize rustls provider independently
+
+## [0.5.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.4.0...pg-proto-v0.5.0) - 2026-08-07
+
+### Added
+
+- generate phase associations from grammar ([#23](https://github.com/freshtonic/pg-proto/pull/23))
+
+### Changed
+
+- deepen pipeline ledger interface ([#24](https://github.com/freshtonic/pg-proto/pull/24))
+- consolidate inbound interception
+
+### Maintenance
+
+- configure Matt Pocock agent skills
+
+## [0.4.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.3.0...pg-proto-v0.4.0) - 2026-08-06
+
+### Added
+
+- add typed bounded pipeline middleware
+- compose typed pipeline middleware
+- track exact pipeline response phases
+- type outbound middleware by connection phase
+
+### Changed
+
+- deepen typed pipeline middleware
+
+### Fixed
+
+- separate server authentication decision phases
+
+### Testing
+
+- refresh outbound role diagnostic
+- support platform-specific compiler diagnostics
+- match Linux macro diagnostic indentation
+
+## [0.3.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.3...pg-proto-v0.3.0) - 2026-08-06
+
+### Added
+
+- make message middleware async
+
+## [0.2.3](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.2...pg-proto-v0.2.3) - 2026-08-06
+
+### Added
+
+- generate typed message projections
+- add stateful message middleware core
+- integrate checked message middleware
+- generate phase-typed middleware messages
+- infer typed middleware from connections
+- project typed transport messages
+- migrate rewriting example to typed middleware
+- add typed wire pass-through adapter
+
+### Changed
+
+- reuse successful PR checks on main
+- tolerate post-merge API lag
+
+### Documentation
+
+- plan stateful message middleware
+- clarify runtime middleware validation
+- plan compile-time middleware API
+- document compile-time middleware
+- complete typed middleware plan
+- explain dropped pipeline messages
+
+### Fixed
+
+- preserve negotiation observations in proxy example
+- align typed projections with completion plan
+
+### Testing
+
+- refresh compile-fail diagnostics
+- stabilize compile-fail diagnostics
+
+## [0.2.2](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.1...pg-proto-v0.2.2) - 2026-08-05
+
+### Added
+
+- add configurable network transports
+- expose buffered transport borrowing
+- split negotiated network streams
+- expose negotiated channel binding
+
+### Fixed
+
+- satisfy Linux socket lint
+
+## [0.2.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.2.0...pg-proto-v0.2.1) - 2026-08-04
+
+### Added
+
+- add crate discovery metadata
+
+### Changed
+
+- change project licence to MIT
+
+### Documentation
+
+- show README on crate documentation landing page
+- add community and security policies
+
+### Fixed
+
+- select nightly fuzzing and current cargo-deny
+
+### Maintenance
+
+- define toolchain and publishing metadata
+- harden dependency and release automation
+- tighten Clippy lint policy
+
+## [0.2.0](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.1.1...pg-proto-v0.2.0) - 2026-08-04
+
+### Other
+
+- add bounded intermediary pipelines
+
+## [0.1.1](https://github.com/freshtonic/pg-proto/compare/pg-proto-v0.1.0...pg-proto-v0.1.1) - 2026-08-04
+
+### Other
+
+- bound decoded collection allocations

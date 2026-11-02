@@ -1,0 +1,19 @@
+name: Documentation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  rustdoc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - run: cargo doc --workspace --no-deps

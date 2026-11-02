@@ -1,0 +1,82 @@
+[package]
+name = "pg-proto"
+version = "0.12.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["James Sadler <freshtonic@gmail.com>"]
+license = "MIT"
+description = "Session-typed PostgreSQL wire protocol"
+keywords = ["postgresql", "protocol", "proxy", "typestate", "async"]
+categories = ["database", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/pg-proto"
+homepage = "https://github.com/freshtonic/pg-proto"
+readme = "README.md"
+repository = "https://github.com/freshtonic/pg-proto"
+
+[workspace]
+members = ["pg-proto-burn-in", "pg-proto-fsm"]
+exclude = ["fuzz"]
+resolver = "3"
+
+[profile.burn-in]
+inherits = "release"
+debug = 2
+lto = "fat"
+codegen-units = 1
+incremental = false
+
+[profile.burn-in-diagnostic]
+inherits = "release"
+debug = 2
+lto = "off"
+codegen-units = 1
+incremental = false
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# These produce unstable or dependency-graph noise rather than actionable defects.
+future_not_send = "allow"
+missing_const_for_fn = "allow"
+multiple_crate_versions = "allow"
+option_if_let_else = "allow"
+
+[dependencies]
+bytes = "1.12.1"
+base64 = "0.23.0"
+hmac = "0.13.0"
+postgres-protocol = "0.6.12"
+pg-proto-fsm = { version = "0.12.0", path = "pg-proto-fsm" }
+rand = "0.10.2"
+rustls = "0.23.43"
+sha2 = "0.11.0"
+stringprep = "0.1.5"
+subtle = "2.6.1"
+socket2 = "0.6.1"
+tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "time"] }
+tokio-rustls = "0.26.4"
+tokio-util = { version = "0.7.19", features = ["codec"] }
+x509-parser = "0.18.1"
+
+[dev-dependencies]
+criterion = { version = "0.8.2", features = ["async_tokio"] }
+futures-util = "0.3"
+rcgen = "0.14.8"
+testcontainers-modules = { version = "0.15.0", features = ["postgres"] }
+tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+tokio-postgres = "0.7.18"
+tokio-postgres-rustls = "0.14.0"
+trybuild = "1.0.120"
+
+[[bench]]
+name = "in_memory_throughput"
+harness = false

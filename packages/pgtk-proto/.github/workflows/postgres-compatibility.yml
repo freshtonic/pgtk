@@ -1,0 +1,39 @@
+name: PostgreSQL compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  postgres:
+    name: PostgreSQL ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Required pg-proto and next-Proxy compatibility contract.
+        version: [14, 15, 16, 17, 18]
+    env:
+      PG_PROTO_POSTGRES_VERSION: ${{ matrix.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@v2
+      - name: Run crate compatibility probe
+        run: cargo test --lib internal_tests::postgres_container -- --ignored
+      - name: Run public intermediary conformance
+        run: >-
+          cargo run -p pg-proto-burn-in --
+          conformance --profile smoke --postgres-version ${{ matrix.version }}
+          --output-dir target/burn-in/postgres-${{ matrix.version }}
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: burn-in-postgres-${{ matrix.version }}
+          path: target/burn-in/postgres-${{ matrix.version }}
+          if-no-files-found: warn

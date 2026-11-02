@@ -1,0 +1,639 @@
+# pg-proto
+
+[![CI](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml/badge.svg)](https://github.com/freshtonic/pg-proto/actions/workflows/ci.yml)
+[![docs.rs](https://docs.rs/pg-proto/badge.svg)](https://docs.rs/pg-proto)
+[![crates.io](https://img.shields.io/crates/v/pg-proto.svg)](https://crates.io/crates/pg-proto)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue.svg)](https://blog.rust-lang.org/2025/06/26/Rust-1.88.0/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/freshtonic/pg-proto/blob/main/LICENSE)
+
+`pg-proto` is an asynchronous Rust implementation of the PostgreSQL frontend/backend wire protocol designed for
+proxies, poolers, gateways, drivers, and protocol-aware test infrastructure.
+
+Custom middleware can be installed to intercept, rewrite, filter any Postgres wire protocol message type.
+
+A builder API configures clients, servers, and intermediaries explicitly; internal typestates make invalid PostgreSQL
+protocol sequences unrepresentable.
+
+`pg-proto` is useful when protocol correctness is part of the architecture rather than merely an implementation detail:
+the legal next operations are visible in function signatures, illegal compositions are rejected at compile time, and
+proxy policy can still inspect, replace, or reject complete typed messages.
+
+## Modes of operation
+
+`pg-proto` supports three role-composition archetypes. “External” means a real
+PostgreSQL database, an established driver, or any other participant that speaks
+the PostgreSQL frontend/backend wire protocol.
+
+### Client role
+
+![pg-proto client connected to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/client-mode.svg)
+
+`pg-proto` initiates the connection and acts as the protocol client. The external
+server is commonly PostgreSQL itself, but may be any compatible server.
+
+### Server role
+
+![external client connected to a pg-proto server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/server-mode.svg)
+
+An external client initiates the connection and `pg-proto` acts as the protocol
+server. This mode suits PostgreSQL-compatible services, test backends, recorders,
+and protocol conformance tools.
+
+### Intermediary role
+
+![external client connected through a pg-proto intermediary to an external server](https://raw.githubusercontent.com/freshtonic/pg-proto/main/docs/images/intermediary-mode.svg)
+
+`pg-proto` terminates both protocol roles around an intermediary: its server side
+accepts the external client, while its client side establishes an independent
+connection to the external server. Middleware can inspect, edit, replace, or
+reject messages in either direction. Startup and authenticated routing policies
+can select or refine the destination for sharding, tenancy isolation, regional
+routing, or other application-owned placement decisions.
+
+## What it provides
+
+- Message direction resolves ambiguous PostgreSQL wire tags: `S` means frontend
+  `Sync` but backend `ParameterStatus`, while `E` means frontend `Execute` but
+  backend `ErrorResponse`.
+- Typed pre-startup handling for `SSLRequest`, `GSSENCRequest`, `CancelRequest`,
+  and `StartupMessage`, including transport-changing rustls upgrades.
+- A plain/client-TLS/server-TLS network stream, configurable TCP socket options,
+  and outbound connection retry with capped exponential backoff.
+- Independent client-facing and upstream authentication sessions, including
+  cleartext, MD5, SCRAM-SHA-256, and SCRAM-SHA-256-PLUS with channel binding.
+- Simple and extended query sessions, pipelining, error draining, function calls,
+  COPY IN/OUT/BOTH, and physical replication framing.
+- Lossless, reconstructable `Parse`, `Bind`, `Describe`, `Execute`,
+  `RowDescription`, and `DataRow` values for SQL and result rewriting.
+- A demultiplexer for asynchronous notices, notifications, and parameter status
+  updates without polluting the causal session type.
+- Protocol evidence for deciding whether a connection is safe to return to a
+  pool, including notices, transaction state, and changed session parameters.
+- Connection-branded prepared statements and portals with name rewriting.
+- Exact typestate erasure and checked re-entry at storage and pool boundaries.
+- A protocol grammar macro which emits typestates, their duals, a runtime FSM for
+  differential testing, and railroad diagrams embedded in rustdoc.
+
+The crate owns protocol representation and ordering. Applications retain control
+of listeners, credentials, authorisation, SQL transformation, routing, pooling,
+cancellation storage, telemetry, and failure policy.
+
+## Why use it?
+
+pg-proto provides protocol-aware guardrails throughout its API, making many
+forms of misuse impossible to express. It also exposes accurate connection-state
+evidence, helping infrastructure such as connection pools determine whether a
+connection is safe to reuse.
+
+## What can be built with it?
+
+The [backpressure for queued requests example](examples/queued_request_backpressure.rs)
+shows ordered forwarding and local interception without proxy-owned message
+queues.
+
+- A [TLS-terminating SQL proxy](examples/sql_logging_proxy/main.rs) which
+  authenticates each side independently and inspects plaintext SQL and result
+  rows.
+- A [connection pool](examples/connection_pooler.rs) whose release policy
+  consumes explicit protocol and cleanliness evidence.
+- A [SQL query and result rewriter](examples/rewriting_intermediary.rs), which
+  provides the same interception points needed by firewalls, audit gateways,
+  and column-encryption proxies.
+- A [sharding router](examples/sharding_router.rs) which rewrites
+  prepared-statement and portal names into connection-specific namespaces.
+- A [replication relay](examples/replication_relay.rs) which observes typed
+  COPY-BOTH half-closes independently.
+- A [PostgreSQL-compatible mock server](examples/mock_postgres_server.rs) backed
+  by an in-memory result set.
+- An [administrative client](examples/administrative_client.rs) whose connection
+  type records when a query has changed session state.
+
+## Security choices come first
+
+Every role builder requires explicit TLS and authentication policy. The short
+examples below deliberately use **plaintext** (`ClientTlsPolicy::Disabled` and
+`ServerTlsPolicy::Disabled`) and **unverified trust authentication**
+(`TrustClientAuthentication` and `TrustServerAuthentication`) so that their
+insecure posture is visible in code. They are suitable for a protected local
+development network, not an Internet-facing production deployment.
+
+For production, use `ClientTlsPolicy::libpq` with `SslMode::VerifyFull` and an
+application-owned reloadable `ClientTlsProvider`; use `ServerTlsPolicy::Required`
+with an application-owned `ServerIdentityProvider`. Supply application-defined
+`ClientAuthentication` and `ServerAuthenticationProvider` implementations that
+return typed identity evidence. `pg-proto` orchestrates the protocol but remains
+policy-neutral: it does not store credentials, authorise identities, choose
+authentication mechanisms, or provision certificates.
+
+The default one-mebibyte frame limits are conservative. Raising a limit or
+calling `ProtocolLimits::without_frame_limit` is an explicit resource-exhaustion
+downgrade; production services should instead choose the smallest limit their
+workload needs. Likewise, `SslMode::Allow`, `Prefer`, `Require`, and `VerifyCa`
+provide less assurance than `VerifyFull`, and must be selected deliberately.
+
+## Client: connect to PostgreSQL
+
+Build one reusable upstream-facing component, then establish operational
+connections with caller-owned state and per-call startup parameters.
+
+```rust,no_run
+use pg_proto::{
+    Client, ClientTlsPolicy, ConnectTarget, StartupParameters,
+    TrustClientAuthentication,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        // Development-only: plaintext transport and no credential exchange.
+        .tls(ClientTlsPolicy::Disabled)
+        .authentication(TrustClientAuthentication)
+        .startup_parameters(StartupParameters::new("application"))
+        .build()?;
+
+    let connection = client
+        .connect(
+            ConnectTarget::new("127.0.0.1:5432"),
+            StartupParameters::default().database("postgres"),
+            Vec::<String>::new(),
+        )
+        .await?;
+    let (_transport, state, _middleware, context) = connection.into_parts();
+    assert!(state.is_empty());
+    assert_eq!(context.target().name(), "127.0.0.1:5432");
+    Ok(())
+}
+```
+
+## Server: accept PostgreSQL clients
+
+The server builder owns reusable client-facing policy. The application owns the
+listener, peer metadata, per-connection state, credentials, and authorisation.
+
+```rust,no_run
+use pg_proto::{Server, ServerAccept, ServerTlsPolicy, TrustServerAuthentication};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        // Development-only: clients are neither encrypted nor authenticated.
+        .tls(ServerTlsPolicy::Disabled)
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+
+    match server.accept(transport, peer, Vec::<String>::new()).await? {
+        ServerAccept::Session(connection) => {
+            println!("accepted user {:?}", connection.startup().parameters.get(b"user".as_slice()));
+            let (_transport, _state, _middleware, _context) = connection.teardown();
+        }
+        ServerAccept::Cancellation(cancellation) => {
+            println!("cancel process {}", cancellation.request().process_id());
+        }
+    }
+    Ok(())
+}
+```
+
+## Intermediary: compose both roles
+
+An intermediary takes complete server and client components. Startup routing,
+authenticated routing, cancellation storage, middleware, and failure disclosure
+remain explicit application policies.
+
+```rust,no_run
+use std::convert::Infallible;
+use pg_proto::{
+    CancellationPolicy, Client, ClientTlsPolicy, ConnectTarget, InitialServerContext,
+    Intermediary, Server, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
+    TrustClientAuthentication, TrustServerAuthentication,
+};
+
+struct Route;
+impl<Peer: Sync> StartupRouteResolver<Peer> for Route {
+    type Error = Infallible;
+    async fn resolve(
+        &self,
+        _: StartupParameters,
+        _: InitialServerContext<'_, Peer>,
+    ) -> Result<ConnectTarget, Self::Error> {
+        Ok(ConnectTarget::new("127.0.0.1:5432"))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let server = Server::builder()
+        .tls(ServerTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustServerAuthentication)
+        .build()?;
+    let client = Client::builder()
+        .connector(|target| {
+            let address = target.name().to_owned();
+            async move { tokio::net::TcpStream::connect(address).await }
+        })
+        .tls(ClientTlsPolicy::Disabled) // Development-only plaintext/trust.
+        .authentication(TrustClientAuthentication)
+        .build()?;
+    let intermediary = Intermediary::builder()
+        .server(server)
+        .client(client)
+        .startup_resolver(Route)
+        .cancellation(CancellationPolicy::Reject)
+        .build()?;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:6432").await?;
+    let (transport, peer) = listener.accept().await?;
+    let mut connection = Box::pin(intermediary.accept(transport, peer, ()))
+        .await?
+        .into_session();
+    while !matches!(
+        connection.forward_next().await?,
+        pg_proto::ForwardedMessage::Frontend(pg_proto::FrontendMessage::Terminate)
+    ) {}
+    Ok(())
+}
+```
+
+## Stateful message middleware
+
+A role component can inspect or replace owned messages through synchronous
+builder middleware. Each accepted connection gets a fresh handler with mutable
+access to the application-supplied per-connection state. Repeated `.middleware`
+calls compose stages in declaration order.
+
+```rust
+use pg_proto::{
+    Client, ClientConnectionContext, ClientInitialContext, ClientMiddleware, ClientTlsPolicy,
+    FrontendMessage, TrustClientAuthentication,
+};
+
+#[derive(Clone, Copy)]
+struct CountQueries;
+
+impl ClientMiddleware<usize, ClientConnectionContext> for CountQueries {
+    fn frontend(
+        &mut self,
+        _context: &ClientConnectionContext,
+        count: &mut usize,
+        message: FrontendMessage,
+    ) -> FrontendMessage {
+        if matches!(message, FrontendMessage::Query(_)) {
+            *count += 1;
+        }
+        message
+    }
+}
+
+let _client = Client::builder()
+    .connector(|_| async { Ok::<_, std::io::Error>(()) })
+    .tls(ClientTlsPolicy::Disabled)
+    .authentication(TrustClientAuthentication)
+    .middleware(|_: &ClientInitialContext| CountQueries)
+    .build()?;
+# Ok::<(), pg_proto::BuildError>(())
+```
+
+Forwarding-boundary middleware configured by `Intermediary::builder()` is
+asynchronous and fallible. Its frontend decision can forward a replacement,
+suppress the owned message, or handle the operation locally with an ordered list
+of backend responses. Its backend decision can forward a replacement, expand
+one PostgreSQL response into multiple ordered client responses, or suppress the
+response after protocol state advances. A fourth decision, `Hold`, leaves the
+unchanged source unprojected in a bounded connection-owned hold. Configure
+non-zero count and byte limits with `backend_batching`, then implement
+`flush_backend` to return one ordered replacement per held source. Holds flush
+before protocol barriers, at capacity, on explicit `flush_backend_hold()` calls,
+or during `prepare_backend_teardown()`; `Expand` remains immediate one-to-many
+replacement and is not a delayed batch mechanism. `IntermediaryConnection`
+admits local operations and emits their responses through its connection-owned
+pipeline, so they cannot overtake earlier PostgreSQL responses. Middleware
+failures retain their application error in `ForwardError::Middleware`.
+
+Middleware which needs to correlate application data with protocol responses
+can override `frontend_operation` and `backend_operation`. Both hooks receive the
+same opaque `OperationId` for one accepted request and all of its ordered
+responses; asynchronous backend messages receive no operation identity. Held
+batch policy can obtain the same attribution by overriding
+`flush_backend_operations` and iterating its `AttributedBackendMessages`. The
+identity is deliberately not a pipeline handle: projection, ordering, and
+backpressure remain connection-owned.
+
+`forward_frontend()` and `forward_backend()` report whether traffic was
+forwarded, suppressed, held, or locally handled; `forward_next()` reports the same
+decisions while driving both directions.
+
+For a complete networked example, see the TLS-terminating
+[`SQL logging proxy`](examples/sql_logging_proxy/README.md). The companion
+[`protocol logging proxy`](examples/protocol_logging_proxy/README.md) prints every
+decoded message in both directions. More focused examples live in the
+[`examples/`](examples/) directory, including message rewriting and the neutral
+proxy composition boundary.
+
+## Rustdoc entry point
+
+The [crate overview](https://docs.rs/pg-proto/latest/pg_proto/) documents the
+complete root facade: role builders, nested security configuration, middleware,
+operational connection types, and root message vocabulary.
+
+Build the same documentation locally with:
+
+```bash
+cargo doc --workspace --no-deps --open
+```
+
+## Protocol conformance and burn-in
+
+The `pg-proto-burn-in` workspace binary verifies the complete public topology:
+an independent Rust SQL driver connects to a separately supervised process that
+builds a public `Server` + `Intermediary` + `Client`, which then connects to a
+real PostgreSQL instance launched by Testcontainers. The supervisor owns the
+container, child lifecycles, timeouts, resource sampling, and artifacts. The
+harness does not inspect private connection or grammar state.
+
+The finite profiles cover distinct protocol and deployment concerns:
+
+- `conformance --profile smoke` exercises deterministic fixtures and result
+  sizes, simple and extended queries, statement/portal lifecycles, binary data,
+  portal suspension, pipelining, SQLSTATE recovery, session dirty/reset cycles,
+  asynchronous traffic, cancellation, and COPY IN/OUT. This profile runs
+  against PostgreSQL 14 through 18 in compatibility CI.
+- `conformance --profile authentication` covers trust, cleartext password, MD5,
+  SCRAM-SHA-256, TLS negotiation, and TLS rejection. SCRAM-SHA-256-PLUS is
+  reported separately where the independent driver cannot supply channel
+  binding.
+- `conformance --profile replication` drives physical-replication COPY-BOTH,
+  WAL receipt, standby status, cancellation, and both scripted half-close
+  orderings against PostgreSQL 18.
+- `conformance --profile scripted` finitely covers exchanges that ordinary
+  PostgreSQL or `tokio-postgres` cannot reliably produce: legacy function calls,
+  GSS/Kerberos/SSPI branches, exact CopyFail, COPY-BOTH ordering, malformed
+  frames and encodings, and illegal sequences.
+- `conformance --profile rewrites` proves non-identity middleware reconstruction
+  for Parse SQL, Bind parameters, row descriptions, data rows, diagnostics, and
+  COPY payloads at the opposite endpoint.
+- `faults` isolates backend termination, resource exhaustion, interrupted COPY,
+  deadlock, and PostgreSQL restart from steady-state measurements.
+
+`soak` starts every phase with a canonical typed scenario cycle, then uses a
+seeded weighted schedule across a long-lived session, connection churn, and
+bounded concurrency. It records exact replay parameters, quiescent resource
+checkpoints, restart/abrupt/graceful teardown evidence, and a bounded redacted
+trace. `replay` preserves the original failure artifact and reruns its exact
+recorded prefix; optional bounded reduction happens only after that evidence is
+safe. `performance` keeps warm-up, closed-loop saturation, and open-loop
+fixed-rate measurements separate and emits queue, execution, end-to-end, and
+coordinated-omission-corrected histograms. Performance thresholds are enforced
+only on the labelled stable Linux runner; hosted results are advisory.
+
+The authoritative protocol catalogue combines all six generated grammar
+families with explicit asynchronous, authentication, cancellation, replication,
+fault, codec, and malformed-traffic entries. Each ID has a separately reported
+real-PostgreSQL, scripted, indirect, or reviewed exemption disposition; unknown
+IDs, missing dispositions, invalid migrations, and expired exemptions fail the
+catalogue audit. JSON is authoritative and Markdown is generated for humans.
+Ordinary traces omit payloads; diagnostic payload capture is opt-in, bounded,
+and redacts credentials, TLS secrets, cancellation keys, and configured
+sensitive fields before persistence.
+
+With a Docker-compatible runtime, useful local entry points are:
+
+```bash
+cargo run -p pg-proto-burn-in -- \
+  --run-all --soak-duration-seconds 3600 \
+  --output-dir target/burn-in/manual
+
+cargo run -p pg-proto-burn-in -- \
+  conformance --profile smoke --postgres-version 18 \
+  --output-dir target/burn-in/smoke
+
+cargo run -p pg-proto-burn-in -- \
+  soak --seed 8675309 --iterations 100 \
+  --output-dir target/burn-in/soak
+
+cargo run -p pg-proto-burn-in -- \
+  replay --input target/burn-in/soak/result.json \
+  --output-dir target/burn-in/replay
+
+cargo run -p pg-proto-burn-in -- \
+  catalogue --approved --as-of "$(date -u +%F)" \
+  --output-dir target/burn-in/catalogue
+
+cargo run -p pg-proto-burn-in -- \
+  make-report --dir target/burn-in
+
+cargo run -p pg-proto-burn-in -- \
+  trends --dir target/burn-in/history
+```
+
+`make-report` writes `REPORT.md` alongside the conventional run directories:
+`smoke-pg14` through `smoke-pg18`, `authentication`, `replication`, `rewrites`,
+`scripted`, `faults`, `performance-controlled`, `performance-scheduled-soak`,
+`performance-overnight`, `performance-diagnostic`, `soak`, and `catalogue`.
+The report links every artifact file found in each run directory and marks
+conventional runs that are absent.
+
+Historical report roots use `<git-sha>-<YYYYMMDDTHHMMSSZ>`, where the SHA is
+7–40 lowercase hexadecimal characters and the timestamp is ISO 8601 basic UTC.
+For example, `04776f4-20260817T143000Z`. The `trends` command requires at least
+two such roots containing `performance-controlled/performance.json`, then writes
+`throughput.svg` and an embedding `TRENDS.md` with a holding, regressed, or
+improved summary. A change within ±5% from the oldest to newest report is
+classified as holding.
+
+Performance artifacts include the runner's hardware manufacturer, model, CPU,
+and physical memory, with the same human-readable fingerprint in `summary.md`.
+Unique device identifiers and serial numbers are not collected.
+The `performance` command transparently builds and delegates to the dedicated
+`pg-proto-burn-in-performance` binary using the optimized `burn-in` Cargo
+profile; ordinary conformance and reporting commands remain development builds.
+
+See the [burn-in design](docs/design/burn-in-verification.md) and
+[ADR 0006](docs/adr/0006-separate-protocol-conformance-from-burn-in.md) for the
+coverage model, stopping conditions, and workflow policy.
+
+## Supported PostgreSQL versions
+
+PostgreSQL **14, 15, 16, 17, and 18** are supported. Each version runs the same
+live suite against its official Alpine image. PostgreSQL 14–17 negotiate a
+requested protocol 3.2 startup down to 3.0; PostgreSQL 18 reports protocol 3.2.
+Both behaviours are covered explicitly.
+
+Run a selected version locally with a Docker-compatible runtime:
+
+```bash
+PG_PROTO_POSTGRES_VERSION=18 \
+  cargo test --lib internal_tests::postgres_container -- --ignored
+```
+
+See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
+matrix.
+
+## Message support
+
+The checklist below follows PostgreSQL's official
+[message-format catalogue](https://www.postgresql.org/docs/current/protocol-message-formats.html)
+and groups messages by protocol phase and sender. A checked item has a typed,
+lossless representation reachable through the public facade and can be decoded
+and reconstructed; contextual aliases which share a wire tag name the public
+`pg-proto` representation in parentheses. An unchecked item would identify a
+known PostgreSQL protocol message which is not yet supported. There are currently
+no unchecked protocol-version-3 message types.
+
+- [x] Pre-startup and startup
+  - [x] Frontend
+    - [x] `SSLRequest`
+    - [x] `GSSENCRequest` (`PreStartupMessage::GssEncRequest`)
+    - [x] `StartupMessage` (`PreStartupMessage::Startup`)
+    - [x] `CancelRequest` (`PreStartupMessage::CancelRequest`)
+  - [x] Backend transport negotiation replies
+    - [x] SSL accepted (`S`), rejected (`N`), and legacy error (`E`)
+    - [x] GSS encryption accepted (`G`) and rejected (`N`)
+- [x] Authentication and startup completion
+  - [x] Frontend
+    - [x] `PasswordMessage` (`FrontendMessage::PasswordResponse`)
+    - [x] `GSSResponse` (`FrontendMessage::PasswordResponse`)
+    - [x] `SASLInitialResponse` (`FrontendMessage::PasswordResponse`)
+    - [x] `SASLResponse` (`FrontendMessage::PasswordResponse`)
+  - [x] Backend
+    - [x] `AuthenticationOk` (`Authentication::Ok`)
+    - [x] `AuthenticationKerberosV5` (`Authentication::KerberosV5`)
+    - [x] `AuthenticationCleartextPassword` (`Authentication::CleartextPassword`)
+    - [x] `AuthenticationMD5Password` (`Authentication::Md5Password`)
+    - [x] `AuthenticationGSS` (`Authentication::Gss`)
+    - [x] `AuthenticationGSSContinue` (`Authentication::GssContinue`)
+    - [x] `AuthenticationSSPI` (`Authentication::Sspi`)
+    - [x] `AuthenticationSASL` (`Authentication::Sasl`)
+    - [x] `AuthenticationSASLContinue` (`Authentication::SaslContinue`)
+    - [x] `AuthenticationSASLFinal` (`Authentication::SaslFinal`)
+    - [x] `BackendKeyData`
+    - [x] `NegotiateProtocolVersion`
+    - [x] `ParameterStatus`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Simple query and legacy function calls
+  - [x] Frontend
+    - [x] `Query`
+    - [x] `FunctionCall`
+  - [x] Backend
+    - [x] `RowDescription`
+    - [x] `DataRow`
+    - [x] `CommandComplete`
+    - [x] `EmptyQueryResponse`
+    - [x] `FunctionCallResponse`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Extended query
+  - [x] Frontend
+    - [x] `Parse`
+    - [x] `Bind`
+    - [x] `Describe`
+    - [x] `Execute`
+    - [x] `Close`
+    - [x] `Flush`
+    - [x] `Sync`
+  - [x] Backend
+    - [x] `ParseComplete`
+    - [x] `BindComplete`
+    - [x] `CloseComplete`
+    - [x] `ParameterDescription`
+    - [x] `RowDescription`
+    - [x] `NoData`
+    - [x] `DataRow`
+    - [x] `PortalSuspended`
+    - [x] `CommandComplete`
+    - [x] `EmptyQueryResponse`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] `COPY` and replication streaming
+  - [x] Frontend
+    - [x] `CopyData`
+    - [x] `CopyDone`
+    - [x] `CopyFail`
+  - [x] Backend
+    - [x] `CopyInResponse`
+    - [x] `CopyOutResponse`
+    - [x] `CopyBothResponse`
+    - [x] `CopyData`
+    - [x] `CopyDone`
+    - [x] `CommandComplete`
+    - [x] `ReadyForQuery`
+    - [x] `ErrorResponse`
+- [x] Asynchronous backend messages
+  - [x] `NoticeResponse`
+  - [x] `NotificationResponse`
+  - [x] `ParameterStatus`
+- [x] Session termination and out-of-band cancellation
+  - [x] Frontend `Terminate`
+  - [x] Frontend pre-startup `CancelRequest`
+
+Authentication mechanism engines and encrypted transports are separate from
+message support. In particular, Kerberos V5, GSSAPI, and SSPI messages are fully
+represented, while applications must supply their platform credential engines;
+applications must also supply a production GSS encryption transport adapter.
+
+## PostgreSQL wire protocol documentation
+
+The primary reference for the wire protocol is PostgreSQL's official
+[Frontend/Backend Protocol documentation](https://www.postgresql.org/docs/current/protocol.html).
+Its key sections are:
+
+- [Message flow](https://www.postgresql.org/docs/current/protocol-flow.html) —
+  connections, authentication, queries, `COPY`, and cancellation.
+- [Message formats](https://www.postgresql.org/docs/current/protocol-message-formats.html) —
+  byte-level packet layouts.
+- [Message data types](https://www.postgresql.org/docs/current/protocol-message-types.html) —
+  integer, string, and byte encodings.
+- [SASL/SCRAM authentication](https://www.postgresql.org/docs/current/sasl-authentication.html) —
+  modern password authentication.
+
+> **Compatibility note:** PostgreSQL 18 introduced protocol 3.2, but most
+> clients still negotiate version 3.0 for compatibility. Read the documentation
+> for the oldest PostgreSQL version you intend to support, and use an
+> established driver's source code as an executable reference.
+
+## Known limitations
+
+- The API is pre-1.0 and may change as it is integrated into a production proxy.
+- Kerberos V5, GSSAPI, SSPI, and GSS token exchanges are represented by the
+  protocol API, but the crate does not ship platform credential-provider engines.
+  GSS encryption negotiation is modelled; a production GSSENC transport adapter
+  remains application work.
+- Pool scheduling, routing, SQL parsing, policy, credential storage, certificate
+  provisioning, and cancellation-key persistence are intentionally not included.
+- Rust is affine rather than linear: callers can deliberately abandon an
+  operational connection by dropping it.
+- Unknown future PostgreSQL message tags are rejected by the typed codec until
+  their direction and semantics are added.
+- Formal multiparty verification is not provided. Client and server roles are
+  dual generated APIs with differential runtime-FSM testing, not a machine-checked
+  proof of a complete three-party proxy.
+
+Security assumptions and downstream responsibilities are documented in
+[`SECURITY.md`](SECURITY.md). Contribution instructions and community
+expectations are in [`CONTRIBUTING.md`](CONTRIBUTING.md) and
+[`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md).
+
+## Verification
+
+The ordinary suite includes unit, fixture, property-style differential,
+compile-fail, and documentation tests:
+
+```bash
+cargo test --workspace
+```
+
+Live PostgreSQL tests require a Docker-compatible runtime:
+
+```bash
+cargo test --lib internal_tests::postgres_container -- --ignored
+```
+
+## Licence
+
+Licensed under the [MIT License](https://github.com/freshtonic/pg-proto/blob/main/LICENSE).
