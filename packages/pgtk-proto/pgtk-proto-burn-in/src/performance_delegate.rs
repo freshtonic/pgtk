@@ -14,9 +14,11 @@ pub(crate) async fn run_if_needed(arguments: &[String]) -> Result<bool, Box<dyn 
         return Ok(false);
     }
 
+    // The pgtk workspace root: packages/pgtk-proto/pgtk-proto-burn-in is three levels below it.
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("burn-in package has no workspace parent")?
+        .ancestors()
+        .nth(3)
+        .ok_or("burn-in package is not in the pgtk workspace")?
         .to_owned();
     let target = std::env::var_os("CARGO_TARGET_DIR").map_or_else(
         || workspace.join("target"),

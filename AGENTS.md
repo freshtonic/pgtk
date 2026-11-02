@@ -31,6 +31,10 @@ Keep its deps the same as the `[dependencies]` in its `Cargo.toml`. The Cargo-on
 (`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
 `pgtk-catalog-xtask`, `pgtk-skills`) have no `BUCK` file. See the ADR.
 
+`packages/pgtk-proto` holds three crates: `pgtk-proto`, `pgtk-proto-fsm` and `pgtk-proto-burn-in`.
+They have no `BUCK` file yet, and their third-party crates are not vendored yet, so the
+`third-party` CI job fails until that work is done.
+
 If the crate has a build script that uses recursa-codegen, run it with
 `first_party_build_script` from `tools/rust/build_script.bzl`. `packages/pgtk-sql/BUCK` is the
 model.

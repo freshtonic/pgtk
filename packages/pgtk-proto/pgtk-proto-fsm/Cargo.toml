@@ -10,7 +10,7 @@ keywords = ["protocol", "typestate", "state-machine", "proc-macro", "railroad"]
 categories = ["development-tools::procedural-macro-helpers", "network-programming"]
 documentation = "https://docs.rs/pgtk-proto-fsm"
 homepage = "https://github.com/freshtonic/pgtk"
-repository = "https://github.com/freshtonic/pgtk"
+repository.workspace = true
 readme = "README.md"
 
 [lib]
@@ -32,10 +32,11 @@ multiple_crate_versions = "allow"
 option_if_let_else = "allow"
 
 [dependencies]
-proc-macro2 = "1.0.107"
-quote = "1.0.47"
-railroad = { version = "0.3.8", default-features = false }
+proc-macro2.workspace = true
+quote.workspace = true
+railroad.workspace = true
+# syn 3. The workspace `syn` is syn 2, which the pgtk-sql tests use.
 syn = { version = "3.0.3", features = ["full", "visit-mut"] }
 
 [dev-dependencies]
-trybuild = "1.0.120"
+trybuild.workspace = true
