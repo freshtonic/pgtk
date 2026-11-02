@@ -10,8 +10,8 @@
 #   1. Check the tools, the tokens, and that main is clean and in step with
 #      origin/main.
 #   2. Run the default test suite (skip with --skip-tests).
-#   3. `release-plz update`: bump the versions and the changelogs. For pgtk-catalog and
-#      pgtk-analyze, cargo-semver-checks decides if the bump is a minor or a patch bump.
+#   3. `release-plz update`: bump the versions and the changelogs. For pgtk-catalog,
+#      cargo-semver-checks decides if the bump is a minor or a patch bump.
 #   4. Show the diff, commit it signed, and push main.
 #   5. `cargo publish --workspace --dry-run`, then `release-plz release`: publish to
 #      crates.io, push the `<crate>-v<version>` tags, make the GitHub releases.
