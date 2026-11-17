@@ -3,3 +3,4 @@
 /.buckconfig.pgtk
 /third-party/rust/.cargo/
 /.claude/
+/.amp/portals/*

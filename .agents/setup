@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Prepares an Amp orb for pgtk: the system packages, the pinned Rust toolchain, dotslash and buck2,
+# the vendor/postgres submodule with the pinned PostgreSQL releases, the PostgreSQL builds and a
+# warm Cargo build. Idempotent: on a restored snapshot it only checks what it already has.
+# DEVELOPMENT.md and .github/workflows/ci.yml list the prerequisites.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+step() {
+  local name="$1" start=$SECONDS
+  shift
+  echo "==> $name"
+  "$@"
+  echo "<== $name ($((SECONDS - start))s)"
+}
+
+apt_packages() {
+  # Buck2 needs /usr/bin/clang and lld. The PostgreSQL builds need bison, flex and libxml2.
+  local wanted=(build-essential clang lld bison flex libxml2-dev perl make jq) missing=()
+  for p in "${wanted[@]}"; do
+    dpkg -s "$p" >/dev/null 2>&1 || missing+=("$p")
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    sudo apt-get update -q
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -q "${missing[@]}"
+  fi
+}
+
+profile_path() {
+  local marker="# pgtk orb setup: Rust and dotslash"
+  if ! grep -Fqx "$marker" "$HOME/.bash_profile" 2>/dev/null; then
+    cat >>"$HOME/.bash_profile" <<'EOF'
+
+# pgtk orb setup: Rust and dotslash
+case ":$PATH:" in *":$HOME/.cargo/bin:"*) ;; *) export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH" ;; esac
+EOF
+  fi
+}
+
+rust_toolchain() {
+  if [ ! -x "$HOME/.cargo/bin/rustup" ]; then
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+      | sh -s -- -y --no-modify-path --profile minimal --default-toolchain none
+  fi
+  # rustup reads rust-toolchain.toml in the repository root.
+  rustup toolchain install --profile minimal --component clippy,rustfmt
+  rustc --version
+}
+
+dotslash_and_buck2() {
+  if [ ! -x "$HOME/.local/bin/dotslash" ]; then
+    mkdir -p "$HOME/.local/bin"
+    curl -sSfL https://github.com/facebook/dotslash/releases/latest/download/dotslash-linux-musl.x86_64.tar.gz \
+      | tar -xz -C "$HOME/.local/bin" dotslash
+  fi
+  # dotslash downloads the pinned buck2 into its cache on first use.
+  dotslash -- fetch tools/buck2.dotslash >/dev/null
+}
+
+agent_guidance() {
+  # Rewrites the pgtk section of the orb's agent guidance, so a change here replaces the old text.
+  local file="$HOME/.config/amp/AGENTS.md" begin="<!-- pgtk orb notes -->" end="<!-- /pgtk orb notes -->"
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  sed -i "\|^$begin\$|,\|^$end\$|d" "$file"
+  cat >>"$file" <<EOF
+$begin
+# pgtk orb notes
+
+- \`.agents/setup\` installed the pinned Rust toolchain, dotslash (for \`tools/buck2\`), clang and lld,
+  the \`vendor/postgres\` submodule with its full history, and the PostgreSQL 14 to 17 builds in
+  \`~/.cache/pgtk-sql/postgres\`. \`target/\` holds a debug build of the workspace and its tests.
+- Compiling pgtk-sql needs more than 6 GB of memory. Two compiles of the generated grammar crates
+  (pgtk-sql, pgtk-psql) at once need more than the orb has, and the kernel kills the build. When a
+  change rebuilds both, pass \`-j 1\` to cargo and to \`tools/buck2\`, as CI does.
+- recursa (https://github.com/freshtonic/recursa) is checked out at \`$repo_root/../repos/recursa\`.
+  pgtk uses it from crates.io. When a pgtk fix needs a recursa change, make the change there (its
+  own AGENTS.md applies). To build pgtk against it, add this to the pgtk root \`Cargo.toml\`:
+
+  \`\`\`toml
+  [patch.crates-io]
+  recursa = { path = "../repos/recursa/recursa" }
+  recursa-codegen = { path = "../repos/recursa/recursa-codegen" }
+  recursa-core = { path = "../repos/recursa/recursa-core" }
+  recursa-diagrams = { path = "../repos/recursa/recursa-diagrams" }
+  recursa-macros = { path = "../repos/recursa/recursa-macros" }
+  \`\`\`
+
+  Do not commit the patch, or the \`Cargo.lock\` change that it makes. pgtk takes the change after a
+  recursa release, with a version bump of \`recursa\` and \`recursa-codegen\`.
+$end
+EOF
+}
+
+postgres_sources() {
+  # The tests read files by blob ID, so the submodule needs its full history (the default clone).
+  git submodule update --init vendor/postgres
+  packages/pgtk-sql/scripts/fetch-postgres-pins
+}
+
+postgres_builds() {
+  # cargo test --workspace links and runs these releases. build-pg.sh is idempotent and builds into
+  # ~/.cache/pgtk-sql/postgres, which the snapshot keeps.
+  for v in pg14 pg15 pg16 pg17; do
+    PGTK_PG_INSTALL=1 packages/pgtk-oracle/scripts/build-pg.sh "$v" >/dev/null
+  done
+}
+
+cargo_build() {
+  # Fetches the crates and compiles the workspace and its tests once. One job, because the
+  # generated grammar crates need a lot of memory (see ci.yml). The build is a cache, not a
+  # prerequisite: if it fails (on an orb with too little memory) or runs out of the time that Amp
+  # gives setup, setup still succeeds, so Amp saves the toolchain and PostgreSQL builds in the
+  # snapshot, and the next setup run continues from the crates that did compile.
+  local budget=$((17 * 60 - SECONDS))
+  if [ "$budget" -lt 60 ]; then
+    echo "No time left for the warm cargo build"
+    return 0
+  fi
+  timeout "$budget" cargo build --locked --workspace --tests -j 1 \
+    || echo "The warm cargo build did not finish (exit $?); later builds continue from it"
+}
+
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+
+step "apt packages" apt_packages
+step "profile PATH" profile_path
+step "Rust toolchain" rust_toolchain
+step "dotslash and buck2" dotslash_and_buck2
+step "agent guidance" agent_guidance
+step "PostgreSQL sources" postgres_sources
+step "PostgreSQL builds" postgres_builds
+step "cargo build" cargo_build
