@@ -73,6 +73,8 @@ jobs:
       # One job at a time: two checks of the generated grammar crates at the same time use all of
       # the 8 GB of the runner, and the runner stops.
       - run: cargo clippy --locked --workspace --all-targets -j 1 -- -D warnings
+      # The pgtk-sql flame bench has `bench = false`, so `--all-targets` skips it.
+      - run: cargo clippy --locked --workspace --bench flame -j 1 -- -D warnings
       - run: cargo doc --locked --workspace --no-deps -j 1
         env:
           RUSTDOCFLAGS: -D warnings
