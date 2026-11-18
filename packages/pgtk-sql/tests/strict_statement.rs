@@ -307,6 +307,19 @@ fn select_targets_extend_on_every_operator_keyword() {
     }
 }
 
+/// `COLLATION FOR (a_expr)` is a `func_expr_common_subexpr`, so a `COLLATE`
+/// clause can follow its closing parenthesis as for any `a_expr` (gram.y
+/// `a_expr: a_expr COLLATE any_name`, issue #104).
+#[test]
+fn collation_for_takes_a_collate_clause() {
+    assert_accepts(&[
+        "SELECT COLLATION FOR (1) COLLATE \"C\"",
+        "SELECT COLLATION FOR ('a') COLLATE \"C\" = 'x'",
+        "SELECT COLLATION FOR (a COLLATE \"C\") COLLATE pg_catalog.\"POSIX\" FROM t",
+        "SELECT 1 FROM t WHERE COLLATION FOR (a) COLLATE \"C\" = 'x'",
+    ]);
+}
+
 /// A bare output alias still accepts every keyword PostgreSQL can reach there.
 #[test]
 fn select_targets_keep_every_reachable_bare_alias() {
