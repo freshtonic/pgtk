@@ -35,8 +35,7 @@ option_if_let_else = "allow"
 proc-macro2.workspace = true
 quote.workspace = true
 railroad.workspace = true
-# syn 3. The workspace `syn` is syn 2, which the pgtk-sql tests use.
-syn = { version = "3.0.3", features = ["full", "visit-mut"] }
+syn = { workspace = true, features = ["full", "visit-mut"] }
 
 [dev-dependencies]
 trybuild.workspace = true
