@@ -34,7 +34,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct UsingIndexTablespace {
         #[tok(USING, INDEX, TABLESPACE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -865,7 +865,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ConstraintNamePrefix {
         #[tok(CONSTRAINT, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -991,7 +991,6 @@ recursa::ast_node! {
     /// `COMPRESSION`, then `OPTIONS (...)`, and all three come before every
     /// `ColQualList` entry, `COLLATE` included.
     #[derive(Debug)]
-    #[validate(crate::ast::validation::current_schema_column_def, flat = crate::ast::validation::current_schema_column_def_flat)]
     pub struct ColumnDef {
         pub name: crate::tokens::ColId,
         pub type_name: crate::ast::shared::expr::CastType,
@@ -1024,7 +1023,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ExistingIndex {
         #[tok(USING, INDEX, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -1501,7 +1500,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct TablespaceClause {
         #[tok(TABLESPACE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -1540,7 +1539,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct UsingAccessMethodClause {
         #[tok(USING, this)]
-        pub method: literal::Ident,
+        pub method: crate::tokens::ColId,
     }
 }
 
@@ -1637,7 +1636,7 @@ recursa::ast_node! {
     /// can come after a constraint.
     #[derive(Debug)]
     pub struct PartitionColumnOptionDef {
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         #[presence(WITH, OPTIONS)]
         pub with_options: bool,
         pub quals: ColQualList,
@@ -1755,7 +1754,6 @@ recursa::ast_node! {
     /// Required, non-empty CTAS output-column list.
     #[derive(Debug)]
     #[tok(LPAREN, this, RPAREN)]
-    #[validate(crate::ast::validation::current_schema_ctas_columns, flat = crate::ast::validation::current_schema_ctas_columns_flat)]
     pub struct CtasColumnList {
         #[sep(COMMA)]
         pub columns: one_or_many!(crate::tokens::ColId),
@@ -2071,7 +2069,7 @@ recursa::ast_node! {
     /// Column definition in partition table: `name type`.
     #[derive(Debug)]
     pub struct PartitionColumnDef {
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub type_name: TypeName,
     }
 }
@@ -2092,7 +2090,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreatePartitionedTableStmt {
         #[tok(CREATE, TABLE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub columns: PartitionColumnDefList,
         pub partition_by: PartitionByClause,
     }
@@ -2103,9 +2101,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct CreatePartitionOfStmt {
         #[tok(CREATE, TABLE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         #[tok(PARTITION, OF, this)]
-        pub parent: literal::Ident,
+        pub parent: crate::tokens::ColId,
         pub for_values: ForValuesInClause,
         pub partition_by: Option<PartitionByClause>,
     }
@@ -2223,9 +2221,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterTableRenameConstraint {
         #[tok(RENAME, CONSTRAINT, this)]
-        pub old_name: literal::Ident,
+        pub old_name: crate::tokens::ColId,
         #[tok(TO, this)]
-        pub new_name: literal::Ident,
+        pub new_name: crate::tokens::ColId,
     }
 }
 
@@ -2472,7 +2470,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterConstraintCmd {
         #[tok(ALTER, CONSTRAINT, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         /// gram.y `ConstraintAttributeSpec`.
         pub attrs: zero_or_many!(AlterConstraintAttr),
     }
@@ -2486,7 +2484,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterConstraintInheritCmd {
         #[tok(ALTER, CONSTRAINT, this, INHERIT)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2800,7 +2798,7 @@ recursa::ast_node! {
     pub struct DropConstraintIfExistsCmd {
         #[tok(DROP, CONSTRAINT, this)]
         pub if_exists: IfExists,
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -2810,7 +2808,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DropConstraintCmd {
         #[tok(DROP, CONSTRAINT, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -2821,7 +2819,7 @@ recursa::ast_node! {
     pub struct DropColumnIfExistsCmd {
         #[tok(DROP, optional(COLUMN), this)]
         pub if_exists: IfExists,
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -2831,7 +2829,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DropColumnCmd {
         #[tok(DROP, optional(COLUMN), this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         pub behavior: Option<DropBehavior>,
     }
 }
@@ -2850,7 +2848,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct EnableAlwaysTriggerCmd {
         #[tok(ENABLE, ALWAYS, TRIGGER, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2859,7 +2857,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct EnableReplicaTriggerCmd {
         #[tok(ENABLE, REPLICA, TRIGGER, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2877,7 +2875,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct EnableRuleCmd {
         #[tok(ENABLE, RULE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2886,7 +2884,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct EnableAlwaysRuleCmd {
         #[tok(ENABLE, ALWAYS, RULE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2895,7 +2893,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct EnableReplicaRuleCmd {
         #[tok(ENABLE, REPLICA, RULE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2904,7 +2902,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct DisableRuleCmd {
         #[tok(DISABLE, RULE, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -2921,7 +2919,7 @@ recursa::ast_node! {
         All,
         #[tok(USER)]
         User,
-        Name(literal::Ident),
+        Name(crate::tokens::ColId),
     }
 }
 
@@ -2966,7 +2964,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ClusterOnCmd {
         #[tok(CLUSTER, ON, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -3037,7 +3035,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ReplicaIdentityUsingIndex {
         #[tok(USING, INDEX, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -3082,6 +3080,6 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct ValidateConstraintCmd {
         #[tok(VALIDATE, CONSTRAINT, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }

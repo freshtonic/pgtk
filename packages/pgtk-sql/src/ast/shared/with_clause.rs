@@ -153,11 +153,11 @@ recursa::ast_node! {
     /// Optional parenthesized output-column list on a CTE definition.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
-    #[validate(crate::ast::validation::current_schema_cte_columns, flat = crate::ast::validation::current_schema_cte_columns_flat)]
     pub struct CteColumnList(
+        /// gram.y `opt_name_list`: a `name_list` of `ColId` (REL_17_11 gram.y 11908, 17164).
         #[sep(COMMA)]
         #[deref]
-        pub one_or_many!(literal::AliasName),
+        pub one_or_many!(crate::tokens::ColId),
     );
 }
 
@@ -165,7 +165,6 @@ recursa::ast_node! {
     /// A single CTE definition: `name [(col, ...)] AS [MATERIALIZED|NOT MATERIALIZED] (query)
     ///   [SEARCH ...] [CYCLE ...]`
     #[derive(Debug)]
-    #[validate(crate::ast::validation::current_schema_cte_definition, flat = crate::ast::validation::current_schema_cte_definition_flat)]
     pub struct CteDefinition {
         pub name: crate::tokens::ColId,
         pub columns: Option<CteColumnList>,

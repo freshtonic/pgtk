@@ -112,14 +112,6 @@ recursa::tokens! {
         // from REL_14_24 to `b73d13c`, and every word but `system_user` is
         // already there at REL_14_24.
         //
-        // `current_schema` is absent on purpose: kwlist.h makes it a
-        // `TYPE_FUNC_NAME_KEYWORD`, which `table_function_name` admits, and
-        // `ast::dml::select::NamedTableRef` reads a relation name and a
-        // function-table name through that one admission. A bare
-        // `CURRENT_SCHEMA` in `table_ref` would then reduce either to that
-        // name or to `SqlValueFunction`, which is an RCA0401 reduce/reduce
-        // conflict. Modelling it needs `NamedTableRef` split into gram.y's
-        // `qualified_name` (`ColId`) and `func_application` routes.
         CURRENT_CATALOG   => r"CURRENT_CATALOG" in RESERVED + bare_label,
         CURRENT_DATE      => r"CURRENT_DATE" in RESERVED + bare_label,
         CURRENT_ROLE      => r"CURRENT_ROLE" in RESERVED + bare_label,
@@ -135,6 +127,13 @@ recursa::tokens! {
         // identifier.
         #[config(since = pg16)]
         SYSTEM_USER       => r"SYSTEM_USER" in RESERVED + bare_label,
+        // `current_schema` is the one word of the family that is no reserved
+        // keyword: kwlist.h makes it `TYPE_FUNC_NAME_KEYWORD, BARE_LABEL`
+        // at every pin from REL_14_24 (REL_17_11 kwlist.h 115). So it is no
+        // `ColId`, and `type_function_name` takes it: `current_schema()` is a
+        // function call, and `FROM current_schema()` a function table
+        // (`ast::dml::select::CurrentSchemaFuncTableRef`).
+        CURRENT_SCHEMA    => r"CURRENT_SCHEMA" in TYPE_FUNC_NAME + bare_label,
         CAST         => r"CAST" in RESERVED + bare_label,
         COLLATION    => r"COLLATION" in TYPE_FUNC_NAME + bare_label,
         FOREIGN      => r"FOREIGN" in RESERVED + bare_label,
@@ -1067,7 +1066,11 @@ recursa::tokens! {
         ColLabel = UNRESERVED + COL_NAME + TYPE_FUNC_NAME + RESERVED,
         BareColLabel = bare_label,
         WindowRefName = ColId - { PARTITION, ORDER, ROWS, RANGE, GROUPS },
-        TableFunctionName = type_function_name - { COLLATION },
+        // The one-word name of `ast::dml::select::NamedTableRef`, which is a
+        // relation name or a function name. `COLLATION` leads `COLLATION FOR`,
+        // and a bare `CURRENT_SCHEMA` is `SQLValueFunction`, never a relation;
+        // each keyword has its own FROM route.
+        TableFunctionName = type_function_name - { COLLATION, CURRENT_SCHEMA },
         RelationAliasName = ColId - { SET },
         // gram.y `RevokeRoleStmt: REVOKE ColId OPTION FOR …` (REL_16_15 7805).
         // `ADMIN` is the one spelling REL_15_19 gram.y 7738 accepts, so it is

@@ -230,19 +230,7 @@ recursa::ast_node! {
     /// Must NOT collide with `Expr::QualRef` because `QualifiedName` is only
     /// used in non-expression positions (FROM targets, DROP targets, ALTER
     /// targets, etc.).
-    ///
-    /// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD`, so it is no
-    /// `ColId`, and an unquoted `CURRENT_SCHEMA` cannot start a name. pgtk-sql
-    /// lexes it as an identifier (`crate::tokens`), so the rule refuses it by
-    /// its text (issue #95). The message of gram.y differs by place: a syntax
-    /// error, or "invalid table name" in a publication object list.
-    #[classify(first, fold = crate::ident::current_schema_class)]
-    #[reject(
-        one_of(first, "current_schema"),
-        code = "42601",
-        message = "syntax error at or near \"CURRENT_SCHEMA\"",
-        cite = "REL_17_11 kwlist.h 115, current_schema",
-    )]
+
     #[derive(Debug, PartialEq, Eq, Hash)]
     pub struct QualifiedName {
         /// The first part is a `ColId`, so `verbose`, `full` and the other
@@ -390,7 +378,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct RenameTo {
         #[tok(RENAME, TO, this)]
-        pub new_name: literal::Ident,
+        pub new_name: crate::tokens::ColId,
     }
 }
 
@@ -416,7 +404,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SetSchemaClause {
         #[tok(SET, SCHEMA, this)]
-        pub new_schema: literal::Ident,
+        pub new_schema: crate::tokens::ColId,
     }
 }
 
@@ -654,7 +642,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct QualifiedOperatorPrefix {
         #[tok(this, DOT)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 

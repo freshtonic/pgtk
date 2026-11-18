@@ -46,8 +46,8 @@ use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
 use pgtk_sql::ast::shared::expr::{FlatIntervalLitForm, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
-use pgtk_sql::tokens::FlatColId;
 use pgtk_sql::tokens::literal::FlatAliasName;
+use pgtk_sql::tokens::{FlatColId, FlatNonReservedWord};
 use recursa::{Handle, List, List1, Span, Text};
 
 use crate::analysis::RecordField;
@@ -1492,6 +1492,15 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         Ok((self.fold_word(word, word.start)?, word.start))
     }
 
+    /// A `NonReservedWord`, folded.
+    fn non_reserved_word(&self, handle: Handle<FlatNonReservedWord>) -> Result<String> {
+        let word = match self.get(handle) {
+            FlatNonReservedWord::Text(t) => self.plain_word(*t),
+            FlatNonReservedWord::Unicode(u) => self.unicode_word(*u),
+        };
+        self.fold_word(word, word.start)
+    }
+
     /// The bare alias of a DELETE, UPDATE or MERGE target.
     fn relation_alias_name(&self, handle: Handle<FlatRelationAliasName>) -> Result<String> {
         let word = match self.get(handle) {
@@ -2490,15 +2499,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
-    /// An identifier token, folded.
-    fn ident(&self, handle: Handle<pgtk_sql::tokens::literal::FlatIdent>) -> Result<String> {
-        let word = match self.get(handle) {
-            pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
-            pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
-        };
-        self.fold_word(word, word.start)
-    }
-
     /// `UtilityTupleDescriptor` for an EXECUTE: the Result Descriptor of
     /// the prepared statement the Session holds. The argument expressions
     /// are not analysed and their count is not checked, because PostgreSQL
@@ -2676,7 +2676,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn deallocate_effect(&mut self, handle: Handle<FlatDeallocateStmt>) -> Result<()> {
         let effect = match self.get(self.get(handle).target) {
             FlatDeallocateTarget::All => SessionEffect::DeallocateAll,
-            FlatDeallocateTarget::Name(n) => SessionEffect::Deallocate(self.ident(*n)?),
+            FlatDeallocateTarget::Name(n) => SessionEffect::Deallocate(self.col_id(*n)?.0),
         };
         self.analysis.session_effect = Some(effect);
         Ok(())
@@ -2686,7 +2686,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn close_effect(&mut self, handle: Handle<FlatCloseStmt>) -> Result<()> {
         let effect = match self.get(self.get(handle).target) {
             FlatCloseTarget::All => SessionEffect::CloseAll,
-            FlatCloseTarget::Cursor(c) => SessionEffect::Close(self.ident(*c)?),
+            FlatCloseTarget::Cursor(c) => SessionEffect::Close(self.col_id(*c)?.0),
         };
         self.analysis.session_effect = Some(effect);
         Ok(())
@@ -2931,7 +2931,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let mut cols = Vec::new();
             if let Some(c) = def.columns {
                 for a in self.list1(self.get(c).0) {
-                    cols.push(self.alias_name(*a)?.0);
+                    cols.push(self.col_id(*a)?.0);
                 }
             }
             let modifying = match self.get(def.query) {
@@ -5908,7 +5908,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Vec<(i16, bool)>> {
         // Each target: its column handle, its indirection, and its value.
         let mut values: Vec<(
-            Handle<pgtk_sql::tokens::literal::FlatIdent>,
+            Handle<FlatColId>,
             Vec<Handle<FlatIndirectionEl>>,
             InsertValue,
         )> = Vec::new();
@@ -6364,7 +6364,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     continue;
                 }
                 let value = match opt.value.map(|v| self.get(v)) {
-                    Some(FlatExplainOptValue::Ident(c)) => self.col_id(*c)?.0,
+                    Some(FlatExplainOptValue::Ident(c)) => self.non_reserved_word(*c)?,
                     Some(FlatExplainOptValue::String(t)) => self.sconst(*t).0,
                     _ => String::new(),
                 };
@@ -8924,7 +8924,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     self.json_table_names(n.columns, names)?;
                 }
                 FlatJsonTableColumn::Valued(v) => {
-                    let (name, _) = self.alias_name(self.get(*v).name)?;
+                    let (name, _) = self.col_id(self.get(*v).name)?;
                     if names.contains(&name) {
                         return Err(Diagnostic::new(
                             "42712",
@@ -9016,7 +9016,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 continue;
             };
             let v = self.get(*v);
-            let (name, _) = self.alias_name(v.name)?;
+            let (name, _) = self.col_id(v.name)?;
             let at = self.span(*col).start;
             match self.get(v.kind) {
                 FlatJsonTableColumnKind::Ordinality(_) => {
@@ -9124,7 +9124,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let mut ordinality_seen = false;
         for col in self.list1(self.get(inner.column_list).0).to_vec() {
             let c = self.get(col);
-            let (name, at) = self.alias_name(c.name)?;
+            let (name, at) = self.col_id(c.name)?;
             let (ty, typmod) = match self.get(c.kind) {
                 FlatXmlTableColumnKind::Ordinality(_) => {
                     if ordinality_seen {
@@ -9631,6 +9631,29 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     )
                     .at(location)
                     .into());
+                }
+                FlatSimpleTableRef::CurrentSchemaFunc(r) => {
+                    // `current_schema(...)`: a `func_application` whose name
+                    // is the keyword.
+                    let t = self.get(self.get(*r).tail);
+                    let func = FromFunc {
+                        call: FromFuncCall::Application(t.application),
+                        name: ObjectName {
+                            schema: None,
+                            name: "current_schema".to_owned(),
+                        },
+                        coldef: None,
+                        coldef_location: None,
+                        location,
+                    };
+                    return self.function_ref(
+                        scope,
+                        vec![func],
+                        t.ordinality,
+                        t.alias,
+                        false,
+                        location,
+                    );
                 }
                 FlatSimpleTableRef::SpecialFunc(r) => {
                     let r = self.get(*r);
@@ -12797,6 +12820,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatSqlValueFunction::CurrentCatalog => ("current_catalog", None),
             FlatSqlValueFunction::CurrentDate => ("current_date", None),
             FlatSqlValueFunction::CurrentRole => ("current_role", None),
+            FlatSqlValueFunction::CurrentSchema => ("current_schema", None),
             FlatSqlValueFunction::CurrentUser => ("current_user", None),
             FlatSqlValueFunction::SessionUser => ("session_user", None),
             #[cfg(feature = "since-pg16")]
@@ -14760,10 +14784,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let mut parts = Vec::new();
                 for prefix in std::iter::once(q.first).chain(self.list(q.rest).iter().copied()) {
                     let prefix = self.get(prefix);
-                    let word = match self.get(prefix.name) {
-                        pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
-                        pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
-                    };
+                    let word = self.col_id_word(prefix.name);
                     parts.push(self.fold_word(word, word.start)?);
                 }
                 if parts.len() > 1 {

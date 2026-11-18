@@ -2435,10 +2435,10 @@ fn a_unicode_identifier_with_an_incorrect_escape_is_refused() {
 
 /// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
 /// kwlist.h 115; REL_14_24 has the same class), so it is no `ColId`.
-/// pgtk-sql lexes it as an identifier, and each rule whose gram.y form is a
-/// `ColId` refuses it by its text: a dotted name, a FROM name with a dot, a
-/// subscript, an alias, a window name, an INSERT target and a column
-/// definition. As an expression and as a function name it is gram.y
+/// pgtk-sql lexes it as that keyword, so no `ColId` takes it: a dotted name,
+/// a FROM name with a dot, a subscript, an alias, a window name, an INSERT
+/// target and a column definition. As an expression and as a function name
+/// it is gram.y
 /// `SQLValueFunction` and `type_function_name`, and a quoted
 /// `"current_schema"` is a plain name. Found by diff-agent.
 #[test]
@@ -2537,6 +2537,177 @@ fn current_schema_is_no_column_name_of_a_list() {
         "CREATE VIEW v (a) AS SELECT 1",
         "CREATE TABLE t (a) AS SELECT 1",
         "SELECT * FROM t JOIN u USING (a) AS j",
+    ]);
+}
+
+/// `ColId` (REL_17_11 gram.y 17475) holds no `TYPE_FUNC_NAME` keyword, so
+/// each position that gram.y writes as `ColId` or `name` refuses
+/// `current_schema`, `left`, `freeze`, `similar` and the rest (issue #103).
+/// These positions read a `ColId`; before, some read a wider word
+/// (`NonReservedWord`, or every keyword), and pgtk-sql lexed `current_schema`
+/// as an identifier and refused it with a hook on each node, which some
+/// nodes missed. A quoted name stays a name. Where gram.y also reads a
+/// bare `current_schema` as `SQLValueFunction` (an expression, an index or
+/// statistics element), it stays accepted, and `SET` and `EXPLAIN` values
+/// are `NonReservedWord`s, which hold the keywords.
+#[test]
+fn a_col_id_position_refuses_a_type_func_name_keyword() {
+    assert_rejects(
+        &[
+            // The sites of issue #103.
+            "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS current_schema int)",
+            "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS current_schema FOR ORDINALITY)",
+            "ALTER TABLE t DROP COLUMN current_schema",
+            "ALTER TABLE t ALTER COLUMN current_schema SET DEFAULT 1",
+            "ALTER TABLE t RENAME COLUMN current_schema TO b",
+            "COPY t (current_schema) FROM STDIN",
+            "GRANT SELECT (current_schema) ON t TO u",
+            "DROP SCHEMA current_schema",
+            "CREATE SCHEMA current_schema",
+            "CREATE TABLE t2 (a int, PRIMARY KEY (current_schema))",
+            "CREATE TABLE t2 (a int, UNIQUE (current_schema))",
+            "VACUUM t (current_schema)",
+            // A type-function-name keyword in the same positions.
+            "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS freeze int)",
+            "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS select int)",
+            "ALTER TABLE t DROP COLUMN freeze",
+            "ALTER TABLE t DROP COLUMN IF EXISTS left",
+            "ALTER TABLE t RENAME COLUMN left TO b",
+            "ALTER TABLE t RENAME COLUMN a TO similar",
+            "ALTER TABLE t RENAME COLUMN a TO current_schema",
+            "ALTER VIEW v ALTER COLUMN collation SET DEFAULT 1",
+            "ALTER VIEW v ALTER COLUMN current_schema DROP DEFAULT",
+            "ALTER VIEW v RENAME COLUMN similar TO b",
+            "WITH w (left) AS (SELECT 1) SELECT 1",
+            "WITH w (select) AS (SELECT 1) SELECT 1",
+            "CREATE VIEW v (left) AS SELECT 1",
+            "CREATE VIEW v (select) AS SELECT 1",
+            // gram.y `name` in ALTER TABLE and CREATE TABLE.
+            "ALTER TABLE t ADD CONSTRAINT left CHECK (a > 0)",
+            "ALTER TABLE t ADD CONSTRAINT current_schema CHECK (a > 0)",
+            "ALTER TABLE t ADD CONSTRAINT c PRIMARY KEY USING INDEX freeze",
+            "CREATE TABLE t (a int PRIMARY KEY USING INDEX TABLESPACE left)",
+            "CREATE TABLE t (a int) TABLESPACE current_schema",
+            "CREATE TABLE t (a int) USING left",
+            "CREATE TABLE t OF ty (current_schema WITH OPTIONS NOT NULL)",
+            "CREATE TABLE t PARTITION OF p (left NOT NULL) FOR VALUES IN (1)",
+            "CREATE TABLE t (left int) PARTITION BY LIST (a)",
+            "CREATE TABLE left (a int) PARTITION BY LIST (a)",
+            "CREATE TABLE t PARTITION OF left FOR VALUES IN (1)",
+            "ALTER TABLE t RENAME CONSTRAINT left TO b",
+            "ALTER TABLE t RENAME CONSTRAINT a TO current_schema",
+            "ALTER TABLE t ALTER CONSTRAINT freeze DEFERRABLE",
+            "ALTER TABLE t DROP CONSTRAINT left",
+            "ALTER TABLE t DROP CONSTRAINT IF EXISTS current_schema",
+            "ALTER TABLE t ENABLE TRIGGER left",
+            "ALTER TABLE t DISABLE TRIGGER current_schema",
+            "ALTER TABLE t ENABLE ALWAYS TRIGGER similar",
+            "ALTER TABLE t ENABLE REPLICA TRIGGER freeze",
+            "ALTER TABLE t ENABLE RULE left",
+            "ALTER TABLE t ENABLE ALWAYS RULE current_schema",
+            "ALTER TABLE t ENABLE REPLICA RULE freeze",
+            "ALTER TABLE t DISABLE RULE similar",
+            "ALTER TABLE t CLUSTER ON left",
+            "ALTER TABLE t REPLICA IDENTITY USING INDEX current_schema",
+            "ALTER TABLE t VALIDATE CONSTRAINT freeze",
+            "ALTER TABLE t RENAME TO left",
+            "ALTER TABLE t SET SCHEMA current_schema",
+            "ALTER INDEX i RENAME TO freeze",
+            "ALTER SCHEMA s RENAME TO current_schema",
+            // Other gram.y `name` and `ColId` positions.
+            "DEALLOCATE left",
+            "DEALLOCATE current_schema",
+            "CLOSE left",
+            "CLOSE current_schema",
+            "UPDATE t SET left = 1",
+            "UPDATE t SET current_schema = 1",
+            "UPDATE t SET (a, freeze) = (1, 2)",
+            "SELECT * FROM t* left",
+            "SELECT * FROM t* current_schema",
+            "SELECT 1 OPERATOR(left.+) 2",
+            "SELECT 1 OPERATOR(current_schema.+) 2",
+            "CREATE INDEX ON t (left)",
+        ],
+        "a type-function-name keyword is no ColId",
+    );
+    #[cfg(feature = "since-pg15")]
+    assert_rejects(
+        &["CREATE PUBLICATION p FOR TABLE t (current_schema)"],
+        "current_schema is no ColId",
+    );
+    // `REVOKE ColId OPTION FOR` takes more than `ADMIN` from 16
+    // (`RoleRevokeOptionWord`).
+    #[cfg(feature = "since-pg16")]
+    assert_rejects(
+        &["REVOKE current_schema OPTION FOR r FROM u"],
+        "current_schema is no ColId",
+    );
+    #[cfg(feature = "since-pg17")]
+    assert_rejects(
+        &[
+            "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (current_schema int))",
+            "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (current_schema FOR ORDINALITY))",
+            "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (freeze int))",
+            "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (select int))",
+        ],
+        "a type-function-name keyword is no ColId",
+    );
+    assert_accepts(&[
+        "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS \"current_schema\" int)",
+        "SELECT * FROM XMLTABLE('/a' PASSING '<a/>' COLUMNS path int, b FOR ORDINALITY)",
+        "ALTER TABLE t DROP COLUMN \"current_schema\"",
+        "ALTER TABLE t DROP COLUMN \"left\"",
+        "ALTER TABLE t DROP a",
+        "ALTER TABLE t ALTER COLUMN \"current_schema\" SET DEFAULT 1",
+        "ALTER TABLE t RENAME COLUMN \"current_schema\" TO \"freeze\"",
+        "COPY t (\"current_schema\") FROM STDIN",
+        "GRANT SELECT (\"current_schema\") ON t TO u",
+        "DROP SCHEMA \"current_schema\"",
+        "CREATE SCHEMA \"current_schema\"",
+        "CREATE TABLE t2 (a int, PRIMARY KEY (\"current_schema\"))",
+        "VACUUM t (\"current_schema\")",
+        "WITH w (\"left\") AS (SELECT 1) SELECT 1",
+        "CREATE VIEW v (\"select\") AS SELECT 1",
+        "ALTER TABLE t ENABLE TRIGGER ALL",
+        "DEALLOCATE ALL",
+        "CLOSE ALL",
+        "UPDATE t SET \"left\" = 1",
+        "SELECT * FROM t* x",
+        "SELECT * FROM t* LEFT JOIN u ON true",
+        "ALTER ROLE a RENAME TO left",
+        "SELECT 1 OPERATOR(pg_catalog.+) 2",
+        "SELECT pg_catalog.left('a', 1)",
+        // gram.y `SQLValueFunction`.
+        "SELECT current_schema",
+        "SELECT * FROM t WHERE current_schema = 'x'",
+        "CREATE INDEX ON t (current_schema)",
+        "CREATE INDEX ON t (current_schema text_ops)",
+        "CREATE TABLE t (a int) PARTITION BY LIST (current_schema)",
+        "CREATE STATISTICS s ON current_schema, b FROM t",
+        "CREATE STATISTICS s ON current_date, coalesce(a, 0) FROM t",
+        // gram.y `type_function_name` and `attr_name: ColLabel` in a
+        // function name.
+        "SELECT pg_catalog.current_schema()",
+        "SELECT * FROM current_schema()",
+        "SELECT * FROM current_schema() WITH ORDINALITY AS x (a, n)",
+        "SELECT * FROM current_schema WITH ORDINALITY",
+        "SELECT * FROM LATERAL current_schema()",
+        "CREATE STATISTICS s ON current_schema(), left(a, 1) FROM t",
+        "SELECT s.select(), a.b.c.d.from(1)",
+        "SELECT * FROM s.left()",
+        "SELECT * FROM s.select",
+        // gram.y `NonReservedWord`.
+        "SET search_path = current_schema, public",
+        "SET search_path = left",
+        "EXPLAIN (FORMAT left) SELECT 1",
+        "EXPLAIN (COSTS current_schema) SELECT 1",
+    ]);
+    #[cfg(feature = "since-pg15")]
+    assert_accepts(&["CREATE PUBLICATION p FOR TABLE t (\"current_schema\")"]);
+    #[cfg(feature = "since-pg17")]
+    assert_accepts(&[
+        "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (\"current_schema\" int))",
+        "SELECT * FROM JSON_TABLE('[]', '$' COLUMNS (nested int, NESTED PATH '$' COLUMNS (b int)))",
     ]);
 }
 

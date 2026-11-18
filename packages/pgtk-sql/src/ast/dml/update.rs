@@ -15,7 +15,7 @@ recursa::ast_node! {
     /// `ON CONFLICT DO UPDATE` permits inside `INSERT ... AS alias`.
     #[derive(Debug)]
     pub struct SingleAssignment {
-        pub column: literal::Ident,
+        pub column: crate::tokens::ColId,
         /// gram.y `opt_indirection`, with a `.*` as the last element only
         /// (`check_indirection`, REL_17_11 gram.y 18779; issue #87).
         pub indirection: Option<crate::ast::shared::expr::Indirection>,
@@ -31,7 +31,7 @@ recursa::ast_node! {
     /// so `SET (f2[1], f1, tag) = (...)` (rules.sql) parses cleanly.
     #[derive(Debug)]
     pub struct SetTarget {
-        pub column: literal::Ident,
+        pub column: crate::tokens::ColId,
         /// gram.y `opt_indirection`, with a `.*` as the last element only
         /// (`check_indirection`, REL_17_11 gram.y 18779; issue #87).
         pub indirection: Option<crate::ast::shared::expr::Indirection>,
@@ -142,7 +142,6 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `AS alias` on an UPDATE target table.
     #[derive(Debug)]
-    #[validate(crate::ast::validation::current_schema_update_table_alias_with_as, flat = crate::ast::validation::current_schema_update_table_alias_with_as_flat)]
     pub struct UpdateTableAliasWithAs {
         #[tok(AS, this)]
         pub name: crate::tokens::ColId,

@@ -498,22 +498,6 @@ fn escape_string_error_kind(raw: &str) -> Option<FoldError> {
     pair_first.map(|_| FoldError::InvalidSurrogatePair)
 }
 
-/// Classify an identifier spelling for the rules that `gram.y` writes as
-/// `ColId`: `"current_schema"` for the unquoted keyword `CURRENT_SCHEMA`,
-/// `"name"` for each other spelling.
-///
-/// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
-/// kwlist.h 115), so it is no `ColId`. pgtk-sql lexes the word as an
-/// identifier (`crate::tokens`), so a rule that takes a `ColId` refuses it by
-/// its text. A quoted `"current_schema"` is a plain name.
-pub fn current_schema_class(raw: &str) -> Option<&'static str> {
-    Some(if raw.eq_ignore_ascii_case("current_schema") {
-        "current_schema"
-    } else {
-        "name"
-    })
-}
-
 /// `check_uescapechar` (`parser.c`), after `strlen(escstr) != 1`.
 fn escape_byte(uescape: &[u8]) -> Result<u8, FoldError> {
     match uescape {

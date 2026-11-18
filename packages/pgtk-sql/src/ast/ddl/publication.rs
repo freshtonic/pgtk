@@ -61,13 +61,27 @@ recursa::ast_node! {
 recursa::ast_node! {
     /// `TABLES IN SCHEMA schema`: gram.y `PublicationObjSpec: TABLES IN_P
     /// SCHEMA ColId | TABLES IN_P SCHEMA CURRENT_SCHEMA` (REL_17_11 gram.y
-    /// 10577-10589). It takes no column list (issue #58). pgtk-sql lexes
-    /// `CURRENT_SCHEMA` as an identifier (see `tokens.rs`), so the `ColId`
-    /// takes it.
+    /// 10577-10589). It takes no column list (issue #58).
     #[derive(Debug)]
     pub struct PublicationObjTablesInSchema {
         #[tok(TABLES, IN, SCHEMA, this)]
-        pub schema: crate::tokens::ColId,
+        pub schema: PublicationSchemaName,
+    }
+}
+
+// Added in 15: research, PostgreSQL 15, "Changes to existing statements"
+// (REL_15_19 gram.y `PublicationObjSpec`, `pub_obj_list`). REL_14_24 gram.y
+// has only `FOR TABLE relation_expr_list` and `FOR ALL TABLES`.
+#[cfg(feature = "since-pg15")]
+recursa::ast_node! {
+    /// The schema of a `TABLES IN SCHEMA` group: a `ColId`, or the keyword
+    /// `CURRENT_SCHEMA`, which gram.y names in its own arms (REL_17_11 gram.y
+    /// 10584 and 10637).
+    #[derive(Debug)]
+    pub enum PublicationSchemaName {
+        #[tok(CURRENT_SCHEMA)]
+        CurrentSchema,
+        Name(crate::tokens::ColId),
     }
 }
 
@@ -256,10 +270,11 @@ recursa::ast_node! {
 #[cfg(feature = "since-pg15")]
 recursa::ast_node! {
     /// A schema that continues a `TABLES IN SCHEMA` group, and the objects
-    /// after it.
+    /// after it: gram.y `PublicationObjSpec: ColId opt_column_list
+    /// OptWhereClause | CURRENT_SCHEMA` (REL_17_11 gram.y 10590 and 10637).
     #[derive(Debug)]
     pub struct PublicationSchemaContinuation {
-        pub schema: crate::tokens::ColId,
+        pub schema: PublicationSchemaName,
         pub rest: Option<PublicationSchemaRest>,
     }
 }
