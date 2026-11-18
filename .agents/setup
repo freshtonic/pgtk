@@ -72,9 +72,8 @@ $begin
 - \`.agents/setup\` installed the pinned Rust toolchain, dotslash (for \`tools/buck2\`), clang and lld,
   the \`vendor/postgres\` submodule with its full history, and the PostgreSQL 14 to 17 builds in
   \`~/.cache/pgtk-sql/postgres\`. \`target/\` holds a debug build of the workspace and its tests.
-- Compiling pgtk-sql needs more than 6 GB of memory. Two compiles of the generated grammar crates
-  (pgtk-sql, pgtk-psql) at once need more than the orb has, and the kernel kills the build. When a
-  change rebuilds both, pass \`-j 1\` to cargo and to \`tools/buck2\`, as CI does.
+- Compiling pgtk-sql needs more than 6 GB of memory. Run at most one cargo or buck2 job for each
+  7 GB of the orb's memory (\`-j 2\` on a 16 GB orb), or the kernel kills the build.
 - recursa (https://github.com/freshtonic/recursa) is checked out at \`$repo_root/../repos/recursa\`.
   pgtk uses it from crates.io. When a pgtk fix needs a recursa change, make the change there (its
   own AGENTS.md applies). To build pgtk against it, add this to the pgtk root \`Cargo.toml\`:
@@ -109,17 +108,20 @@ postgres_builds() {
 }
 
 cargo_build() {
-  # Fetches the crates and compiles the workspace and its tests once. One job, because the
-  # generated grammar crates need a lot of memory (see ci.yml). The build is a cache, not a
-  # prerequisite: if it fails (on an orb with too little memory) or runs out of the time that Amp
-  # gives setup, setup still succeeds, so Amp saves the toolchain and PostgreSQL builds in the
-  # snapshot, and the next setup run continues from the crates that did compile.
+  # Fetches the crates and compiles the workspace and its tests once. One job for each 7 GB of
+  # memory, because one compile of a generated grammar crate needs more than 6 GB (see ci.yml).
+  # The build is a cache, not a prerequisite: if it fails (on an orb with too little memory) or
+  # runs out of the time that Amp gives setup, setup still succeeds, so Amp saves the toolchain
+  # and PostgreSQL builds in the snapshot, and the next setup run continues from the crates that
+  # did compile.
   local budget=$((17 * 60 - SECONDS))
   if [ "$budget" -lt 60 ]; then
     echo "No time left for the warm cargo build"
     return 0
   fi
-  timeout "$budget" cargo build --locked --workspace --tests -j 1 \
+  local jobs=$(($(awk '/^MemTotal:/ { print $2 }' /proc/meminfo) / (7 * 1024 * 1024)))
+  [ "$jobs" -ge 1 ] || jobs=1
+  timeout "$budget" cargo build --locked --workspace --tests -j "$jobs" \
     || echo "The warm cargo build did not finish (exit $?); later builds continue from it"
 }
 
