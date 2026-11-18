@@ -69,6 +69,32 @@
 //!   on top-level semicolons, so the workload is a profiling shape, not the
 //!   frozen differential membership.
 //!
+//! Document suite (issue #26):
+//!
+//! Every workload above times the statement seam. The three `document_*`
+//! workloads time `pgtk_sql::document::parse_sql` over a whole file, framing
+//! included, and each moves one axis of it while holding the other two still:
+//!
+//! - `document_islands` — island count: many short statements.
+//! - `document_island_size` — island size: four long statements.
+//! - `document_boundary_depth` — boundary-candidate depth: four statements
+//!   of a fixed size whose `BEGIN ATOMIC` bodies or rule actions hold `;`
+//!   tokens that framing tries as boundaries before the one that ends them.
+//!
+//! Each axis has a sweep of `fixtures/stress/<axis>_<size>.sql` fixtures
+//! (`src/bin/gen_stress.rs`). The bare axis name runs its largest size, and
+//! `<axis>_<size>` runs one point. `--sweep` runs every size of the axis for
+//! `--duration` seconds each, in turns, and reports the growth exponent: the
+//! least-squares slope of log median time per document against log size,
+//! with the slope between each pair of neighbouring sizes. A constant-factor change
+//! moves the times and leaves the exponent; a scaling change moves the
+//! exponent. `--engine postgres` runs the same documents through
+//! PostgreSQL's raw parser for a reference exponent.
+//!
+//! The document interface needs the `spans` feature, so these workloads need
+//! `--features postgres-oracle,spans`, a different build of the parser from
+//! the one the statement workloads are usually timed in.
+//!
 //! The `postgres-oracle` feature is optional for this target. Without it the
 //! PostgreSQL membership probe is a no-op (workloads keep whatever pgtk-sql
 //! accepts) and `--engine postgres` is rejected.
@@ -218,6 +244,27 @@ const DISCOVERY_WORKLOADS: [(&str, &str); 15] = [
     ),
 ];
 
+/// The document suite: one axis of `document::parse_sql` each, with the sizes
+/// of its sweep. The fixtures are `fixtures/stress/<axis>_<size>.sql`, written
+/// by `src/bin/gen_stress.rs`; the bare axis name is its largest size.
+const DOCUMENT_AXES: [(&str, &[usize], &str); 3] = [
+    (
+        "document_islands",
+        &[500, 1_000, 2_000, 4_000],
+        "island count: short statements per document",
+    ),
+    (
+        "document_island_size",
+        &[250, 500, 1_000, 2_000],
+        "island size: list items in each of four statements",
+    ),
+    (
+        "document_boundary_depth",
+        &[8, 16, 32, 64, 128],
+        "boundary-candidate depth: inner `;` in each of four fixed-size statements",
+    ),
+];
+
 /// Directory of `.sql` files backing the `short_statements` workload.
 const SHORT_SQL_DIR_VAR: &str = "FLAME_SHORT_SQL_DIR";
 
@@ -231,6 +278,54 @@ struct LoadedWorkload {
     inputs: Vec<String>,
     expected: ExpectedOutcome,
     supports_sqlparser: bool,
+    seam: Seam,
+}
+
+/// The entry point a workload times.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Seam {
+    /// One statement at a time: `lex_statement_source` + `Statement::parse`.
+    Statement,
+    /// One whole document: `document::parse_sql`, framing included.
+    Document,
+}
+
+/// Resolves a document-suite name to its fixture size and the sizes of its
+/// sweep: `<axis>` is the largest size, `<axis>_<size>` one listed size.
+fn document_axis(name: &str) -> Option<(&'static str, usize, &'static [usize])> {
+    DOCUMENT_AXES.iter().find_map(|&(axis, sizes, _)| {
+        let size = match name.strip_prefix(axis)? {
+            "" => *sizes.last()?,
+            suffix => suffix.strip_prefix('_')?.parse().ok()?,
+        };
+        sizes.contains(&size).then_some((axis, size, sizes))
+    })
+}
+
+/// Loads one document fixture. A document the parsers do not accept is an
+/// error rather than an empty workload, so a fixture cannot silently stop
+/// measuring anything.
+fn load_document(axis: &str, size: usize) -> Result<LoadedWorkload, String> {
+    if !cfg!(feature = "spans") {
+        return Err("the document workloads need the spans feature (--features spans)".into());
+    }
+    let path = manifest_dir()
+        .join("fixtures/stress")
+        .join(format!("{axis}_{size}.sql"));
+    let sql = fs::read_to_string(&path)
+        .map_err(|e| format!("read document fixture {}: {e}", path.display()))?;
+    if !parse_document_with_pg_sql(&sql) || !parse_with_postgres(&sql) {
+        return Err(format!(
+            "{}: pgtk-sql or PostgreSQL rejects the document",
+            path.display()
+        ));
+    }
+    Ok(LoadedWorkload {
+        inputs: vec![sql],
+        expected: ExpectedOutcome::Accept,
+        supports_sqlparser: false,
+        seam: Seam::Document,
+    })
 }
 
 fn manifest_dir() -> PathBuf {
@@ -424,6 +519,7 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
             inputs: accepted_inputs(vec![sql], require_sqlparser),
             expected: ExpectedOutcome::Accept,
             supports_sqlparser: require_sqlparser,
+            seam: Seam::Statement,
         })
     };
     match name {
@@ -433,6 +529,7 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
                 inputs: accepted_inputs(inputs, true),
                 expected: ExpectedOutcome::Accept,
                 supports_sqlparser: true,
+                seam: Seam::Statement,
             })
         }
         "corpus_pg_postgres" => {
@@ -441,6 +538,7 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
                 inputs: accepted_inputs(inputs, false),
                 expected: ExpectedOutcome::Accept,
                 supports_sqlparser: false,
+                seam: Seam::Statement,
             })
         }
         name @ ("corpus_query" | "corpus_dml" | "corpus_ddl" | "corpus_transaction"
@@ -455,6 +553,7 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
                 inputs: accepted_inputs(inputs, false),
                 expected: ExpectedOutcome::Accept,
                 supports_sqlparser: false,
+                seam: Seam::Statement,
             })
         }
         "errors_pg_postgres" => {
@@ -466,6 +565,7 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
                     .collect(),
                 expected: ExpectedOutcome::Reject,
                 supports_sqlparser: false,
+                seam: Seam::Statement,
             })
         }
         "select_list_10000" => stress("select_list_10000.sql", true),
@@ -480,9 +580,13 @@ fn load_workload(name: &str) -> Result<LoadedWorkload, String> {
                 inputs: accepted_inputs(inputs, false),
                 expected: ExpectedOutcome::Accept,
                 supports_sqlparser: false,
+                seam: Seam::Statement,
             })
         }
-        other => Err(format!("unknown workload: {other}")),
+        other => match document_axis(other) {
+            Some((axis, size, _)) => load_document(axis, size),
+            None => Err(format!("unknown workload: {other}")),
+        },
     }
 }
 
@@ -506,6 +610,27 @@ fn parse_with_pg_sql(sql: &str) -> bool {
         }
         Err(_) => false,
     }
+}
+
+/// Strict document parse with pgtk-sql: `document::parse_sql` over the whole
+/// file, so framing, every island's parse and the document's drop are inside
+/// the call.
+#[cfg(feature = "spans")]
+fn parse_document_with_pg_sql(sql: &str) -> bool {
+    match pgtk_sql::document::parse_sql(sql) {
+        Ok(document) => {
+            std::hint::black_box(&document);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Without `spans` there is no document interface; `load_document` refuses
+/// the document workloads before this can run.
+#[cfg(not(feature = "spans"))]
+fn parse_document_with_pg_sql(_sql: &str) -> bool {
+    unreachable!("the document workloads are rejected without the spans feature")
 }
 
 /// Strict statement-level parse with pgtk-sql's **Flat AST**. The same lex
@@ -684,8 +809,7 @@ struct LoopStats {
 /// deadline is checked after every statement, so a long workload (the
 /// corpus is ~50 s per pass at the 2026-09-01 baseline) still stops close
 /// to the requested duration; at least one statement always runs.
-fn run_loop(inputs: &[String], duration: Duration, engine: Engine) -> LoopStats {
-    let parse = engine.parse_fn();
+fn run_loop(inputs: &[String], duration: Duration, parse: fn(&str) -> bool) -> LoopStats {
     let start = Instant::now();
     let deadline = start + duration;
     let mut stats = LoopStats {
@@ -722,13 +846,16 @@ enum Engine {
 }
 
 impl Engine {
-    /// The parse seam this engine loops over.
-    fn parse_fn(self) -> fn(&str) -> bool {
-        match self {
-            Engine::PgSql => parse_with_pg_sql,
-            Engine::PgSqlFlat => parse_with_pg_sql_flat,
-            Engine::Sqlparser => parse_with_sqlparser,
-            Engine::Postgres => parse_with_postgres_engine,
+    /// The parse function this engine loops over at `seam`, if it has one.
+    fn parse_fn(self, seam: Seam) -> Option<fn(&str) -> bool> {
+        match (self, seam) {
+            (Engine::PgSql, Seam::Statement) => Some(parse_with_pg_sql),
+            (Engine::PgSql, Seam::Document) => Some(parse_document_with_pg_sql),
+            (Engine::PgSqlFlat, Seam::Statement) => Some(parse_with_pg_sql_flat),
+            (Engine::Sqlparser, Seam::Statement) => Some(parse_with_sqlparser),
+            // PostgreSQL's raw parser takes a multi-statement string itself.
+            (Engine::Postgres, _) => Some(parse_with_postgres_engine),
+            (Engine::PgSqlFlat | Engine::Sqlparser, Seam::Document) => None,
         }
     }
 
@@ -757,6 +884,7 @@ struct Args {
     duration_secs: u64,
     engine: Engine,
     count_allocs: bool,
+    sweep: bool,
 }
 
 /// Hand-rolled argv parsing, mirroring the old `flame_target`. `cargo bench`
@@ -766,6 +894,7 @@ fn parse_args(args: &[String]) -> Result<Option<Args>, String> {
     let mut duration_secs: u64 = 5;
     let mut engine = Engine::PgSql;
     let mut count_allocs = false;
+    let mut sweep = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -796,6 +925,7 @@ fn parse_args(args: &[String]) -> Result<Option<Args>, String> {
                 };
             }
             "--count-allocs" => count_allocs = true,
+            "--sweep" => sweep = true,
             s if s.starts_with("--") => return Err(format!("unknown flag: {s}")),
             s => {
                 if workload.is_some() {
@@ -810,11 +940,15 @@ fn parse_args(args: &[String]) -> Result<Option<Args>, String> {
     if count_allocs && !engine.is_pg_sql() {
         return Err("--count-allocs counts the pgtk-sql and pgtk-sql-flat seams only".into());
     }
+    if sweep && count_allocs {
+        return Err("--sweep and --count-allocs do not combine".into());
+    }
     Ok(Some(Args {
         workload,
         duration_secs,
         engine,
         count_allocs,
+        sweep,
     }))
 }
 
@@ -829,6 +963,134 @@ fn print_workloads() {
     print_workload_group("quick suite", &QUICK_WORKLOADS);
     println!();
     print_workload_group("discovery suite", &DISCOVERY_WORKLOADS);
+    println!();
+    println!("document suite (--features spans; --sweep for the growth exponent):");
+    for (axis, sizes, description) in DOCUMENT_AXES {
+        println!("  {axis:<24} {description}; sizes {sizes:?}");
+    }
+}
+
+/// Least-squares slope of `ln y` against `ln x`: the growth exponent of a
+/// sweep.
+fn growth_exponent(points: &[(f64, f64)]) -> f64 {
+    let logs: Vec<(f64, f64)> = points.iter().map(|&(x, y)| (x.ln(), y.ln())).collect();
+    let n = logs.len() as f64;
+    let mean_x = logs.iter().map(|p| p.0).sum::<f64>() / n;
+    let mean_y = logs.iter().map(|p| p.1).sum::<f64>() / n;
+    let covariance: f64 = logs.iter().map(|p| (p.0 - mean_x) * (p.1 - mean_y)).sum();
+    let variance: f64 = logs.iter().map(|p| (p.0 - mean_x).powi(2)).sum();
+    covariance / variance
+}
+
+/// Stops glibc's allocator from giving memory back to the kernel for the rest
+/// of the process, and so describes the allocator a sweep ran with.
+///
+/// By default glibc maps large blocks with `mmap` and trims the top of the
+/// heap after a free, so the large documents of a sweep fault their pages in
+/// again on every parse, and how often depends on what ran before. On the
+/// 2026-11-18 orb that bent the island-count exponent to 1.18 with one
+/// history and 1.0 with another; with both disabled it read 1.00 on every
+/// run. The sweep measures how pgtk-sql's own work grows, so it holds the
+/// allocator still. Elsewhere the sweep keeps the system allocator's defaults.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn steady_allocator() -> &'static str {
+    // glibc `malloc.h`: `M_TRIM_THRESHOLD` is -1 and `M_MMAP_MAX` is -4.
+    unsafe extern "C" {
+        fn mallopt(param: std::ffi::c_int, value: std::ffi::c_int) -> std::ffi::c_int;
+    }
+    // SAFETY: `mallopt` only changes glibc allocator tuning parameters; it is
+    // called before the sweep allocates any document.
+    let set = unsafe { mallopt(-1, std::ffi::c_int::MAX) == 1 && mallopt(-4, 0) == 1 };
+    if set {
+        "glibc, heap trimming and mmap disabled"
+    } else {
+        "glibc, defaults (mallopt failed)"
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn steady_allocator() -> &'static str {
+    "system default"
+}
+
+/// How many turns each size of a sweep takes.
+const SWEEP_ROUNDS: u32 = 5;
+
+/// Times every size of one document axis and reports the growth exponent.
+fn run_sweep(args: &Args) -> ExitCode {
+    let Some((axis, _, sizes)) = document_axis(&args.workload) else {
+        eprintln!(
+            "flame: --sweep needs a document axis: {}",
+            DOCUMENT_AXES.map(|(axis, ..)| axis).join(", ")
+        );
+        return ExitCode::from(2);
+    };
+    let Some(parse) = args.engine.parse_fn(Seam::Document) else {
+        eprintln!("flame: --engine {:?} cannot parse a document", args.engine);
+        return ExitCode::from(2);
+    };
+    let steady = steady_allocator();
+    let mut documents = Vec::with_capacity(sizes.len());
+    for &size in sizes {
+        match load_document(axis, size) {
+            Ok(mut loaded) => documents.push((size, loaded.inputs.remove(0))),
+            Err(msg) => {
+                eprintln!("flame: {msg}");
+                return ExitCode::from(2);
+            }
+        }
+    }
+    println!("pgtk-sql flame harness: sweep of {axis}");
+    println!("allocator: {steady}");
+    println!("engine: {:?}", args.engine);
+    println!(
+        "duration: {} s per size, in {SWEEP_ROUNDS} rounds",
+        args.duration_secs
+    );
+    println!("pid: {}", std::process::id());
+    // The sizes take turns, a slice of the duration each per round, so a
+    // slow spell of the machine falls on every size rather than on one, and
+    // each size reports the median of its per-document times.
+    let slice = Duration::from_secs(args.duration_secs) / SWEEP_ROUNDS;
+    let mut samples = vec![Vec::new(); documents.len()];
+    for _ in 0..SWEEP_ROUNDS {
+        for ((size, sql), times) in documents.iter().zip(&mut samples) {
+            let start = Instant::now();
+            loop {
+                let parse_start = Instant::now();
+                if !std::hint::black_box(parse(sql)) {
+                    eprintln!("flame: {axis}_{size}: workload outcome drift");
+                    return ExitCode::from(1);
+                }
+                times.push(parse_start.elapsed().as_nanos() as f64);
+                if start.elapsed() >= slice {
+                    break;
+                }
+            }
+        }
+    }
+    let mut points = Vec::with_capacity(documents.len());
+    for ((size, sql), times) in documents.iter().zip(&mut samples) {
+        times.sort_by(f64::total_cmp);
+        let median = times[times.len() / 2];
+        println!(
+            "size={size} bytes={} iters={} elapsed_ns={:.0} median_ns={median:.0}",
+            sql.len(),
+            times.len(),
+            times.iter().sum::<f64>(),
+        );
+        points.push((*size as f64, median));
+    }
+    for pair in points.windows(2) {
+        println!(
+            "exponent {:.0}->{:.0}: {:.2}",
+            pair[0].0,
+            pair[1].0,
+            growth_exponent(pair)
+        );
+    }
+    println!("axis={axis} exponent={:.2}", growth_exponent(&points));
+    ExitCode::SUCCESS
 }
 
 fn main() -> ExitCode {
@@ -841,11 +1103,14 @@ fn main() -> ExitCode {
         }
         Err(msg) => {
             eprintln!("flame: {msg}");
-            eprintln!("usage: flame <workload> [--duration <seconds>] | flame --list");
+            eprintln!("usage: flame <workload> [--duration <seconds>] [--sweep] | flame --list");
             print_workloads();
             return ExitCode::from(2);
         }
     };
+    if args.sweep {
+        return run_sweep(&args);
+    }
 
     let loaded = match load_workload(&args.workload) {
         Ok(inputs) => inputs,
@@ -874,7 +1139,18 @@ fn main() -> ExitCode {
     println!("expected: {:?}", loaded.expected);
     println!("pid: {}", std::process::id());
 
+    let Some(parse) = args.engine.parse_fn(loaded.seam) else {
+        eprintln!(
+            "flame: --engine {:?} cannot time the {:?} seam",
+            args.engine, loaded.seam
+        );
+        return ExitCode::from(2);
+    };
     if args.count_allocs {
+        if loaded.seam != Seam::Statement {
+            eprintln!("flame: --count-allocs attributes the statement seam only");
+            return ExitCode::from(2);
+        }
         run_alloc_count(&loaded.inputs, loaded.expected, args.engine);
         return ExitCode::SUCCESS;
     }
@@ -885,7 +1161,7 @@ fn main() -> ExitCode {
     let stats = run_loop(
         &loaded.inputs,
         Duration::from_secs(args.duration_secs),
-        args.engine,
+        parse,
     );
     if stats.statements == 0 {
         eprintln!("flame: 0 statements parsed (empty workload?)");

@@ -23,33 +23,41 @@ recursa-old's journal:
 
 ## Canonical workloads
 
-Three named workloads (CONTEXT.md). Every journal entry and every profile
-names one of them.
+Six named workloads: the quick three at the statement seam and the document
+three (CONTEXT.md). Every journal entry and every profile names one of them.
 
 | Name | Input | What it stresses |
 |---|---|---|
 | `corpus` | All 43,474 frozen corpus statements (the differential-baseline membership, `tests/support/baseline.rs`) | Real statement mix, small statements, error/expected-set paths for the 262 statements pgtk-sql rejects |
 | `select_list_10000` | `fixtures/stress/select_list_10000.sql` | One SELECT with a 10,000-item select list; repetition and value construction |
 | `bool_chain` | `fixtures/stress/bool_chain_1000.sql` | One WHERE clause with 1,000 `AND` terms; left-recursive `Expr` reduction (the Pratt loop, before 2026-09-16) |
+| `document_islands` | `fixtures/stress/document_islands_{500,1000,2000,4000}.sql` | `document::parse_sql` over 500 to 4,000 short statements of eight families: island count |
+| `document_island_size` | `fixtures/stress/document_island_size_{250,500,1000,2000}.sql` | `document::parse_sql` over four statements (VALUES rows, target list, IN list, CASE arms) of 250 to 2,000 items each: island size |
+| `document_boundary_depth` | `fixtures/stress/document_boundary_depth_{8,16,32,64,128}.sql` | `document::parse_sql` over four statements of about 2,400 tokens each, two `BEGIN ATOMIC` bodies and two multi-action rules, holding 8 to 128 inner `;` each: boundary-candidate depth |
 
-A fourth, document-level workload is tracked as issue #61; see the blind-spot
-subsection below for why it is not defined here.
+The document workloads (issue #26) time the file-level seam that the other
+three cannot see, framing included. Each moves one axis and holds the other
+two still, and each is measured as a size sweep with a growth exponent rather
+than as one time (`--sweep`, below): a constant-factor change moves the times,
+a scaling change moves the exponent. The bare name runs the largest size. They
+need the `spans` feature, which the document interface depends on. Their
+baseline is the 2026-11-18 entry at the end of this journal.
 
 The stress fixtures are checked in and regenerable with
 `cargo run --bin gen-stress -p pgtk-sql`. The `corpus` workload is the
 statement set that `benches/parse.rs` calls the "corpus head-to-head"; the
 head-to-head engine comparison itself stays in that bench.
 
-### Known blind spot: all three workloads are the statement seam
+### Former blind spot: the first three workloads are the statement seam
 
-Every workload above, every new profile in this journal, and `benches/parse.rs`
-itself measure the same seam: `lex_statement_source` +
-`Statement::parse_without_spans`,
-one statement at a time. **Document framing (`pgtk_sql::document::parse_sql`)
-has never been measured here.** That is a gap in the discipline, not merely
-a missing number: a cost that lives only in the file-level path is
-structurally invisible to every measurement we take, however many workloads
-we add at the statement level.
+The first three workloads above, every profile in this journal before the
+2026-11-18 baseline, and `benches/parse.rs` itself measure the same seam:
+`lex_statement_source` + `Statement::parse_without_spans`, one statement at a
+time. **Document framing (`pgtk_sql::document::parse_sql`) was not measured
+here until the document workloads.** That was a gap in the discipline, not
+merely a missing number: a cost that lives only in the file-level path is
+structurally invisible to every statement-level measurement, however many of
+those we add.
 
 It has already hidden one: a peer session profiling the file-level seam on
 2026-09-04 measured `document::parse_sql` as **quadratic in statement
@@ -80,9 +88,9 @@ inside one would change how every later island lexes. f52e722 pins it with
 four leaking interiors, verified to fail when the post-payload re-lex is
 removed.
 
-A document-level canonical workload still belongs in this table and is
-tracked separately, so that neither the session that found the quadratic nor
-the one that fixed it shapes the workload around it.
+The document-level canonical workloads were defined later, by a session with
+no stake in the fix (issue #26), so that the workloads are not shaped around
+the quadratic; they are the `document_*` rows of the table above.
 
 The analysis that produced this — what PostgreSQL's parser does to be fast,
 the phase split of the benchmark seam, and the attribution that reached
@@ -108,7 +116,21 @@ cargo bench -p pgtk-sql --features postgres-oracle --bench flame -- \
 
 # List the workload names:
 cargo bench -p pgtk-sql --features postgres-oracle --bench flame -- --list
+
+# Sweep one document axis (needs `spans`); prints the growth exponent:
+cargo bench -p pgtk-sql --features postgres-oracle,spans --bench flame -- \
+    document_islands --sweep --duration 5
+
+# The same documents through PostgreSQL's raw parser, for a reference exponent:
+cargo bench -p pgtk-sql --features postgres-oracle,spans --bench flame -- \
+    document_islands --sweep --duration 5 --engine postgres
 ```
+
+A sweep gives each size `--duration` seconds in five interleaved turns, and
+fits the exponent to the median time per document. On glibc it first turns off
+heap trimming and `mmap` for the process, because the allocator's page
+faults otherwise bend the exponent by a different amount on each run; it
+prints the allocator setting it ran with.
 
 ### One-command profile (macOS)
 
@@ -1894,3 +1916,56 @@ instances), so exact identity sharing can remove at most three rules. The
 needs restriction-aware LR-core/action overlays; ordinary helper interning
 cannot reach it. Existing discovery profiles do not identify a hot transparent
 attachment or envelope family for Phase 5 factoring.
+
+## Baseline: 2026-11-18 — document suite (issue #26)
+
+The first measurement of the three document workloads, at `main` 4adf8b0
+(recursa 0.1.7, pg17, `--features postgres-oracle,spans`), on an 8-vCPU
+Linux orb. Each figure is a `--sweep --duration 5` run: the median time to
+`document::parse_sql` one fixture, and the least-squares growth exponent over
+the sweep. PostgreSQL is `--engine postgres` over the same documents.
+
+| Workload | Sizes | pgtk-sql, largest | Exponent | PostgreSQL, largest | Exponent |
+|---|---|--:|--:|--:|--:|
+| `document_islands` | 500 to 4,000 statements | 18.92 ms | 1.00 | 3.05 ms | 1.00 |
+| `document_island_size` | 250 to 2,000 items per statement | 8.43 ms | 0.99 | 1.75 ms | 1.00 |
+| `document_boundary_depth` | 8 to 128 inner `;` per statement | 237.06 ms | 0.94 | 0.74 ms | 0.02 |
+
+Island count and island size are linear, as the 2026-09-05 fix left them,
+at 4.8x to 6.2x PostgreSQL. Boundary-candidate depth is the outlier.
+PostgreSQL does not depend on it at all; pgtk-sql's time grows linearly with
+it at a fixed statement size, from 17.6 ms at depth 8 to 237 ms at depth 128,
+320x PostgreSQL. Each candidate `;` that does not end the statement costs a
+fresh strict parse from the start of the island, so a statement with `d`
+inner semicolons and `n` tokens costs about `d * n / 2` token steps; a body
+that grows by adding statements is quadratic in its length. This is the cost
+the 2026-09-05 fix made lazy without making cheaper. It is recorded here as
+the baseline, not fixed; the fix is freshtonic/recursa#161.
+
+### The sweep discriminates
+
+The check the issue asked for: re-introduce the pre-fix framing on a scratch
+branch and see whether the exponent moves. recursa's parser has changed since
+(one LALR parser), but `framing.rs`'s island loop has not, so the defect could
+be re-introduced in the 0.1.7 sources as it was: a fresh lex of the whole
+remaining document for each island, an eager list of every remaining
+boundary, and a fresh lex of every candidate window (the inverse of recursa
+c9a8803, which is pg-sql's f134fad). A second scratch mode adds a deliberate
+defect on the third axis only: before trying a candidate, re-parse every
+earlier candidate of the island. Both modes lived behind an environment
+variable in one scratch build, never merged (recursa branch
+`scratch/old-framing`); `--duration 3` sweeps:
+
+| Build | `document_islands` | `document_island_size` | `document_boundary_depth` |
+|---|--:|--:|--:|
+| Scratch build, no defect (control) | 1.04 (21.5 ms) | 0.99 (8.27 ms) | 0.94 (223 ms) |
+| Pre-fix framing | **1.98** (3,676 ms) | 0.99 (13.60 ms) | 0.93 (259 ms) |
+| Re-parse earlier candidates | 1.03 (20.8 ms) | 0.98 (8.53 ms) | **1.83** (10,085 ms) |
+
+Each defect moves the exponent of its own axis and of no other: the pre-fix
+framing reads 1.98 on island count (the 2026-09-05 entry measured 1.99), and
+the depth defect reads 1.83, 2.00 between its two largest sizes. The pre-fix
+framing also makes island size 1.6x slower with the same exponent, which is
+the constant-factor case: four islands re-lex the remainder four times. The
+fixtures were chosen from the three axes in the issue before the pre-fix code
+was read.

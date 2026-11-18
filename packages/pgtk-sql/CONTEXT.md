@@ -111,6 +111,10 @@ API.
 - **Quick profiling suite**: the three canonical profiling targets - corpus
   head-to-head, select_list_10000, bool_chain - used for fast before/after
   checks.
+- **Document profiling suite**: the three document-level profiling targets -
+  document_islands, document_island_size, document_boundary_depth - that time
+  `document::parse_sql` with framing, each sweeping one axis (island count,
+  island size, boundary-candidate depth) for a growth exponent.
 - **Discovery profiling suite**: the broader pgtk-sql/PostgreSQL corpus and its
   statement-family partitions, structural and lexical stress fixtures, and
   rejected-input paths. Each member is profiled independently; results are
