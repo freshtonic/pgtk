@@ -641,11 +641,8 @@ recursa::ast_node! {
     /// cast to an array type and `f(x)[1]` is rejected, as PostgreSQL has it.
     #[derive(Debug)]
     #[flat(pool)]
-    #[validate(crate::ast::validation::current_schema_column_ref, flat = crate::ast::validation::current_schema_column_ref_flat)]
     pub struct ColumnRef {
-        /// A bare `current_schema` is gram.y `SQLValueFunction`, which takes
-        /// no indirection ([`crate::tokens::ColIdOrCurrentSchema`]).
-        pub name: crate::tokens::ColIdOrCurrentSchema,
+        pub name: crate::tokens::ColId,
         /// The subscript and the elements after it. A `.*` is the last
         /// element only (`check_indirection`, REL_17_11 gram.y 18779; issue
         /// #87).
@@ -1246,10 +1243,13 @@ recursa::ast_node! {
 }
 
 recursa::ast_node! {
+    /// `.attr_name` of a dotted name: gram.y `indirection_el: '.' attr_name`
+    /// with `attr_name: ColLabel` (REL_17_11 gram.y 16783 and 17200), so it
+    /// takes every keyword: `pg_catalog.left(...)`, `s.select()`.
     #[derive(Debug)]
     pub struct FuncCallNamePart {
         #[tok(DOT, this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColLabel,
     }
 }
 
@@ -4926,7 +4926,8 @@ recursa::ast_node! {
         User,
         /// The rest of gram.y's `SQLValueFunction` family: `CURRENT_DATE`,
         /// `CURRENT_USER` and the others. Each leads with its own keyword,
-        /// which no other atom admits.
+        /// which no other atom admits, except that `CURRENT_SCHEMA` is also a
+        /// function name before `(` and a type name before a string.
         SqlValue(SqlValueFunction),
         /// Qualified reference: `table.column`, `schema.table.column`, or
         /// `schema.table.*` -- must come before ColumnRef.
@@ -5385,10 +5386,11 @@ recursa::ast_node! {
     /// (REL_17_11 15654-15720), less the `USER` synonym, which keeps its own
     /// [`Expr::User`] atom.
     ///
-    /// Every spelling is a reserved keyword in every target version, so none
-    /// of them is an identifier: `CREATE TABLE current_user` is a syntax
-    /// error, as PostgreSQL reports. `CURRENT_SCHEMA` is not here: see the
-    /// keyword table in `crate::tokens`.
+    /// Every spelling but `CURRENT_SCHEMA` is a reserved keyword in every
+    /// target version, so none of them is an identifier: `CREATE TABLE
+    /// current_user` is a syntax error, as PostgreSQL reports.
+    /// `CURRENT_SCHEMA` is a type-function-name keyword: no `ColId` either,
+    /// but a function name before `(` (`current_schema()`).
     ///
     /// Variant ordering: each variant leads with its own keyword.
     #[derive(Debug)]
@@ -5399,6 +5401,8 @@ recursa::ast_node! {
         CurrentDate,
         #[tok(CURRENT_ROLE)]
         CurrentRole,
+        #[tok(CURRENT_SCHEMA)]
+        CurrentSchema,
         #[tok(CURRENT_USER)]
         CurrentUser,
         #[tok(SESSION_USER)]

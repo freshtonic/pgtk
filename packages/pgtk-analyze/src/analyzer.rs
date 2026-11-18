@@ -47,7 +47,7 @@ use pgtk_sql::ast::shared::expr::{FlatIntervalLitForm, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
 use pgtk_sql::tokens::literal::FlatAliasName;
-use pgtk_sql::tokens::{FlatColId, FlatColIdOrCurrentSchema, FlatNonReservedWord};
+use pgtk_sql::tokens::{FlatColId, FlatNonReservedWord};
 use recursa::{Handle, List, List1, Span, Text};
 
 use crate::analysis::RecordField;
@@ -1489,23 +1489,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
 
     fn col_id(&self, handle: Handle<FlatColId>) -> Result<(String, usize)> {
         let word = self.col_id_word(handle);
-        Ok((self.fold_word(word, word.start)?, word.start))
-    }
-
-    /// The word of a `ColId` at a position that also reads a bare
-    /// `CURRENT_SCHEMA` (a column reference, an index or statistics element).
-    fn col_id_or_current_schema_word(&self, handle: Handle<FlatColIdOrCurrentSchema>) -> Word<'a> {
-        match self.get(handle) {
-            FlatColIdOrCurrentSchema::Text(t) => self.plain_word(*t),
-            FlatColIdOrCurrentSchema::Unicode(u) => self.unicode_word(*u),
-        }
-    }
-
-    fn col_id_or_current_schema(
-        &self,
-        handle: Handle<FlatColIdOrCurrentSchema>,
-    ) -> Result<(String, usize)> {
-        let word = self.col_id_or_current_schema_word(handle);
         Ok((self.fold_word(word, word.start)?, word.start))
     }
 
@@ -5173,7 +5156,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         // collation, then its btree operator class.
                         let expr_location = match self.get(it.target) {
                             FlatIndexTarget::Col(c) => {
-                                let (name, _) = self.col_id_or_current_schema(*c)?;
+                                let (name, _) = self.col_id(*c)?;
                                 if self
                                     .relations
                                     .col_name_to_var(scope, &self.outer, &name, infer_location)?
@@ -7094,7 +7077,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         if let FlatExpr::ColumnRef(c) = self.get(expr) {
             let c = self.get(*c);
             if c.indirection.is_none() {
-                let (name, _) = self.col_id_or_current_schema(c.name)?;
+                let (name, _) = self.col_id(c.name)?;
                 // In GROUP BY a name that is a column of the FROM clause is
                 // not matched against output names.
                 let is_column = kind == ExprKind::GroupBy
@@ -9648,6 +9631,29 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     )
                     .at(location)
                     .into());
+                }
+                FlatSimpleTableRef::CurrentSchemaFunc(r) => {
+                    // `current_schema(...)`: a `func_application` whose name
+                    // is the keyword.
+                    let t = self.get(self.get(*r).tail);
+                    let func = FromFunc {
+                        call: FromFuncCall::Application(t.application),
+                        name: ObjectName {
+                            schema: None,
+                            name: "current_schema".to_owned(),
+                        },
+                        coldef: None,
+                        coldef_location: None,
+                        location,
+                    };
+                    return self.function_ref(
+                        scope,
+                        vec![func],
+                        t.ordinality,
+                        t.alias,
+                        false,
+                        location,
+                    );
                 }
                 FlatSimpleTableRef::SpecialFunc(r) => {
                     let r = self.get(*r);
@@ -12296,7 +12302,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // A_Indirection: the last field name after a subscript.
                 let mut name = self.last_field_name(&self.column_ref_parts(c.indirection));
                 if name.is_none() {
-                    name = self.col_id_or_current_schema(c.name).ok().map(|(n, _)| n);
+                    name = self.col_id(c.name).ok().map(|(n, _)| n);
                 }
                 Colname { name, strength: 2 }
             }
@@ -12814,6 +12820,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatSqlValueFunction::CurrentCatalog => ("current_catalog", None),
             FlatSqlValueFunction::CurrentDate => ("current_date", None),
             FlatSqlValueFunction::CurrentRole => ("current_role", None),
+            FlatSqlValueFunction::CurrentSchema => ("current_schema", None),
             FlatSqlValueFunction::CurrentUser => ("current_user", None),
             FlatSqlValueFunction::SessionUser => ("session_user", None),
             #[cfg(feature = "since-pg16")]
@@ -13000,7 +13007,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
                 if c.indirection.is_none() {
-                    Some(TypmodArg::Ident(self.col_id_or_current_schema(c.name)?.0))
+                    Some(TypmodArg::Ident(self.col_id(c.name)?.0))
                 } else {
                     None
                 }
@@ -13265,18 +13272,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
                 if c.indirection.is_some() {
-                    let (name, _) = self.col_id_or_current_schema(c.name)?;
+                    let (name, _) = self.col_id(c.name)?;
                     let base = self.column_ref(scope, handle, &[name], location)?;
                     let parts = self.column_ref_parts(c.indirection);
                     return self.indirection(scope, handle, base, Some(handle), &parts, location);
                 }
-                let word = self.col_id_or_current_schema_word(c.name);
-                let (name, _) = self.col_id_or_current_schema(c.name)?;
+                let word = self.col_id_word(c.name);
+                let (name, _) = self.col_id(c.name)?;
                 // gram.y turns these unquoted keywords into SQLValueFunction
                 // nodes before any column lookup. A quoted or a `U&"..."`
                 // name is never a keyword.
                 if !word.raw.starts_with('"')
-                    && !matches!(self.get(c.name), FlatColIdOrCurrentSchema::Unicode(_))
+                    && !matches!(self.get(c.name), FlatColId::Unicode(_))
                     && let Some(ty) = self.sql_value_function(&name)
                 {
                     return Ok(Typed {

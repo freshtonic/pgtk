@@ -112,17 +112,6 @@ recursa::tokens! {
         // from REL_14_24 to `b73d13c`, and every word but `system_user` is
         // already there at REL_14_24.
         //
-        // `current_schema` is absent on purpose: kwlist.h makes it a
-        // `TYPE_FUNC_NAME_KEYWORD`, which `table_function_name` admits, and
-        // `ast::dml::select::NamedTableRef` reads a relation name and a
-        // function-table name through that one admission. A bare
-        // `CURRENT_SCHEMA` in `table_ref` would then reduce either to that
-        // name or to `SqlValueFunction`, which is an RCA0401 reduce/reduce
-        // conflict. Modelling it needs `NamedTableRef` split into gram.y's
-        // `qualified_name` (`ColId`) and `func_application` routes. Until
-        // then `ColId` refuses the word in its validation hook, and the
-        // positions where gram.y also reads the keyword read
-        // `ColIdOrCurrentSchema`.
         CURRENT_CATALOG   => r"CURRENT_CATALOG" in RESERVED + bare_label,
         CURRENT_DATE      => r"CURRENT_DATE" in RESERVED + bare_label,
         CURRENT_ROLE      => r"CURRENT_ROLE" in RESERVED + bare_label,
@@ -138,6 +127,13 @@ recursa::tokens! {
         // identifier.
         #[config(since = pg16)]
         SYSTEM_USER       => r"SYSTEM_USER" in RESERVED + bare_label,
+        // `current_schema` is the one word of the family that is no reserved
+        // keyword: kwlist.h makes it `TYPE_FUNC_NAME_KEYWORD, BARE_LABEL`
+        // at every pin from REL_14_24 (REL_17_11 kwlist.h 115). So it is no
+        // `ColId`, and `type_function_name` takes it: `current_schema()` is a
+        // function call, and `FROM current_schema()` a function table
+        // (`ast::dml::select::CurrentSchemaFuncTableRef`).
+        CURRENT_SCHEMA    => r"CURRENT_SCHEMA" in TYPE_FUNC_NAME + bare_label,
         CAST         => r"CAST" in RESERVED + bare_label,
         COLLATION    => r"COLLATION" in TYPE_FUNC_NAME + bare_label,
         FOREIGN      => r"FOREIGN" in RESERVED + bare_label,
@@ -1070,7 +1066,11 @@ recursa::tokens! {
         ColLabel = UNRESERVED + COL_NAME + TYPE_FUNC_NAME + RESERVED,
         BareColLabel = bare_label,
         WindowRefName = ColId - { PARTITION, ORDER, ROWS, RANGE, GROUPS },
-        TableFunctionName = type_function_name - { COLLATION },
+        // The one-word name of `ast::dml::select::NamedTableRef`, which is a
+        // relation name or a function name. `COLLATION` leads `COLLATION FOR`,
+        // and a bare `CURRENT_SCHEMA` is `SQLValueFunction`, never a relation;
+        // each keyword has its own FROM route.
+        TableFunctionName = type_function_name - { COLLATION, CURRENT_SCHEMA },
         RelationAliasName = ColId - { SET },
         // gram.y `RevokeRoleStmt: REVOKE ColId OPTION FOR …` (REL_16_15 7805).
         // `ADMIN` is the one spelling REL_15_19 gram.y 7738 accepts, so it is
@@ -1488,57 +1488,6 @@ recursa::ast_node! {
 }
 
 impl ColId<'_> {
-    /// The source text of the identifier token, without a `UESCAPE` clause.
-    pub fn text(&self) -> &str {
-        match self {
-            Self::Text(text) => text.text(),
-            Self::Unicode(ident) => ident.name.text(),
-        }
-    }
-
-    /// The name PostgreSQL's scanner gives this identifier: see
-    /// [`crate::ident::fold_identifier`].
-    pub fn folded(&self) -> Result<crate::ident::Folded<'_>, crate::ident::FoldError> {
-        match self {
-            Self::Text(text) => crate::ident::fold_identifier(text.text()),
-            Self::Unicode(ident) => ident.folded(),
-        }
-    }
-}
-
-recursa::ast_node! {
-    /// A `ColId`, or the bare keyword `CURRENT_SCHEMA`, at a position where
-    /// gram.y reads either a `ColId` or a `func_expr` that can be
-    /// `SQLValueFunction`'s `CURRENT_SCHEMA` (REL_17_11 gram.y 15717):
-    /// `columnref` beside `func_expr` in `c_expr`, and `ColId` beside
-    /// `func_expr_windowless` in `index_elem` and `stats_param` (REL_17_11
-    /// gram.y 16773, 8206 and 4633). `PublicationObjSpec` names the keyword
-    /// itself beside a `ColId` schema (REL_17_11 gram.y 10584 and 10637).
-    ///
-    /// pgtk-sql lexes `current_schema` as an identifier (`crate::tokens`), so
-    /// these positions read both through one word, and [`ColId`] itself
-    /// refuses the unquoted keyword. The admission set is `ColId`'s.
-    #[derive(Debug, PartialEq, Eq, Hash)]
-    #[validate(crate::ast::validation::ident_col_id_or_current_schema, flat = crate::ast::validation::ident_col_id_or_current_schema_flat)]
-    pub enum ColIdOrCurrentSchema {
-        Text(
-            #[lex(
-                pattern = r#""(?:[^"]|"")+"|[A-Za-z_\u{0080}-\u{10FFFF}][A-Za-z0-9_$\u{0080}-\u{10FFFF}]*"#,
-                admits(ColId)
-            )]
-            // Sampled as `ColIdText` is (`arb_non_keyword_ident`).
-            #[node(omit(Arbitrary))]
-            ColIdOrCurrentSchemaText,
-        ),
-        /// `U&"..."`, with an optional `UESCAPE 'c'` clause (`base_yylex`).
-        /// Sampling never chooses it: few sampled escape strings name a
-        /// correct escape character (Recursa `#[omit(Arbitrary)]`).
-        #[omit(Arbitrary)]
-        Unicode(boxed!(UnicodeIdent)),
-    }
-}
-
-impl ColIdOrCurrentSchema<'_> {
     /// The source text of the identifier token, without a `UESCAPE` clause.
     pub fn text(&self) -> &str {
         match self {
@@ -2457,7 +2406,7 @@ pub mod literal {
     #[cfg(feature = "arbitrary")]
     mod arbitrary_impls {
         use super::*;
-        use crate::tokens::{ColIdOrCurrentSchemaText, ColIdText, ColLabelText};
+        use crate::tokens::{ColIdText, ColLabelText};
         use arbitrary::{Arbitrary, Unstructured};
 
         const IDENT_START: &[u8] = b"abcdefghijklmnopqrstuvwxyz_";
@@ -2585,13 +2534,6 @@ pub mod literal {
         }
 
         impl<'a> Arbitrary<'a> for ColIdText<'_> {
-            fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
-                let s = arb_non_keyword_ident(u)?;
-                Ok(Self::new(s))
-            }
-        }
-
-        impl<'a> Arbitrary<'a> for ColIdOrCurrentSchemaText<'_> {
             fn arbitrary(u: &mut Unstructured<'a>) -> arbitrary::Result<Self> {
                 let s = arb_non_keyword_ident(u)?;
                 Ok(Self::new(s))

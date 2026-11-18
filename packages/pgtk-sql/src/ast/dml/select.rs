@@ -528,6 +528,23 @@ recursa::ast_node! {
     }
 }
 
+recursa::ast_node! {
+    /// `current_schema(...)` in FROM: gram.y `func_table` with a
+    /// `func_application` whose `func_name` is the type-function-name keyword
+    /// `CURRENT_SCHEMA` (REL_17_11 gram.y 17482).
+    ///
+    /// A bare `current_schema` is `SQLValueFunction` ([`SpecialFuncTableRef`])
+    /// and never a relation, so [`NamedTableRef`], which reads a relation
+    /// name and a function name through one word, does not take the keyword
+    /// (`TableFunctionName` in `crate::tokens`). The `(` after the keyword
+    /// selects this node.
+    #[derive(Debug)]
+    pub struct CurrentSchemaFuncTableRef {
+        #[tok(CURRENT_SCHEMA, this)]
+        pub tail: NamedFunctionTableTail,
+    }
+}
+
 // --- JSON_TABLE table reference ---
 //
 // `JSON_TABLE(...)` is a SQL/JSON table function: it appears in FROM (and
@@ -1183,7 +1200,6 @@ recursa::ast_node! {
     /// once lets `(`, `*`, an alias, or the absence of a suffix select the source
     /// shape without comparing arbitrarily long dotted names.
     #[derive(Debug)]
-    #[validate(crate::ast::validation::current_schema_named_table_ref, flat = crate::ast::validation::current_schema_named_table_ref_flat)]
     pub struct NamedTableRef {
         pub name: TableFunctionName,
         pub tail: Option<NamedTableRefTail>,
@@ -1441,6 +1457,8 @@ recursa::ast_node! {
         /// special form is keyword-led, giving it distinct LR actions from
         /// `Func` and `Table`.
         SpecialFunc(boxed!(SpecialFuncTableRef)),
+        /// `current_schema(...)`: a function table whose name is the keyword.
+        CurrentSchemaFunc(boxed!(CurrentSchemaFuncTableRef)),
         Paren(ParenTableRef),
         Only(OnlyTableRef),
         ColName(ColNameTableRef),

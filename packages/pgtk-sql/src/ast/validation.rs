@@ -50,11 +50,10 @@ use crate::tokens::literal::{
     WindowRefNameIdent,
 };
 use crate::tokens::{
-    BareColLabel, ColId, ColIdOrCurrentSchema, ColLabel, FlatBareColLabel, FlatColId,
-    FlatColIdOrCurrentSchema, FlatColLabel, FlatNonReservedWord, FlatRoleSpecWord, FlatUidentName,
-    FlatUnicodeIdent, Flattable_function_name, Flattype_function_name, Flattype_name_ident,
-    NonReservedWord, RoleSpecWord, UnicodeIdent, table_function_name, type_function_name,
-    type_name_ident,
+    BareColLabel, ColId, ColLabel, FlatBareColLabel, FlatColId, FlatColLabel, FlatNonReservedWord,
+    FlatRoleSpecWord, FlatUidentName, FlatUnicodeIdent, Flattable_function_name,
+    Flattype_function_name, Flattype_name_ident, NonReservedWord, RoleSpecWord, UnicodeIdent,
+    table_function_name, type_function_name, type_name_ident,
 };
 #[cfg(feature = "since-pg16")]
 use crate::tokens::{
@@ -1086,8 +1085,14 @@ macro_rules! identifier_hooks {
 }
 
 identifier_hooks! {
-    ident_col_id_or_current_schema, ident_col_id_or_current_schema_flat, ColIdOrCurrentSchema,
-        FlatColIdOrCurrentSchema;
+    ident_col_id, ident_col_id_flat, ColId, FlatColId;
+    ident_relation_alias_name, ident_relation_alias_name_flat, RelationAliasName,
+        FlatRelationAliasName;
+    ident_window_ref_name_ident, ident_window_ref_name_ident_flat, WindowRefNameIdent,
+        FlatWindowRefNameIdent;
+    #[cfg(feature = "since-pg16")]
+    ident_role_revoke_option_word, ident_role_revoke_option_word_flat, RoleRevokeOptionWord,
+        FlatRoleRevokeOptionWord;
     ident_col_label, ident_col_label_flat, ColLabel, FlatColLabel;
     ident_non_reserved_word, ident_non_reserved_word_flat, NonReservedWord, FlatNonReservedWord;
     ident_role_spec_word, ident_role_spec_word_flat, RoleSpecWord, FlatRoleSpecWord;
@@ -1108,157 +1113,4 @@ identifier_hooks! {
     ident_select_bare_alias_name, ident_select_bare_alias_name_flat, SelectBareAliasName,
         FlatSelectBareAliasName;
     ident_alias_name, ident_alias_name_flat, AliasName, FlatAliasName;
-}
-
-// --- CURRENT_SCHEMA as a ColId ---
-
-/// `syntax error at or near "CURRENT_SCHEMA"`: kwlist.h makes
-/// `current_schema` a `TYPE_FUNC_NAME_KEYWORD`, so it is no `ColId`.
-pub static CURRENT_SCHEMA_COL_ID: RejectionNote = RejectionNote::new(
-    "ColId",
-    Some("42601"),
-    "syntax error at or near \"CURRENT_SCHEMA\"",
-    None,
-    "REL_17_11 kwlist.h 115, current_schema",
-);
-
-/// The refusal of the `ColId` with the source text `raw` at field `field`
-/// when it is the unquoted keyword `CURRENT_SCHEMA`
-/// ([`crate::ident::current_schema_class`]).
-fn current_schema_refusal(raw: &str, field: usize) -> Result<(), Refusal> {
-    if crate::ident::current_schema_class(raw) == Some("current_schema") {
-        return Err(Refusal::new(&CURRENT_SCHEMA_COL_ID).at_field(field));
-    }
-    Ok(())
-}
-
-/// The refusal of the `ColId` with the source text `raw` when it is the
-/// unquoted keyword `CURRENT_SCHEMA`, at the extent of the whole identifier.
-fn current_schema_col_id_refusal(raw: &str) -> Result<(), Refusal> {
-    if crate::ident::current_schema_class(raw) == Some("current_schema") {
-        return Err(Refusal::new(&CURRENT_SCHEMA_COL_ID));
-    }
-    Ok(())
-}
-
-/// The hooks of the identifier types whose admission set is gram.y `ColId`
-/// (REL_17_11 gram.y 17475: `IDENT | unreserved_keyword | col_name_keyword`)
-/// or a part of it: the `str_udeescape` check of [`identifier_refusal`], and
-/// no unquoted `CURRENT_SCHEMA`, which kwlist.h makes a
-/// `TYPE_FUNC_NAME_KEYWORD`. pgtk-sql lexes `current_schema` as an
-/// identifier (`crate::tokens`), so no admission set can leave it out, and
-/// each of these types refuses it itself, at every position that reads it. A
-/// quoted `"current_schema"` is a plain name. A position where gram.y also
-/// reads the bare keyword as `SQLValueFunction` reads
-/// [`crate::tokens::ColIdOrCurrentSchema`] instead.
-macro_rules! col_id_hooks {
-    ($($(#[$meta:meta])* $hook:ident, $hook_flat:ident, $ty:ident, $flat:ident;)*) => {$(
-        $(#[$meta])*
-        #[doc = concat!("A `", stringify!($ty), "` is a `ColId`: the `str_udeescape` check, and no `CURRENT_SCHEMA`.")]
-        pub fn $hook(name: &$ty<'_>) -> Result<(), Refusal> {
-            match name {
-                $ty::Unicode(_) => Ok(()),
-                _ => {
-                    identifier_refusal(name.text())?;
-                    current_schema_col_id_refusal(name.text())
-                }
-            }
-        }
-
-        $(#[$meta])*
-        #[doc = concat!("The flat form of [`", stringify!($hook), "`].")]
-        pub fn $hook_flat(name: &$flat, ast: &FlatAst<'_, $flat>) -> Result<(), Refusal> {
-            match name {
-                $flat::Text(text) => {
-                    let raw = ast[*text].as_str();
-                    identifier_refusal(raw)?;
-                    current_schema_col_id_refusal(raw)
-                }
-                #[allow(unreachable_patterns)]
-                _ => Ok(()),
-            }
-        }
-    )*};
-}
-
-col_id_hooks! {
-    ident_col_id, ident_col_id_flat, ColId, FlatColId;
-    ident_relation_alias_name, ident_relation_alias_name_flat, RelationAliasName,
-        FlatRelationAliasName;
-    ident_window_ref_name_ident, ident_window_ref_name_ident_flat, WindowRefNameIdent,
-        FlatWindowRefNameIdent;
-    #[cfg(feature = "since-pg16")]
-    ident_role_revoke_option_word, ident_role_revoke_option_word_flat, RoleRevokeOptionWord,
-        FlatRoleRevokeOptionWord;
-}
-
-/// A bare `current_schema` is gram.y `SQLValueFunction`, which takes no
-/// indirection, so `current_schema[1]` is a syntax error: only a `ColId`
-/// takes one (`columnref`).
-pub fn current_schema_column_ref(
-    column: &crate::ast::shared::expr::ColumnRef<'_>,
-) -> Result<(), Refusal> {
-    match column.indirection {
-        Some(_) => current_schema_refusal(column.name.text(), 0),
-        None => Ok(()),
-    }
-}
-
-/// The flat form of [`current_schema_column_ref`].
-pub fn current_schema_column_ref_flat(
-    column: &crate::ast::shared::expr::FlatColumnRef,
-    ast: &FlatAst<'_, crate::ast::shared::expr::FlatColumnRef>,
-) -> Result<(), Refusal> {
-    match column.indirection {
-        Some(_) => match ast[column.name] {
-            FlatColIdOrCurrentSchema::Text(text) => current_schema_refusal(ast[text].as_str(), 0),
-            FlatColIdOrCurrentSchema::Unicode(_) => Ok(()),
-        },
-        None => Ok(()),
-    }
-}
-
-/// A bare `current_schema` in FROM is gram.y `func_table`
-/// (`func_expr_windowless`), not `relation_expr`: it takes an alias, but no
-/// `*` and no `TABLESAMPLE`, which only a `qualified_name` takes.
-pub fn current_schema_named_table_ref(
-    table: &crate::ast::dml::select::NamedTableRef<'_>,
-) -> Result<(), Refusal> {
-    use crate::ast::dml::select::{NamedTableRefTail, TableFunctionName};
-    let TableFunctionName::Name(name) = &table.name else {
-        return Ok(());
-    };
-    match &table.tail {
-        Some(NamedTableRefTail::Inherited(_) | NamedTableRefTail::Sample(_)) => {
-            current_schema_refusal(name.text(), 0)
-        }
-        Some(NamedTableRefTail::Alias(alias)) if alias.tablesample.is_some() => {
-            current_schema_refusal(name.text(), 0)
-        }
-        _ => Ok(()),
-    }
-}
-
-/// The flat form of [`current_schema_named_table_ref`].
-pub fn current_schema_named_table_ref_flat(
-    table: &crate::ast::dml::select::FlatNamedTableRef,
-    ast: &FlatAst<'_, crate::ast::dml::select::FlatNamedTableRef>,
-) -> Result<(), Refusal> {
-    use crate::ast::dml::select::{FlatNamedTableRefTail, FlatTableFunctionName};
-    let FlatTableFunctionName::Name(name) = ast[table.name] else {
-        return Ok(());
-    };
-    let Flattable_function_name::Text(text) = ast[name] else {
-        return Ok(());
-    };
-    let raw = ast[text].as_str();
-    match table.tail.map(|tail| ast[tail]) {
-        Some(FlatNamedTableRefTail::Inherited(_) | FlatNamedTableRefTail::Sample(_)) => {
-            current_schema_refusal(raw, 0)
-        }
-        Some(FlatNamedTableRefTail::Alias(alias)) if ast[alias].tablesample.is_some() => {
-            current_schema_refusal(raw, 0)
-        }
-        _ => Ok(()),
-    }
 }

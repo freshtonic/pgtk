@@ -2435,10 +2435,10 @@ fn a_unicode_identifier_with_an_incorrect_escape_is_refused() {
 
 /// kwlist.h makes `current_schema` a `TYPE_FUNC_NAME_KEYWORD` (REL_17_11
 /// kwlist.h 115; REL_14_24 has the same class), so it is no `ColId`.
-/// pgtk-sql lexes it as an identifier, and each rule whose gram.y form is a
-/// `ColId` refuses it by its text: a dotted name, a FROM name with a dot, a
-/// subscript, an alias, a window name, an INSERT target and a column
-/// definition. As an expression and as a function name it is gram.y
+/// pgtk-sql lexes it as that keyword, so no `ColId` takes it: a dotted name,
+/// a FROM name with a dot, a subscript, an alias, a window name, an INSERT
+/// target and a column definition. As an expression and as a function name
+/// it is gram.y
 /// `SQLValueFunction` and `type_function_name`, and a quoted
 /// `"current_schema"` is a plain name. Found by diff-agent.
 #[test]
@@ -2543,10 +2543,10 @@ fn current_schema_is_no_column_name_of_a_list() {
 /// `ColId` (REL_17_11 gram.y 17475) holds no `TYPE_FUNC_NAME` keyword, so
 /// each position that gram.y writes as `ColId` or `name` refuses
 /// `current_schema`, `left`, `freeze`, `similar` and the rest (issue #103).
-/// pgtk-sql lexes `current_schema` as an identifier, so `ColId` refuses it in
-/// its own validation hook, and these positions read a `ColId`: before, some
-/// read a wider word (`NonReservedWord`, or every keyword) and some missed a
-/// hook of their own. A quoted name stays a name. Where gram.y also reads a
+/// These positions read a `ColId`; before, some read a wider word
+/// (`NonReservedWord`, or every keyword), and pgtk-sql lexed `current_schema`
+/// as an identifier and refused it with a hook on each node, which some
+/// nodes missed. A quoted name stays a name. Where gram.y also reads a
 /// bare `current_schema` as `SQLValueFunction` (an expression, an index or
 /// statistics element), it stays accepted, and `SET` and `EXPLAIN` values
 /// are `NonReservedWord`s, which hold the keywords.
@@ -2684,6 +2684,18 @@ fn a_col_id_position_refuses_a_type_func_name_keyword() {
         "CREATE INDEX ON t (current_schema text_ops)",
         "CREATE TABLE t (a int) PARTITION BY LIST (current_schema)",
         "CREATE STATISTICS s ON current_schema, b FROM t",
+        "CREATE STATISTICS s ON current_date, coalesce(a, 0) FROM t",
+        // gram.y `type_function_name` and `attr_name: ColLabel` in a
+        // function name.
+        "SELECT pg_catalog.current_schema()",
+        "SELECT * FROM current_schema()",
+        "SELECT * FROM current_schema() WITH ORDINALITY AS x (a, n)",
+        "SELECT * FROM current_schema WITH ORDINALITY",
+        "SELECT * FROM LATERAL current_schema()",
+        "CREATE STATISTICS s ON current_schema(), left(a, 1) FROM t",
+        "SELECT s.select(), a.b.c.d.from(1)",
+        "SELECT * FROM s.left()",
+        "SELECT * FROM s.select",
         // gram.y `NonReservedWord`.
         "SET search_path = current_schema, public",
         "SET search_path = left",

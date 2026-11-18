@@ -21,9 +21,7 @@ recursa::ast_node! {
     ///
     /// `Paren` starts with `(`. `Func` and `Bare` both begin with an identifier,
     /// and the LR parser distinguishes them when it reaches the function-call
-    /// `(`. We
-    /// model `func_expr_windowless` by re-using `Expr` and letting any
-    /// expression that begins like a function call lex into the `Func` arm.
+    /// `(`. `Func` and `Special` are the two halves of `func_expr_windowless`.
     ///
     /// `Bare` is a `ColId`, as gram.y writes it. A wider `NonReservedWord`
     /// there put a second word nonterminal beside the function name's `ColId`
@@ -32,9 +30,12 @@ recursa::ast_node! {
     pub enum StatsParam {
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
         Func(StatsFuncParam),
-        /// A bare `current_schema` is `func_expr_windowless`
-        /// ([`crate::tokens::ColIdOrCurrentSchema`]).
-        Bare(crate::tokens::ColIdOrCurrentSchema),
+        Bare(crate::tokens::ColId),
+        /// gram.y `func_expr_windowless`'s `func_expr_common_subexpr` half,
+        /// as in `ON current_schema, coalesce(a, 0)`. It holds an [`Expr`].
+        /// Its words are keywords that `Func` never takes as a name, and a
+        /// bare `coalesce` is still `Bare` (as [`crate::ast::ddl::index::IndexTarget`]).
+        Special(boxed!(crate::ast::shared::expr::FuncExprCommonSubexpr)),
     }
 }
 
@@ -44,7 +45,9 @@ recursa::ast_node! {
     /// shapes round-trip.
     #[derive(Debug)]
     pub struct StatsFuncParam {
-        pub name: crate::ast::shared::names::AnyName,
+        /// gram.y `func_name`: a `type_function_name` or a dotted name, so
+        /// `current_schema()` and `left(a, 1)` are calls.
+        pub name: crate::ast::shared::expr::FuncCallName,
         pub args: StatsFuncArgs,
     }
 }
