@@ -46,8 +46,8 @@ use pgtk_sql::ast::shared::expr::{FlatCastType, FlatJsonEncoding};
 use pgtk_sql::ast::shared::expr::{FlatIntervalLitForm, FlatTypeArray};
 use pgtk_sql::ast::shared::names::FlatQualifiedOperatorName;
 use pgtk_sql::ast::shared::numbers::FlatUnsignedNumberLit;
-use pgtk_sql::tokens::FlatColId;
 use pgtk_sql::tokens::literal::FlatAliasName;
+use pgtk_sql::tokens::{FlatColId, FlatColIdOrCurrentSchema, FlatNonReservedWord};
 use recursa::{Handle, List, List1, Span, Text};
 
 use crate::analysis::RecordField;
@@ -1492,6 +1492,32 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         Ok((self.fold_word(word, word.start)?, word.start))
     }
 
+    /// The word of a `ColId` at a position that also reads a bare
+    /// `CURRENT_SCHEMA` (a column reference, an index or statistics element).
+    fn col_id_or_current_schema_word(&self, handle: Handle<FlatColIdOrCurrentSchema>) -> Word<'a> {
+        match self.get(handle) {
+            FlatColIdOrCurrentSchema::Text(t) => self.plain_word(*t),
+            FlatColIdOrCurrentSchema::Unicode(u) => self.unicode_word(*u),
+        }
+    }
+
+    fn col_id_or_current_schema(
+        &self,
+        handle: Handle<FlatColIdOrCurrentSchema>,
+    ) -> Result<(String, usize)> {
+        let word = self.col_id_or_current_schema_word(handle);
+        Ok((self.fold_word(word, word.start)?, word.start))
+    }
+
+    /// A `NonReservedWord`, folded.
+    fn non_reserved_word(&self, handle: Handle<FlatNonReservedWord>) -> Result<String> {
+        let word = match self.get(handle) {
+            FlatNonReservedWord::Text(t) => self.plain_word(*t),
+            FlatNonReservedWord::Unicode(u) => self.unicode_word(*u),
+        };
+        self.fold_word(word, word.start)
+    }
+
     /// The bare alias of a DELETE, UPDATE or MERGE target.
     fn relation_alias_name(&self, handle: Handle<FlatRelationAliasName>) -> Result<String> {
         let word = match self.get(handle) {
@@ -2490,15 +2516,6 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         }
     }
 
-    /// An identifier token, folded.
-    fn ident(&self, handle: Handle<pgtk_sql::tokens::literal::FlatIdent>) -> Result<String> {
-        let word = match self.get(handle) {
-            pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
-            pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
-        };
-        self.fold_word(word, word.start)
-    }
-
     /// `UtilityTupleDescriptor` for an EXECUTE: the Result Descriptor of
     /// the prepared statement the Session holds. The argument expressions
     /// are not analysed and their count is not checked, because PostgreSQL
@@ -2676,7 +2693,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn deallocate_effect(&mut self, handle: Handle<FlatDeallocateStmt>) -> Result<()> {
         let effect = match self.get(self.get(handle).target) {
             FlatDeallocateTarget::All => SessionEffect::DeallocateAll,
-            FlatDeallocateTarget::Name(n) => SessionEffect::Deallocate(self.ident(*n)?),
+            FlatDeallocateTarget::Name(n) => SessionEffect::Deallocate(self.col_id(*n)?.0),
         };
         self.analysis.session_effect = Some(effect);
         Ok(())
@@ -2686,7 +2703,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     fn close_effect(&mut self, handle: Handle<FlatCloseStmt>) -> Result<()> {
         let effect = match self.get(self.get(handle).target) {
             FlatCloseTarget::All => SessionEffect::CloseAll,
-            FlatCloseTarget::Cursor(c) => SessionEffect::Close(self.ident(*c)?),
+            FlatCloseTarget::Cursor(c) => SessionEffect::Close(self.col_id(*c)?.0),
         };
         self.analysis.session_effect = Some(effect);
         Ok(())
@@ -2931,7 +2948,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             let mut cols = Vec::new();
             if let Some(c) = def.columns {
                 for a in self.list1(self.get(c).0) {
-                    cols.push(self.alias_name(*a)?.0);
+                    cols.push(self.col_id(*a)?.0);
                 }
             }
             let modifying = match self.get(def.query) {
@@ -5156,7 +5173,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                         // collation, then its btree operator class.
                         let expr_location = match self.get(it.target) {
                             FlatIndexTarget::Col(c) => {
-                                let (name, _) = self.col_id(*c)?;
+                                let (name, _) = self.col_id_or_current_schema(*c)?;
                                 if self
                                     .relations
                                     .col_name_to_var(scope, &self.outer, &name, infer_location)?
@@ -5908,7 +5925,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
     ) -> Result<Vec<(i16, bool)>> {
         // Each target: its column handle, its indirection, and its value.
         let mut values: Vec<(
-            Handle<pgtk_sql::tokens::literal::FlatIdent>,
+            Handle<FlatColId>,
             Vec<Handle<FlatIndirectionEl>>,
             InsertValue,
         )> = Vec::new();
@@ -6364,7 +6381,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     continue;
                 }
                 let value = match opt.value.map(|v| self.get(v)) {
-                    Some(FlatExplainOptValue::Ident(c)) => self.col_id(*c)?.0,
+                    Some(FlatExplainOptValue::Ident(c)) => self.non_reserved_word(*c)?,
                     Some(FlatExplainOptValue::String(t)) => self.sconst(*t).0,
                     _ => String::new(),
                 };
@@ -7077,7 +7094,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         if let FlatExpr::ColumnRef(c) = self.get(expr) {
             let c = self.get(*c);
             if c.indirection.is_none() {
-                let (name, _) = self.col_id(c.name)?;
+                let (name, _) = self.col_id_or_current_schema(c.name)?;
                 // In GROUP BY a name that is a column of the FROM clause is
                 // not matched against output names.
                 let is_column = kind == ExprKind::GroupBy
@@ -8924,7 +8941,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                     self.json_table_names(n.columns, names)?;
                 }
                 FlatJsonTableColumn::Valued(v) => {
-                    let (name, _) = self.alias_name(self.get(*v).name)?;
+                    let (name, _) = self.col_id(self.get(*v).name)?;
                     if names.contains(&name) {
                         return Err(Diagnostic::new(
                             "42712",
@@ -9016,7 +9033,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 continue;
             };
             let v = self.get(*v);
-            let (name, _) = self.alias_name(v.name)?;
+            let (name, _) = self.col_id(v.name)?;
             let at = self.span(*col).start;
             match self.get(v.kind) {
                 FlatJsonTableColumnKind::Ordinality(_) => {
@@ -9124,7 +9141,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
         let mut ordinality_seen = false;
         for col in self.list1(self.get(inner.column_list).0).to_vec() {
             let c = self.get(col);
-            let (name, at) = self.alias_name(c.name)?;
+            let (name, at) = self.col_id(c.name)?;
             let (ty, typmod) = match self.get(c.kind) {
                 FlatXmlTableColumnKind::Ordinality(_) => {
                     if ordinality_seen {
@@ -12279,7 +12296,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 // A_Indirection: the last field name after a subscript.
                 let mut name = self.last_field_name(&self.column_ref_parts(c.indirection));
                 if name.is_none() {
-                    name = self.col_id(c.name).ok().map(|(n, _)| n);
+                    name = self.col_id_or_current_schema(c.name).ok().map(|(n, _)| n);
                 }
                 Colname { name, strength: 2 }
             }
@@ -12983,7 +13000,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
                 if c.indirection.is_none() {
-                    Some(TypmodArg::Ident(self.col_id(c.name)?.0))
+                    Some(TypmodArg::Ident(self.col_id_or_current_schema(c.name)?.0))
                 } else {
                     None
                 }
@@ -13248,18 +13265,18 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
             FlatExpr::ColumnRef(c) => {
                 let c = self.get(*c);
                 if c.indirection.is_some() {
-                    let (name, _) = self.col_id(c.name)?;
+                    let (name, _) = self.col_id_or_current_schema(c.name)?;
                     let base = self.column_ref(scope, handle, &[name], location)?;
                     let parts = self.column_ref_parts(c.indirection);
                     return self.indirection(scope, handle, base, Some(handle), &parts, location);
                 }
-                let word = self.col_id_word(c.name);
-                let (name, _) = self.col_id(c.name)?;
+                let word = self.col_id_or_current_schema_word(c.name);
+                let (name, _) = self.col_id_or_current_schema(c.name)?;
                 // gram.y turns these unquoted keywords into SQLValueFunction
                 // nodes before any column lookup. A quoted or a `U&"..."`
                 // name is never a keyword.
                 if !word.raw.starts_with('"')
-                    && !matches!(self.get(c.name), FlatColId::Unicode(_))
+                    && !matches!(self.get(c.name), FlatColIdOrCurrentSchema::Unicode(_))
                     && let Some(ty) = self.sql_value_function(&name)
                 {
                     return Ok(Typed {
@@ -14760,10 +14777,7 @@ impl<'a, 'input, 'c> Walker<'a, 'input, 'c> {
                 let mut parts = Vec::new();
                 for prefix in std::iter::once(q.first).chain(self.list(q.rest).iter().copied()) {
                     let prefix = self.get(prefix);
-                    let word = match self.get(prefix.name) {
-                        pgtk_sql::tokens::literal::FlatIdent::Text(t) => self.plain_word(*t),
-                        pgtk_sql::tokens::literal::FlatIdent::Unicode(u) => self.unicode_word(*u),
-                    };
+                    let word = self.col_id_word(prefix.name);
                     parts.push(self.fold_word(word, word.start)?);
                 }
                 if parts.len() > 1 {

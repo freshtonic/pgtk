@@ -1,7 +1,5 @@
 //! FETCH / MOVE / CLOSE cursor statements.
 
-use crate::tokens::literal;
-
 recursa::ast_node! {
     /// `FROM` or `IN` cursor-source keyword in FETCH/MOVE.
     #[derive(Debug)]
@@ -118,7 +116,7 @@ recursa::ast_node! {
     pub enum CloseTarget {
         #[tok(ALL)]
         All,
-        Cursor(literal::Ident),
+        Cursor(crate::tokens::ColId),
     }
 }
 

@@ -62,12 +62,12 @@ recursa::ast_node! {
     /// `TABLES IN SCHEMA schema`: gram.y `PublicationObjSpec: TABLES IN_P
     /// SCHEMA ColId | TABLES IN_P SCHEMA CURRENT_SCHEMA` (REL_17_11 gram.y
     /// 10577-10589). It takes no column list (issue #58). pgtk-sql lexes
-    /// `CURRENT_SCHEMA` as an identifier (see `tokens.rs`), so the `ColId`
-    /// takes it.
+    /// `CURRENT_SCHEMA` as an identifier (see `tokens.rs`), so one word
+    /// takes both arms ([`crate::tokens::ColIdOrCurrentSchema`]).
     #[derive(Debug)]
     pub struct PublicationObjTablesInSchema {
         #[tok(TABLES, IN, SCHEMA, this)]
-        pub schema: crate::tokens::ColId,
+        pub schema: crate::tokens::ColIdOrCurrentSchema,
     }
 }
 
@@ -256,10 +256,12 @@ recursa::ast_node! {
 #[cfg(feature = "since-pg15")]
 recursa::ast_node! {
     /// A schema that continues a `TABLES IN SCHEMA` group, and the objects
-    /// after it.
+    /// after it: gram.y `PublicationObjSpec: ColId opt_column_list
+    /// OptWhereClause | CURRENT_SCHEMA` (REL_17_11 gram.y 10590 and 10637),
+    /// read through one word ([`crate::tokens::ColIdOrCurrentSchema`]).
     #[derive(Debug)]
     pub struct PublicationSchemaContinuation {
-        pub schema: crate::tokens::ColId,
+        pub schema: crate::tokens::ColIdOrCurrentSchema,
         pub rest: Option<PublicationSchemaRest>,
     }
 }

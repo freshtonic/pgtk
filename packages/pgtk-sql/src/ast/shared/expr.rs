@@ -547,7 +547,6 @@ recursa::ast_node! {
     ///   literal follows the dotted attribute names only
     ///   ([`QualifiedTail::Call`] and [`QualifiedTail::TypedLiteral`]).
     #[derive(Debug)]
-    #[validate(crate::ast::validation::current_schema_qualified_ref, flat = crate::ast::validation::current_schema_qualified_ref_flat)]
     pub struct QualifiedRef {
         pub table: crate::tokens::ColId,
         pub path: QualifiedPath,
@@ -644,7 +643,9 @@ recursa::ast_node! {
     #[flat(pool)]
     #[validate(crate::ast::validation::current_schema_column_ref, flat = crate::ast::validation::current_schema_column_ref_flat)]
     pub struct ColumnRef {
-        pub name: crate::tokens::ColId,
+        /// A bare `current_schema` is gram.y `SQLValueFunction`, which takes
+        /// no indirection ([`crate::tokens::ColIdOrCurrentSchema`]).
+        pub name: crate::tokens::ColIdOrCurrentSchema,
         /// The subscript and the elements after it. A `.*` is the last
         /// element only (`check_indirection`, REL_17_11 gram.y 18779; issue
         /// #87).

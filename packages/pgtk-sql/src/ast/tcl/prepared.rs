@@ -121,7 +121,7 @@ recursa::ast_node! {
     pub enum DeallocateTarget {
         #[tok(ALL)]
         All,
-        Name(literal::Ident),
+        Name(crate::tokens::ColId),
     }
 }
 

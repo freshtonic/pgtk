@@ -32,7 +32,9 @@ recursa::ast_node! {
     pub enum StatsParam {
         Paren(#[tok(LPAREN, this, RPAREN)] boxed!(Expr)),
         Func(StatsFuncParam),
-        Bare(crate::tokens::ColId),
+        /// A bare `current_schema` is `func_expr_windowless`
+        /// ([`crate::tokens::ColIdOrCurrentSchema`]).
+        Bare(crate::tokens::ColIdOrCurrentSchema),
     }
 }
 

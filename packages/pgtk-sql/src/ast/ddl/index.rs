@@ -169,7 +169,9 @@ recursa::ast_node! {
         /// gram.y `func_expr_windowless`: no `WITHIN GROUP`, `FILTER` or `OVER`
         /// suffix, which are also operator class names after the call.
         Func(boxed!(FunctionApplicationExpr)),
-        Col(crate::tokens::ColId),
+        /// A bare `current_schema` is `func_expr_windowless`
+        /// ([`crate::tokens::ColIdOrCurrentSchema`]).
+        Col(crate::tokens::ColIdOrCurrentSchema),
     }
 }
 

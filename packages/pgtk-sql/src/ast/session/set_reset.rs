@@ -23,7 +23,10 @@ recursa::ast_node! {
         SignedNumeric(SignedNumericLit),
         NumericLit(literal::NumericLit),
         IntegerLit(literal::IntegerLit),
-        Ident(crate::tokens::ColId),
+        /// gram.y `opt_boolean_or_string` takes a `NonReservedWord` (REL_17_11
+        /// gram.y 1829 and 17489), so a type-function-name keyword such as
+        /// `current_schema` or `left` is a value too.
+        Ident(crate::tokens::NonReservedWord),
     }
 }
 

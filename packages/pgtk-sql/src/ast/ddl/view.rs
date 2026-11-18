@@ -6,7 +6,6 @@ use crate::ast::ddl::table::TempKw;
 use crate::ast::dml::values::Subquery;
 use crate::ast::shared::flags::DropBehavior;
 use crate::ast::shared::names::QualifiedName;
-use crate::tokens::literal;
 // ---------------------------------------------------------------------------
 // Additional imports for the ALTER/DROP types appended to this file as part
 // of the DDL physical-extraction migration. Glob imports keep cross-batch
@@ -124,11 +123,11 @@ recursa::ast_node! {
     /// Optional parenthesized, nonempty CREATE VIEW output-column list.
     #[derive(Debug, derive_more :: Deref)]
     #[tok(LPAREN, this, RPAREN)]
-    #[validate(crate::ast::validation::current_schema_view_columns, flat = crate::ast::validation::current_schema_view_columns_flat)]
     pub struct CreateViewColumnList(
+        /// gram.y `opt_column_list`: a `columnList` of `ColId` (REL_17_11 gram.y 4312-4322).
         #[sep(COMMA)]
         #[deref]
-        pub one_or_many!(literal::AliasName),
+        pub one_or_many!(crate::tokens::ColId),
     );
 }
 
@@ -180,7 +179,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterColumnSetDefault {
         #[tok(ALTER, optional(COLUMN), this)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
         #[tok(SET, DEFAULT, this)]
         pub expr: boxed!(Expr),
     }
@@ -193,7 +192,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct AlterColumnDropDefault {
         #[tok(ALTER, optional(COLUMN), this, DROP, DEFAULT)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 
@@ -214,9 +213,9 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct RenameColumnClause {
         #[tok(RENAME, optional(COLUMN), this)]
-        pub old_name: literal::Ident,
+        pub old_name: crate::tokens::ColId,
         #[tok(TO, this)]
-        pub new_name: literal::Ident,
+        pub new_name: crate::tokens::ColId,
     }
 }
 

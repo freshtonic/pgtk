@@ -390,7 +390,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct RenameTo {
         #[tok(RENAME, TO, this)]
-        pub new_name: literal::Ident,
+        pub new_name: crate::tokens::ColId,
     }
 }
 
@@ -416,7 +416,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct SetSchemaClause {
         #[tok(SET, SCHEMA, this)]
-        pub new_schema: literal::Ident,
+        pub new_schema: crate::tokens::ColId,
     }
 }
 
@@ -654,7 +654,7 @@ recursa::ast_node! {
     #[derive(Debug)]
     pub struct QualifiedOperatorPrefix {
         #[tok(this, DOT)]
-        pub name: literal::Ident,
+        pub name: crate::tokens::ColId,
     }
 }
 

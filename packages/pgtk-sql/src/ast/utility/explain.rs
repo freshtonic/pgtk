@@ -22,7 +22,10 @@ recursa::ast_node! {
         Integer(literal::IntegerLit),
         // Quoted string (e.g. `FORMAT 'json'`).
         String(crate::ast::shared::expr::Sconst),
-        Ident(crate::tokens::ColId),
+        /// gram.y `opt_boolean_or_string` takes a `NonReservedWord` (REL_17_11
+        /// gram.y 1829 and 17489), so a type-function-name keyword such as
+        /// `current_schema` or `left` is a value too.
+        Ident(crate::tokens::NonReservedWord),
     }
 }
 
