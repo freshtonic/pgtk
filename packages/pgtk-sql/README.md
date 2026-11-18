@@ -306,31 +306,50 @@ PostgreSQL release (17.11 by default). `pgtk-sql` and
 representation; the harness refuses to report timings unless the two accept
 exactly the same statements.
 
-Run everything:
+Both bench targets need the `postgres-oracle` feature. Without it, Cargo skips
+the target and does not report an error. The first run builds the PostgreSQL
+oracle, so it is slow.
+
+Run the `parse` bench:
 
 ```bash
-cargo bench -p pgtk-sql --features postgres-oracle
+cargo bench -p pgtk-sql --features postgres-oracle --bench parse
 ```
 
-Filter to one group:
+The bench has no filter. It always runs all of these benchmarks:
+
+- `corpus/<file>`: one benchmark for each file of the frozen PostgreSQL 17.9
+  regression corpus (`src/test/regress/sql`). The bench reads the files from
+  the `vendor/postgres` submodule, so that submodule must be checked out. It
+  times only the statements that all four engines accept. The report counts
+  the statements that it removes.
+- `stress/<file>`: one benchmark for each file in `fixtures/stress/`. The
+  shapes are `insert_values`, `bool_chain`, `select_list`, `nested_subquery`
+  and `in_list`, each at a number of sizes.
+
+For each engine, the bench warms up for 100 ms. Then it takes samples until it
+has a minimum of 5 samples and 500 ms of time, and it reports the median. It
+stops a benchmark after 3 s or 500 samples.
+
+Each run writes `report.md`, `time.svg`, `throughput.svg` and `data.json` to
+`docs/benchmarks/<timestamp>-<commit>/`, and prints the path of the report.
+Set `PG_SQL_PARITY_MAX` to a ratio to make the run fail when the geomean of the
+pgtk-sql/sqlparser times is more than that ratio. The release gate uses this.
+
+### Profiling
+
+The `flame` bench parses one workload in a loop for a fixed time, so that a
+sampling profiler sees only the parser frames:
 
 ```bash
-cargo bench -p pgtk-sql --features postgres-oracle -- corpus/head-to-head
-cargo bench -p pgtk-sql --features postgres-oracle -- stress/insert_values
+cargo bench -p pgtk-sql --features postgres-oracle --bench flame -- --list
+cargo bench -p pgtk-sql --features postgres-oracle --bench flame -- corpus --duration 10
 ```
 
-Groups:
-
-- `corpus/pgtk-sql-full` — parse every file under `fixtures/sql/`, reports MB/s.
-- `corpus/head-to-head` — parse the set of files accepted by *both* parsers;
-  compares pgtk-sql vs sqlparser directly.
-- `stress/<shape>` — per-shape scaling curves over generated stress inputs
-  (`insert_values`, `bool_chain`, `select_list`, `nested_subquery`, `in_list`).
-- `stress/aggregate` — single regression-check measurement across all stress
-  files.
-
-Every group is capped at 1 s of measurement time and 10 samples so a single
-slow case can't stall the suite.
+`--engine pgtk-sql-flat`, `--engine sqlparser` or `--engine postgres` times a
+different engine. `--count-allocs` counts the allocations of one pass, and
+does not time the loop. `scripts/flame-profile discovery` profiles each
+workload of the discovery suite.
 
 ### Regenerating stress fixtures
 
