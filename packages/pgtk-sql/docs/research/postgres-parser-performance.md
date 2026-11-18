@@ -777,8 +777,10 @@ terminator line and the island after it fails with a lexical error at the wrong 
 
 The stale `#10` claim in `benches/parse.rs` was corrected separately in `92bdade`, which
 kept the statement-level seam but said why it is the one timed. A document-level
-canonical workload is tracked as issue #61, deliberately assigned to a session with no
-stake in this defect, so the workload is not shaped by the bug it would have caught.
+canonical workload was tracked as pg-sql issue #61 (pgtk issue #26), deliberately assigned
+to a session with no stake in this defect, so the workload is not shaped by the bug it
+would have caught. It is now the document suite of the flame harness; see
+`docs/notes/perf.md`.
 
 **The gate question, settled by measurement, 2026-09-05.** One doubt about this section
 remained: `probe_statements` times only statements all three engines accept, so the
