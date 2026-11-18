@@ -17,7 +17,7 @@ publish = true
 [lib]
 test = false
 
-# docs.rs builds the default version (pg17). `spans` adds the document interface.
+# docs.rs builds the default version (pg18). `spans` adds the document interface.
 [package.metadata.docs.rs]
 features = ["spans"]
 
@@ -26,7 +26,7 @@ features = ["spans"]
 # script stops a build with zero or with two or more. A crate between a
 # consumer and pgtk-sql uses `default-features = false` on pgtk-sql and forwards
 # these features. `postgres-oracle` builds the oracle of the same version.
-default = ["pg17"]
+default = ["pg18"]
 pg14 = ["pgtk-oracle/pg14"]
 pg15 = ["since-pg15", "pgtk-oracle/pg15"]
 pg16 = ["since-pg15", "since-pg16", "pgtk-oracle/pg16"]

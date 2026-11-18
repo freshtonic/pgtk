@@ -168,7 +168,7 @@ cargo run -p pgtk-sql --features spans --example migration_lint -- migrations/*.
 
 | Feature | What it does |
 |---|---|
-| `pg14` ... `pg19-beta` | Selects the PostgreSQL version. Use exactly one. The default is `pg17`. |
+| `pg14` ... `pg19-beta` | Selects the PostgreSQL version. Use exactly one. The default is `pg18`. |
 | `spans` | Keeps the source span of each node. The generated `parse_without_spans` entry points skip that cost in any build. |
 | `arbitrary` | Derives `arbitrary::Arbitrary` for the AST. |
 | `postgres-oracle` | Development only: builds PostgreSQL's raw parser for the differential tests. |
@@ -203,8 +203,8 @@ target version. Select it with exactly one Cargo feature:
 | `pg14` | 14.24 |
 | `pg15` | 15.19 |
 | `pg16` | 16.15 |
-| `pg17` (default) | 17.11 |
-| `pg18` | 18.6 |
+| `pg17` | 17.11 |
+| `pg18` (default) | 18.6 |
 | `pg19-beta` | `REL_19_STABLE` at `b73d13c` |
 
 ```toml
@@ -301,7 +301,7 @@ The design lives in Recursa's `docs/flat-ast-design.md`.
 The `parse` bench measures pgtk-sql parser throughput and compares it against
 its own Flat AST (the `pgtk-sql-flat` engine), `sqlparser-rs`
 (`PostgreSqlDialect`), and the raw parser of the target version's pinned
-PostgreSQL release (17.11 by default). `pgtk-sql` and
+PostgreSQL release (18.6 by default). `pgtk-sql` and
 `pgtk-sql-flat` share the lex pass and the automaton, so the pair isolates the
 representation; the harness refuses to report timings unless the two accept
 exactly the same statements.

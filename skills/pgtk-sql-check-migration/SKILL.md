@@ -22,7 +22,7 @@ recursa = "0.1"
 
 - The `spans` feature is necessary for `pgtk_sql::document::parse_sql`, which parses a file of
   statements.
-- The default grammar is PostgreSQL 17 (`pg17`). To select a different release, use
+- The default grammar is PostgreSQL 18 (`pg18`). To select a different release, use
   `default-features = false` and one of `pg14` ... `pg19-beta`. Use the release of your server.
 - The build script of pgtk-sql takes about one minute at `opt-level = 0`. Add
   `[profile.dev.build-override] opt-level = 3` to the workspace root `Cargo.toml` to make it

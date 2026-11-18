@@ -1,13 +1,14 @@
 # Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
 #
-# Buck builds the default Grammar Version (pg17). See docs/adr/0001-dual-buck2-cargo-build.md.
+# Buck builds the default Grammar Version (pg18). See docs/adr/0001-dual-buck2-cargo-build.md.
 
 PGTK_ANALYZE_FEATURES = [
     "default",
-    "pg17",
+    "pg18",
     "since-pg15",
     "since-pg16",
     "since-pg17",
+    "since-pg18",
 ]
 
 PGTK_ANALYZE_DEPS = [

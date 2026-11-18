@@ -23,7 +23,7 @@ pgtk-catalog = { version = "0.1", features = ["fixture"] }
 - The catalog decides the answer. The built-in catalog (`pgtk_catalog::fixture::pg17()`) holds
   only the system tables, types and functions. For the tables of an application, load the
   catalog of its database: see the `pgtk-catalog-snapshot` skill.
-- pgtk-analyze parses with the default grammar of pgtk-sql, PostgreSQL 17. For a different
+- pgtk-analyze parses with the default grammar of pgtk-sql, PostgreSQL 18. For a different
   release, use `default-features = false` and one of `pg14` ... `pg19-beta` on pgtk-analyze.
 
 ## Steps

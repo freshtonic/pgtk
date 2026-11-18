@@ -74,7 +74,7 @@ pub fn check(crate_name: &str, enabled: impl Fn(&str) -> bool) -> Result<&'stati
         .join(", ");
     let unification = format!(
         "Cargo feature unification can cause this. A crate that depends on {crate_name} \
-         without `default-features = false` also enables the default `pg17` feature. \
+         without `default-features = false` also enables the default `pg18` feature. \
          Every crate between your crate and {crate_name} must use \
          `default-features = false` on its {crate_name} dependency and forward the \
          version features."
@@ -98,7 +98,7 @@ pub fn check(crate_name: &str, enabled: impl Fn(&str) -> bool) -> Result<&'stati
             };
             return Err(format!(
                 "{crate_name}: no target version is selected.\n\
-                 Enable exactly one version feature: {all_versions}. The default is `pg17`.\n\
+                 Enable exactly one version feature: {all_versions}. The default is `pg18`.\n\
                  If you use `default-features = false`, also enable one version feature.\
                  {helpers}"
             ));

@@ -15,7 +15,7 @@ publish = false
 # `scanner` builds the lexers of the pinned release. Without it the crate has only the pin
 # constants, and the build script builds no PostgreSQL. pgtk-psql turns it on with its
 # `psql-oracle` feature.
-default = ["pg17", "scanner"]
+default = ["pg18", "scanner"]
 scanner = []
 pg14 = []
 pg15 = ["since-pg15"]

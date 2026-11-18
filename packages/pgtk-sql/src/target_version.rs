@@ -2,7 +2,7 @@
 //!
 //! A pgtk-sql build reproduces the raw parser of exactly one PostgreSQL major
 //! version. The Cargo version feature selects it at build time: `pg14`,
-//! `pg15`, `pg16`, `pg17` (the default), `pg18` or `pg19-beta`. There is no
+//! `pg15`, `pg16`, `pg17`, `pg18` (the default) or `pg19-beta`. There is no
 //! run-time version selection; [`crate::TARGET_VERSION`] only reports the
 //! choice.
 
@@ -22,9 +22,9 @@ pub enum TargetVersion {
     Pg15,
     /// PostgreSQL 16 (feature `pg16`).
     Pg16,
-    /// PostgreSQL 17 (feature `pg17`, the default).
+    /// PostgreSQL 17 (feature `pg17`).
     Pg17,
-    /// PostgreSQL 18 (feature `pg18`).
+    /// PostgreSQL 18 (feature `pg18`, the default).
     Pg18,
     /// PostgreSQL 19 before its first release (feature `pg19-beta`). It
     /// becomes `Pg19` when PostgreSQL 19.0 is tagged.

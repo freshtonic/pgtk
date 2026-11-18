@@ -7,7 +7,7 @@
 # With PGTK_PG_INSTALL=1 it also installs the server (see the end of the
 # script).
 #
-#   FEATURE  a version feature from pgtk-oracle/pins.tsv (default: pg17).
+#   FEATURE  a version feature from pgtk-oracle/pins.tsv (default: pg18).
 #   TREE     the directory for the source tree and the build. The default
 #            is the shared cache (ADR 0012): <cache>/<ref>-<commit>, where
 #            <cache> is $PG_SQL_POSTGRES_CACHE, else
@@ -35,7 +35,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 PG_REPO="$REPO_ROOT/vendor/postgres"
 PINS="$SCRIPT_DIR/../pins.tsv"
 
-feature="${1:-pg17}"
+feature="${1:-pg18}"
 pin="$(awk -F'\t' -v feature="$feature" '$1 == feature { print $2 "\t" $3 }' "$PINS")"
 if [ -z "$pin" ]; then
   echo "No pin for the version feature '$feature' in $PINS" >&2

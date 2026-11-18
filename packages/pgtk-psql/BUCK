@@ -1,16 +1,17 @@
 # Hand-written. Keep the deps the same as the [dependencies] in Cargo.toml.
 #
-# Buck builds the default Target Version (pg17). The psql-oracle feature is Cargo-only. See
+# Buck builds the default Target Version (pg18). The psql-oracle feature is Cargo-only. See
 # docs/adr/0001-dual-buck2-cargo-build.md.
 
 load("//tools/rust:build_script.bzl", "first_party_build_script")
 
 PGTK_PSQL_FEATURES = [
     "default",
-    "pg17",
+    "pg18",
     "since-pg15",
     "since-pg16",
     "since-pg17",
+    "since-pg18",
 ]
 
 # The crate sources. The library compiles from this copy, and the build script reads it as

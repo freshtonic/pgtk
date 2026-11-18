@@ -5,7 +5,7 @@
 Important information for the use of these crates:
 
 - The four crates are configured for crates.io (`publish = true`, version 0.1.0). pgtk-psql is not on crates.io yet (issue #42). The docs.rs pages are available only after the first release.
-- A Cargo feature selects the PostgreSQL grammar version of pgtk-sql, pgtk-analyze and pgtk-psql: `pg14`, `pg15`, `pg16`, `pg17` (the default), `pg18` or `pg19-beta`. Use exactly one. The build stops with zero or with two or more. A crate between your crate and pgtk-sql must use `default-features = false` and forward the version feature.
+- A Cargo feature selects the PostgreSQL grammar version of pgtk-sql, pgtk-analyze and pgtk-psql: `pg14`, `pg15`, `pg16`, `pg17`, `pg18` (the default) or `pg19-beta`. Use exactly one. The build stops with zero or with two or more. A crate between your crate and pgtk-sql must use `default-features = false` and forward the version feature.
 - The `spans` feature of pgtk-sql keeps the source span of each node, and adds the `pgtk_sql::document` module (`parse_sql`, `SqlDocument`). pgtk-analyze always turns on `spans`.
 - pgtk-catalog has one build for all server versions, PostgreSQL 14 to 18. Its features are `postgres`, `tokio-postgres`, `async`, `serde`, `fixture` (a built-in catalog of each version, for tests and offline tools) and `pg19-beta` (accept a PostgreSQL 19 beta server, and add its built-in catalog; it changes no other version). Its enums are `#[non_exhaustive]`, so a `match` needs a `_` arm.
 - In pgtk-analyze, the Grammar Version is the version feature of the build (`pgtk_analyze::GRAMMAR_VERSION`). The Target Version is the server that the SQL will run on. You give it at run time in `Settings`. It must not be newer than the Grammar Version.
@@ -43,9 +43,9 @@ Each example has its run command in its first lines. The examples that connect t
 
 ## API reference
 
-- [pgtk-sql on docs.rs](https://docs.rs/pgtk-sql): built with the default version (`pg17`) and `spans`.
+- [pgtk-sql on docs.rs](https://docs.rs/pgtk-sql): built with the default version (`pg18`) and `spans`.
 - [pgtk-catalog on docs.rs](https://docs.rs/pgtk-catalog): built with all features.
-- [pgtk-analyze on docs.rs](https://docs.rs/pgtk-analyze): built with the default version (`pg17`).
+- [pgtk-analyze on docs.rs](https://docs.rs/pgtk-analyze): built with the default version (`pg18`).
 
 ## Domain language
 

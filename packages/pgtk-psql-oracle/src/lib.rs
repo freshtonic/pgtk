@@ -9,7 +9,7 @@
 //! links `src/fe_utils/psqlscan.l` and `src/bin/psql/psqlscanslash.l` of the
 //! same pinned PostgreSQL release, so that pgtk-psql can be compared with psql.
 //!
-//! The version feature (`pg14` ... `pg19-beta`, default `pg17`) selects the
+//! The version feature (`pg14` ... `pg19-beta`, default `pg18`) selects the
 //! release from `pgtk-oracle/pins.tsv`, which is the one pin table of the
 //! repository (ADR 0009).
 //!

@@ -4,8 +4,8 @@ Status: accepted
 
 pgtk-sql supports PostgreSQL 14 to 19. Each build selects exactly one target
 version with a version feature: `pg14`, `pg15`, `pg16`, `pg17`, `pg18` or
-`pg19-beta`. The default is `pg17`. The features are mutually exclusive: a build
-with zero, or with two or more, stops with `compile_error!`. This is not the
+`pg19-beta`. The default is `pg18` (it was `pg17` until issue #140). The
+features are mutually exclusive: a build with zero, or with two or more, stops with `compile_error!`. This is not the
 usual Cargo practice, where features are additive. We use exclusive features
 because the versions are not additive. PostgreSQL removes syntax (`RECHECK` in
 18), changes keyword categories (`json` in 17), and changes lexing (trailing

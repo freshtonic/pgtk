@@ -24,8 +24,8 @@ pgtk-sql = { version = "0.1", default-features = false, features = ["pg18", "spa
 ```
 
 - **Build with the newest grammar that you need.** A build parses the SQL of its own version
-  only (the default is `pg17`). A `pg17` build cannot parse SQL that only PostgreSQL 18 accepts,
-  so it cannot tell you that the SQL needs 18. Use the version feature of the newest server
+  only (the default is `pg18`). A `pg18` build cannot parse SQL that only PostgreSQL 19 accepts,
+  so it cannot tell you that the SQL needs 19. Use the version feature of the newest server
   that you support, and check against the oldest server.
 - Use exactly one version feature: `pg14`, `pg15`, `pg16`, `pg17`, `pg18` or `pg19-beta`.
 - `spans` gives the location of the construct, and `pgtk_sql::document::parse_sql` for a file.
@@ -49,7 +49,7 @@ pgtk-sql = { version = "0.1", default-features = false, features = ["pg18", "spa
 use pgtk_sql::{MinimumVersion, TargetVersion, ast::Statement, lex};
 
 let lexed = lex("SELECT * FROM (SELECT 1)");
-let parsed = Statement::parse(&mut lexed.input()).expect("PostgreSQL 17 accepts it");
+let parsed = Statement::parse(&mut lexed.input()).expect("PostgreSQL 18 accepts it");
 
 // PostgreSQL 15 needs an alias on a subquery in FROM. PostgreSQL 16 does not.
 let found = parsed.minimum_version_above(TargetVersion::Pg15).expect("15 rejects it");
@@ -101,7 +101,7 @@ SELECT 1;
 MERGE INTO t USING s ON t.a = s.a WHEN MATCHED THEN DELETE;
 SELECT 1_000;
 ";
-let found = too_new(migration, TargetVersion::Pg14).expect("PostgreSQL 17 accepts the file");
+let found = too_new(migration, TargetVersion::Pg14).expect("PostgreSQL 18 accepts the file");
 for (at, req) in &found {
     eprintln!(
         "byte {at}: needs PostgreSQL {} ({})",

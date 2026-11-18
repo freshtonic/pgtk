@@ -54,13 +54,12 @@ cargo test --workspace
 ```
 
 `cargo test --workspace` runs every test of the repository for the default Target Version
-(pg17):
+(pg18):
 
 - The tests against the oracles (`differential`, `accepted_legacy_gaps`, `arbitrary_roundtrip`,
   `psql_oracle`).
 - The pgtk-catalog tests of all features, and the live loader tests against PostgreSQL 14, 15,
   16 and 17.
-- The pgtk-analyze oracle harness, which replays the regression corpus against PostgreSQL 17.
 
 The `pgtk-test-features` member turns on the features that these tests need. Cargo unifies the
 features of a package across the packages of one build, so only a workspace build gets them.
@@ -99,6 +98,15 @@ exclusive. To build another version, turn off the default features:
 cargo test -p pgtk-sql --no-default-features --features pg16
 ```
 
+Two tests hold PostgreSQL 17 data, so they run only in a pg17 build: the pgtk-analyze oracle
+harness, which replays the regression corpus against PostgreSQL 17, and the frozen psql
+submissions of that corpus. CI runs them in a pg17 build after the workspace tests:
+
+```sh
+cargo test -p pgtk-analyze -p pgtk-psql --no-default-features \
+  --features pgtk-analyze/pg17,pgtk-psql/pg17 --test oracle --test submissions
+```
+
 ### Gate scripts
 
 The gate scripts run a full configuration. They find their crate directory themselves, so you can
@@ -106,7 +114,7 @@ start them from any directory.
 
 | Script | What it proves |
 | --- | --- |
-| `packages/pgtk-sql/scripts/merge-gate` | pg17 with `spans`, `arbitrary` and both oracles, and the `Arbitrary` round trip with 100,000 statements. Run it before a merge. |
+| `packages/pgtk-sql/scripts/merge-gate` | pg18 with `spans`, `arbitrary` and both oracles, and the `Arbitrary` round trip with 100,000 statements. Run it before a merge. |
 | `packages/pgtk-sql/scripts/release-gate [pgN...]` | Each Target Version (all six if you give none), and the `Arbitrary` round trip with 1,000,000 statements for each version. Run it before a release, and for the oldest affected version when you change a version gate. |
 | `packages/pgtk-analyze/scripts/gate-versions [pgN...]` | clippy and the tests of pgtk-analyze for each Grammar Version. |
 
@@ -231,7 +239,7 @@ The builds go in `${XDG_CACHE_HOME:-~/.cache}/pgtk-sql/postgres`. To use another
 moved, is made again.
 
 If a build fails, run the script directly to see the full output:
-`packages/pgtk-oracle/scripts/build-pg.sh pg17`.
+`packages/pgtk-oracle/scripts/build-pg.sh pg18`.
 
 ## llms.txt
 

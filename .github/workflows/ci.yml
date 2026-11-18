@@ -47,6 +47,11 @@ jobs:
       # load a catalog from a server need a server.
       - run: cargo build --locked --workspace --examples
       - run: cargo test --locked --workspace
+      # Two tests hold PostgreSQL 17 data and run only in a pg17 build: the pgtk-analyze Oracle
+      # harness and the frozen psql submissions of the PostgreSQL 17.9 regression corpus. The
+      # workspace build above is the default version (pg18), so they run here, in one invocation
+      # so that the pg17 grammar compiles once.
+      - run: cargo test --locked -p pgtk-analyze -p pgtk-psql --no-default-features --features pgtk-analyze/pg17,pgtk-psql/pg17 --test oracle --test submissions
 
   lint:
     name: Cargo fmt and clippy
@@ -106,7 +111,7 @@ jobs:
       # toolchain for development, so give the version to each command.
       - run: rustup toolchain install 1.88.0 --profile minimal
       # The version features of pgtk-sql are mutually exclusive, so --all-features is not
-      # possible for it. The default version (pg17) with its other features is the check. One job
+      # possible for it. The default version (pg18) with its other features is the check. One job
       # at a time, for the memory of the runner (see the lint job).
       - run: cargo +1.88.0 check --locked -j 1 -p pgtk-sql --lib --features spans,arbitrary
       - run: cargo +1.88.0 check --locked -j 1 -p pgtk-catalog --lib --all-features
