@@ -2614,3 +2614,44 @@ fn a_unicode_identifier_takes_a_uescape_clause_in_each_identifier_position() {
         "after a U&\"...\" identifier, UESCAPE is a clause with a correct escape",
     );
 }
+
+/// gram.y `DoStmt: DO dostmt_opt_list`, with `dostmt_opt_list` one or more
+/// `dostmt_opt_item: Sconst | LANGUAGE NonReservedWord_or_Sconst` (REL_17_11
+/// gram.y 9037-9061; REL_14_24 has the same rules). The body is any `Sconst`,
+/// the language a word or a string, and the raw parser takes the items in any
+/// order, with repeats and without a body: `ExecuteDoStmt` refuses those
+/// after parsing (issue #102).
+#[test]
+fn a_do_statement_takes_a_list_of_sconst_and_language_items() {
+    assert_accepts(&[
+        "DO $$BEGIN NULL; END$$",
+        "DO 'BEGIN NULL; END'",
+        "DO E'BEGIN NULL; END'",
+        "DO U&'BEGIN NULL; END'",
+        "DO 'BEGIN NULL;'\n' END'",
+        "DO LANGUAGE plpgsql 'BEGIN NULL; END'",
+        "DO 'BEGIN NULL; END' LANGUAGE plpgsql",
+        "DO LANGUAGE 'plpgsql' $$BEGIN NULL; END$$",
+        "DO LANGUAGE $l$plpgsql$l$ 'BEGIN NULL; END'",
+        "DO LANGUAGE \"plpgsql\" 'x'",
+        "DO LANGUAGE left 'x'",
+        "DO LANGUAGE plpgsql",
+        "DO 'a' 'b'",
+        "DO LANGUAGE a LANGUAGE b 'x'",
+        "DO LANGUAGE a 'x' LANGUAGE b",
+        "DO 'x' LANGUAGE a 'y' LANGUAGE 'b'",
+    ]);
+    assert_rejects(
+        &[
+            "DO",
+            "DO LANGUAGE",
+            "DO LANGUAGE 'x' LANGUAGE",
+            "DO LANGUAGE select 'x'",
+            "DO 1",
+            "DO B'1'",
+            "DO X'1'",
+            "DO plpgsql 'x'",
+        ],
+        "a DO item is an Sconst or LANGUAGE NonReservedWord_or_Sconst",
+    );
+}
