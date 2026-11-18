@@ -1,0 +1,11 @@
+# The build script compiles ring's C and pregenerated assembly sources with the cc crate, which
+# needs OPT_LEVEL, DEBUG and PROFILE. Rustc must link the static library that it makes. The
+# build script also checks CARGO_MANIFEST_LINKS and CARGO_PKG_VERSION_* against its `links` name.
+# The crate includes DER templates with include_bytes!.
+extra_srcs = ["src/**/*.der"]
+cargo_env = true
+
+[buildscript.run]
+env = { OPT_LEVEL = "3", DEBUG = "false", PROFILE = "release" }
+rustc_link_lib = true
+rustc_link_search = true

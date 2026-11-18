@@ -1,0 +1,3 @@
+# The build script sets cfgs for aws-lc-rs's own tests and re-exports the `links` metadata of
+# aws-lc-sys (DEP_AWS_LC_*), which Buck does not pass and no crate here reads.
+buildscript.run = false

@@ -1,0 +1,3 @@
+# First-party workspace member with no BUCK file yet (#126). Reindeer generates no rules for it,
+# but it requires a build script decision. Its build script only records the Cargo profile.
+buildscript.run = false

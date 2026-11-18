@@ -1,0 +1,2 @@
+# The crate includes DER algorithm identifiers with include_bytes!.
+extra_srcs = ["src/data/*.der"]

@@ -1,0 +1,9 @@
+# The build script compiles the bundled AWS-LC C and assembly sources with the cc crate (its
+# cc_builder; no CMake on Linux or macOS) and uses the pregenerated bindings for these targets.
+# Rustc must link the static libraries that it makes.
+cargo_env = true
+
+[buildscript.run]
+env = { OPT_LEVEL = "3", DEBUG = "false", PROFILE = "release" }
+rustc_link_lib = true
+rustc_link_search = true

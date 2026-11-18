@@ -1,0 +1,4 @@
+# The prebuilt import libraries of the Windows crates. Buck builds for Linux and macOS only, so
+# they are never used. reindeer.toml leaves them out of the vendored checksums.
+vendor/winapi-*-pc-windows-gnu-*/lib/
+vendor/windows_*/lib/
