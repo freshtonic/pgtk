@@ -1,4 +1,4 @@
-//! Compatibility tests against containerised supported `PostgreSQL` releases.
+//! Compatibility tests against servers of the supported `PostgreSQL` releases.
 
 use std::{collections::BTreeMap, error::Error, time::Duration};
 
@@ -17,6 +17,7 @@ use pgtk_proto::{
     startup::{ProtocolVersion, StartupMessage},
     transport::Buffered,
 };
+use pgtk_test_server::{Builder, Server};
 use postgres_protocol::authentication::{
     md5_hash,
     sasl::{ChannelBinding, SCRAM_SHA_256, SCRAM_SHA_256_PLUS, ScramSha256},
@@ -27,31 +28,29 @@ use rustls::{
     pki_types::{CertificateDer, ServerName},
 };
 use std::sync::Arc;
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{CopyTargetOptions, ImageExt, runners::AsyncRunner},
-};
 
-fn postgres_tag() -> String {
+/// The major version of the test servers: `PGTK_PROTO_POSTGRES_VERSION`, 18 by
+/// default.
+fn postgres_version() -> String {
     let version = std::env::var("PGTK_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
     assert!(
         matches!(version.as_str(), "14" | "15" | "16" | "17" | "18"),
         "unsupported PostgreSQL test version"
     );
-    format!("{version}-alpine")
+    version
 }
 
-/// Exercises our bytes directly against the official `PostgreSQL` image. Kept
-/// ignored so ordinary unit tests do not require a local container runtime.
+/// A server of the pinned release of [`postgres_version`], built from the
+/// vendored source by `pgtk-test-server`.
+fn server() -> Builder {
+    Server::builder_of(&format!("pg{}", postgres_version()))
+}
+
+/// Exercises our bytes directly against a `PostgreSQL` server.
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn startup_and_protocol_negotiation_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().tcp().start();
+    let port = postgres.port();
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
 
     let startup = StartupMessage {
@@ -172,7 +171,7 @@ async fn run_select_42(
 
 fn assert_negotiation(negotiation: Option<NegotiateProtocolVersion>) {
     let negotiation = negotiation.expect("server did not negotiate protocol 3.2 options");
-    let expected = if postgres_tag().starts_with("18-") {
+    let expected = if postgres_version() == "18" {
         ProtocolVersion::V3_2
     } else {
         ProtocolVersion::V3_0
@@ -185,10 +184,12 @@ fn assert_negotiation(negotiation: Option<NegotiateProtocolVersion>) {
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn scram_sha_256_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default().with_tag(postgres_tag()).start().await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server()
+        .host_auth("scram-sha-256")
+        .password("postgres")
+        .start();
+    let port = postgres.port();
     let startup = connected_startup(port).await?;
     let mut auth = startup.authentication();
 
@@ -252,7 +253,6 @@ async fn scram_sha_256_matches_postgres() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 #[allow(clippy::too_many_lines)]
 async fn scram_sha_256_plus_over_typed_tls_matches_postgres() -> Result<(), Box<dyn Error>> {
     let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -260,29 +260,16 @@ async fn scram_sha_256_plus_over_typed_tls_matches_postgres() -> Result<(), Box<
     let certificate_pem = generated.cert.pem();
     let private_key_pem = generated.signing_key.serialize_pem();
     let certificate = CertificateDer::from(generated.cert.der().to_vec());
-    let postgres = Postgres::default()
-        .with_tag(postgres_tag())
-        .with_user("postgres:root")
-        .with_copy_to(
-            CopyTargetOptions::new("/tmp/server.crt").with_mode(0o644),
-            certificate_pem.into_bytes(),
-        )
-        .with_copy_to(
-            CopyTargetOptions::new("/tmp/server.key").with_mode(0o640),
-            private_key_pem.into_bytes(),
-        )
-        .with_cmd([
-            "postgres",
-            "-c",
-            "ssl=on",
-            "-c",
-            "ssl_cert_file=/tmp/server.crt",
-            "-c",
-            "ssl_key_file=/tmp/server.key",
-        ])
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server()
+        .host_auth("scram-sha-256")
+        .password("postgres")
+        .file("server.crt", certificate_pem)
+        .file("server.key", private_key_pem)
+        .setting("ssl", "on")
+        .setting("ssl_cert_file", "server.crt")
+        .setting("ssl_key_file", "server.key")
+        .start();
+    let port = postgres.port();
     let stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
     let mut roots = RootCertStore::empty();
     roots.add(certificate)?;
@@ -413,14 +400,9 @@ async fn finish_startup(
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn cleartext_password_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_tag(postgres_tag())
-        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "password")
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().host_auth("password").password("postgres").start();
+    let port = postgres.port();
     let offer = receive_auth_offer(connected_startup(port).await?).await?;
     let AuthOffer::Cleartext(conn) = offer else {
         panic!("PostgreSQL did not offer cleartext password authentication")
@@ -429,17 +411,13 @@ async fn cleartext_password_matches_postgres() -> Result<(), Box<dyn Error>> {
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn md5_password_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_init_sql(
-            b"SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';".to_vec(),
-        )
-        .with_tag(postgres_tag())
-        .with_env_var("POSTGRES_HOST_AUTH_METHOD", "md5")
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server()
+        .host_auth("md5")
+        .password("postgres")
+        .init_sql("SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';")
+        .start();
+    let port = postgres.port();
     let offer = receive_auth_offer(connected_startup(port).await?).await?;
     let AuthOffer::Md5 { conn, salt } = offer else {
         panic!("PostgreSQL did not offer MD5 password authentication")
@@ -480,14 +458,9 @@ async fn submit_password(
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn extended_query_pipeline_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().tcp().start();
+    let port = postgres.port();
     let ready = trust_ready(port).await?;
 
     let (ready, parse_complete, bind_complete, row_description, data_row) =
@@ -576,14 +549,9 @@ async fn trust_ready(
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn async_sinks_match_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().tcp().start();
+    let port = postgres.port();
     let mut ready = trust_ready(port).await?;
 
     let mut startup_parameters = Vec::new();
@@ -672,14 +640,9 @@ async fn loop_until_ready(
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn error_response_drains_to_ready_on_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().tcp().start();
+    let port = postgres.port();
     let ready = trust_ready(port).await?;
     let (mut query, frame) = ready.push_stateless_query(b"SELECT FROM")?;
     query.push_frame(frame)?;
@@ -717,14 +680,9 @@ async fn error_response_drains_to_ready_on_postgres() -> Result<(), Box<dyn Erro
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn copy_out_nested_session_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server().tcp().start();
+    let port = postgres.port();
     let ready = trust_ready(port).await?;
     let (mut query, frame) =
         ready.push_stateless_query(b"COPY (SELECT generate_series(1, 2)) TO STDOUT")?;
@@ -778,15 +736,12 @@ async fn copy_out_nested_session_matches_postgres() -> Result<(), Box<dyn Error>
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn copy_in_nested_session_matches_postgres() -> Result<(), Box<dyn Error>> {
-    let postgres = Postgres::default()
-        .with_init_sql(b"CREATE TABLE copy_test(value integer);".to_vec())
-        .with_host_auth()
-        .with_tag(postgres_tag())
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = server()
+        .tcp()
+        .init_sql("CREATE TABLE copy_test(value integer);")
+        .start();
+    let port = postgres.port();
     let ready = trust_ready(port).await?;
     let (mut query, frame) = ready.push_stateless_query(b"COPY copy_test FROM STDIN")?;
     query.push_frame(frame)?;

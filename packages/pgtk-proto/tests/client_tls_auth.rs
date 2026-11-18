@@ -14,14 +14,11 @@ use pgtk_proto::{
     ClientAuthenticationSession, ClientTlsConfig, ClientTlsPolicy, ClientTlsProvider, ConnectError,
     ConnectTarget, SslMode, StartupParameters, TrustClientAuthentication,
 };
+use pgtk_test_server::Server as TestServer;
 use rcgen::generate_simple_self_signed;
 use rustls::{
     RootCertStore, ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, ServerName},
-};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ImageExt as _, runners::AsyncRunner as _},
 };
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
@@ -388,14 +385,9 @@ async fn server_authentication_rejection_has_its_own_error_layer() {
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn builder_establishes_a_session_with_postgres() -> Result<(), Box<dyn std::error::Error>> {
-    let postgres = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let port = postgres.get_host_port_ipv4(5432).await?;
+    let postgres = TestServer::builder_of("pg18").tcp().start();
+    let port = postgres.port();
     let client = Client::builder()
         .connector(
             move |_| async move { tokio::net::TcpStream::connect(("127.0.0.1", port)).await },
@@ -405,7 +397,7 @@ async fn builder_establishes_a_session_with_postgres() -> Result<(), Box<dyn std
         .build()?;
     let connection = client
         .connect(
-            ConnectTarget::new("postgres-container"),
+            ConnectTarget::new("postgres-server"),
             StartupParameters::new("postgres").database("postgres"),
             (),
         )

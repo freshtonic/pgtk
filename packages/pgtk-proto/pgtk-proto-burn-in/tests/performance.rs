@@ -179,7 +179,7 @@ fn hosted_runners_cannot_enable_performance_gates() {
 }
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
+#[ignore = "builds the LTO `burn-in` profile and starts PostgreSQL servers (issue #132)"]
 fn controlled_profile_captures_real_intermediary_measurements_before_evaluation() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))

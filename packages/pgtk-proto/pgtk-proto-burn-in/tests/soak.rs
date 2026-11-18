@@ -3,7 +3,6 @@
 use std::{fs, process::Command};
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn soak_requires_a_bounded_budget_and_records_a_replayable_schedule() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))
@@ -151,7 +150,6 @@ fn soak_rejects_an_unbounded_run() {
 }
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn soak_duration_is_a_wall_clock_budget() {
     let output_dir = tempfile::tempdir().expect("output directory");
     let started = std::time::Instant::now();
@@ -183,7 +181,6 @@ fn soak_duration_is_a_wall_clock_budget() {
 }
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn replay_reproduces_a_captured_failure_and_preserves_original_evidence() {
     let capture = tempfile::tempdir().expect("capture artifact directory");
     let replay = tempfile::tempdir().expect("replay artifact directory");

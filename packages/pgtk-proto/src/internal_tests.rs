@@ -7,7 +7,7 @@ mod intermediary_harness;
 /// Integration tests for queued-request backpressure and ordering.
 mod intermediary_pipeline;
 #[path = "internal_tests/postgres_container.rs"]
-/// Compatibility tests against Testcontainers-managed PostgreSQL instances.
+/// Compatibility tests against PostgreSQL servers that pgtk-test-server starts.
 mod postgres_container;
 #[path = "internal_tests/recorded_fixtures.rs"]
 /// Tests for sanitized recorded wire fixtures.

@@ -3,24 +3,22 @@
 use std::{
     collections::BTreeMap,
     error::Error,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
 };
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ImageExt, runners::AsyncRunner},
-};
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     time::sleep,
 };
 use tokio::{process::Command, time::timeout};
 
-use crate::{CHILD_TIMEOUT, ChildEvent, atomic_write, option, read_event, wait_success};
+use crate::{
+    CHILD_TIMEOUT, ChildEvent, atomic_write, option, read_event, start_postgres, wait_success,
+};
 
 const CONCURRENCY: usize = 4;
 const EXPECTED_FAILURE_BUDGET: usize = 2;
@@ -902,15 +900,8 @@ async fn execute(
     sequence: &[SequenceEntry],
     pace: Option<std::time::Duration>,
 ) -> Result<ExecutionOutcome, Box<dyn Error>> {
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(pgtk_test_server::Server::builder_of("pg18").tcp()).await?;
+    let upstream = server.tcp_address();
     let long: Vec<_> = sequence
         .iter()
         .filter(|entry| entry.phase == Phase::LongLived)
@@ -1021,7 +1012,7 @@ async fn execute(
         postgres: PostgresResources::default(),
         termination: Some("graceful-teardown".into()),
     });
-    drop(container);
+    drop(server);
     Ok(ExecutionOutcome {
         completed,
         resource_checkpoints,
@@ -1181,8 +1172,8 @@ pub(crate) async fn run_resource_driver_child(arguments: &[String]) -> Result<()
             locks: row.get(1),
             temporary_bytes: row.get(2),
             wal_bytes: row.get::<_, String>(3).parse()?,
-            // SQL statistics remain authoritative even when the container PID
-            // namespace prevents host-side /proc attribution.
+            // SQL statistics remain authoritative even when host-side /proc
+            // attribution of the backend PID is unavailable.
             sampling_gap: None,
         },
         termination: None,

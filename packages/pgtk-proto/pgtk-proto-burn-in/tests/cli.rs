@@ -151,7 +151,7 @@ fn soak_does_not_accept_a_profile_option() {
 }
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
+#[ignore = "builds the LTO `burn-in` profile, starts PostgreSQL servers of every version and runs for minutes (issue #132)"]
 fn run_all_executes_every_conventional_run_and_writes_the_report() {
     let output_dir = tempfile::tempdir().expect("output directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))

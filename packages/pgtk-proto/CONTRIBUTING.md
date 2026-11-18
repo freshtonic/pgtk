@@ -13,9 +13,9 @@ truth. Prose and comments use British English.
 
 ## Development environment
 
-The repository's `rust-toolchain.toml` selects the development compiler. A
-Docker-compatible container runtime is needed for live PostgreSQL tests. The
-normal verification commands are:
+The repository's `rust-toolchain.toml` selects the development compiler. The live PostgreSQL
+tests start servers with `pgtk-test-server`, so they need no container runtime. The normal
+verification commands are:
 
 ```bash
 cargo fmt --all -- --check
@@ -28,7 +28,7 @@ cargo package --workspace
 Run the PostgreSQL compatibility suite with:
 
 ```bash
-cargo test --lib internal_tests::postgres_container -- --ignored --test-threads=1
+cargo test -p pgtk-proto --lib internal_tests::postgres_container
 ```
 
 Run a focused fuzz target with nightly Rust:

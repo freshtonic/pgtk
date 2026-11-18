@@ -24,12 +24,11 @@ demonstration generates a fresh self-signed certificate each time it starts;
 
 ## Run the automated demonstration
 
-The ignored integration test uses the Rust `testcontainers-modules` crate to
-start the official PostgreSQL image, applies [`customer_orders.sql`](customer_orders.sql),
+The integration test starts a PostgreSQL server with `pgtk-test-server`, applies [`customer_orders.sql`](customer_orders.sql),
 runs a query through the proxy, and checks both its rows and logging observations:
 
 ```bash
-cargo test --test logging_proxy_example -- --ignored --nocapture
+cargo test -p pgtk-proto --test logging_proxy_example -- --nocapture
 ```
 
 PostgreSQL 18 is used by default. Select any supported major version with, for
@@ -37,16 +36,14 @@ example:
 
 ```bash
 PGTK_PROTO_POSTGRES_VERSION=14 \
-  cargo test --test logging_proxy_example -- --ignored --nocapture
+  cargo test -p pgtk-proto --test logging_proxy_example -- --nocapture
 ```
 
-A Docker-compatible container runtime must be running.
+## Run it interactively with an automatic server
 
-## Run it interactively with an automatic container
-
-Run the proxy without an upstream argument. It starts PostgreSQL 18 through the
-Rust `testcontainers-modules` crate, retains the container for the life of the
-proxy, and loads the sample schema automatically:
+Run the proxy without an upstream argument. It starts a PostgreSQL 18 server with
+`pgtk-test-server`, keeps it for the life of the proxy, and loads the sample schema
+automatically:
 
 ```bash
 cargo run --example sql_logging_proxy

@@ -3,25 +3,22 @@
 use std::{
     error::Error,
     future::Future,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::SocketAddr,
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
 use bytes::Bytes;
 use futures_util::SinkExt;
 use serde::{Deserialize, Serialize};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ContainerAsync, ImageExt, core::ExecCommand, runners::AsyncRunner},
-};
 use tokio::{
     process::{Child, Command},
     time::{Instant, sleep, timeout},
 };
 
-use crate::{ChildEvent, atomic_write, option, read_event, wait_success};
+use crate::{ChildEvent, atomic_write, option, read_event, start_postgres, wait_success};
 
 const FAULT_TIMEOUT: Duration = Duration::from_secs(45);
 const POSTGRES_READY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -50,7 +47,7 @@ struct FaultScenarioResult {
 }
 
 struct Environment {
-    _container: ContainerAsync<Postgres>,
+    server: Arc<pgtk_test_server::Server>,
     intermediary: Child,
     proxy: SocketAddr,
     upstream: SocketAddr,
@@ -93,15 +90,8 @@ pub(crate) async fn run(arguments: &[String]) -> Result<(), Box<dyn Error>> {
 }
 
 async fn environment(executable: &str, connections: usize) -> Result<Environment, Box<dyn Error>> {
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(pgtk_test_server::Server::builder_of("pg18").tcp()).await?;
+    let upstream = server.tcp_address();
     let mut intermediary = Command::new(executable)
         .args([
             "intermediary-child",
@@ -122,7 +112,7 @@ async fn environment(executable: &str, connections: usize) -> Result<Environment
         return Err("fault intermediary did not become ready".into());
     };
     Ok(Environment {
-        _container: container,
+        server: Arc::new(server),
         intermediary,
         proxy,
         upstream,
@@ -335,24 +325,18 @@ async fn postgres_restart(executable: &str) -> Result<FaultScenarioResult, Box<d
         .get::<_, i32>(0)
         == 5;
     drop(before);
-    environment._container.stop_with_timeout(Some(5)).await?;
-    let stopped = !environment._container.is_running().await?;
-    environment._container.start().await?;
+    let server = Arc::clone(&environment.server);
+    let stopped = tokio::task::spawn_blocking(move || {
+        server.stop();
+        let stopped = !server.is_ready();
+        server.start_again();
+        stopped
+    })
+    .await?;
     wait_until_ready(
         POSTGRES_READY_TIMEOUT,
         POSTGRES_READY_RETRY_DELAY,
-        || async {
-            let result = environment
-                ._container
-                .exec(ExecCommand::new(["pg_isready", "-U", "postgres"]))
-                .await?;
-            loop {
-                if let Some(exit_code) = result.exit_code().await? {
-                    return Ok(exit_code == 0);
-                }
-                sleep(Duration::from_millis(10)).await;
-            }
-        },
+        || async { Ok(environment.server.is_ready()) },
     )
     .await?;
     environment.intermediary.kill().await?;
@@ -362,7 +346,7 @@ async fn postgres_restart(executable: &str) -> Result<FaultScenarioResult, Box<d
         "topology-terminates",
         stopped,
         initial && topology_terminated,
-        "the disposable container stopped, restarted to pg_isready, and the old topology terminated by contract",
+        "the disposable server stopped, restarted to pg_isready, and the old topology terminated by contract",
     ))
 }
 

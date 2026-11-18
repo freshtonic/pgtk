@@ -54,7 +54,7 @@ x509-parser.workspace = true
 criterion = { workspace = true, features = ["async_tokio"] }
 futures-util.workspace = true
 rcgen.workspace = true
-testcontainers-modules = { workspace = true, features = ["postgres"] }
+pgtk-test-server = { path = "../pgtk-test-server" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
 tokio-postgres.workspace = true
 tokio-postgres-rustls.workspace = true

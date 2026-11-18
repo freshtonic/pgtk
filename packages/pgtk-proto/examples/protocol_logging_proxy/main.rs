@@ -9,14 +9,11 @@ use pgtk_proto::{
     ServerIdentityProvider, ServerTlsPolicy, StartupParameters, StartupRouteResolver,
     TrustClientAuthentication, TrustIdentity, TrustServerAuthentication,
 };
+use pgtk_test_server::Server as TestServer;
 use rcgen::generate_simple_self_signed;
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer},
-};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ContainerAsync, ImageExt as _, runners::AsyncRunner as _},
 };
 use tokio::net::{TcpListener, TcpStream};
 
@@ -92,7 +89,7 @@ impl ServerIdentityProvider for ExampleTlsIdentity {
 
 struct ExampleUpstream {
     address: SocketAddr,
-    _container: Option<ContainerAsync<Postgres>>,
+    _server: Option<TestServer>,
 }
 
 impl ExampleUpstream {
@@ -104,13 +101,13 @@ impl ExampleUpstream {
                     error.kind(),
                     format!(
                         "cannot connect to PostgreSQL at {address}: {error}; start that server or \
-                         omit the upstream argument to use the example container"
+                         omit the upstream argument to use the example server"
                     ),
                 )
             })?;
             return Ok(Self {
                 address,
-                _container: None,
+                _server: None,
             });
         }
         let version = env::var("PGTK_PROTO_POSTGRES_VERSION").unwrap_or_else(|_| "18".to_owned());
@@ -121,16 +118,13 @@ impl ExampleUpstream {
             )
             .into());
         }
-        let container = Postgres::default()
-            .with_init_sql(include_bytes!("../sql_logging_proxy/customer_orders.sql").to_vec())
-            .with_host_auth()
-            .with_tag(format!("{version}-alpine"))
-            .start()
-            .await?;
-        let port = container.get_host_port_ipv4(5432).await?;
+        let server = TestServer::builder_of(&format!("pg{version}"))
+            .tcp()
+            .init_sql(include_str!("../sql_logging_proxy/customer_orders.sql"))
+            .start();
         Ok(Self {
-            address: SocketAddr::from(([127, 0, 0, 1], port)),
-            _container: Some(container),
+            address: server.tcp_address(),
+            _server: Some(server),
         })
     }
 }

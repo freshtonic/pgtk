@@ -3,7 +3,6 @@
 use std::{fs, process::Command};
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn physical_replication_profile_records_wal_feedback_and_teardown() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))

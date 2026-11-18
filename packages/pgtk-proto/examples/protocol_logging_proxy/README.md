@@ -13,8 +13,8 @@ number. `PasswordResponse` uses pgtk-proto's redacted `Debug` implementation.
 Logging is implemented as a core message-middleware stage and composed with the
 SQL and row-statistics stages used by the companion example.
 
-Run without arguments to start and retain a PostgreSQL 18 test container loaded
-with the customer/orders fixture:
+Run without arguments to start and retain a PostgreSQL 18 server, started by
+`pgtk-test-server` and loaded with the customer/orders fixture:
 
 ```bash
 cargo run --example protocol_logging_proxy

@@ -29,7 +29,6 @@ async fn rejects_an_unavailable_explicit_upstream_before_listening() -> Result<(
 }
 
 #[tokio::test]
-#[ignore = "requires a Docker-compatible container runtime"]
 async fn logs_customer_order_sql_and_result_row_count() -> Result<(), Box<dyn Error>> {
     let postgres = sql_logging_proxy::ExampleUpstream::resolve(None).await?;
     let upstream = postgres.address();

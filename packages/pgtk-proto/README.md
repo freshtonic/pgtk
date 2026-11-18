@@ -352,8 +352,8 @@ cargo doc --workspace --no-deps --open
 The `pgtk-proto-burn-in` workspace binary verifies the complete public topology:
 an independent Rust SQL driver connects to a separately supervised process that
 builds a public `Server` + `Intermediary` + `Client`, which then connects to a
-real PostgreSQL instance launched by Testcontainers. The supervisor owns the
-container, child lifecycles, timeouts, resource sampling, and artifacts. The
+real PostgreSQL server that `pgtk-test-server` starts. The supervisor owns the
+server, child lifecycles, timeouts, resource sampling, and artifacts. The
 harness does not inspect private connection or grammar state.
 
 The finite profiles cover distinct protocol and deployment concerns:
@@ -401,7 +401,7 @@ Ordinary traces omit payloads; diagnostic payload capture is opt-in, bounded,
 and redacts credentials, TLS secrets, cancellation keys, and configured
 sensitive fields before persistence.
 
-With a Docker-compatible runtime, useful local entry points are:
+Useful local entry points are:
 
 ```bash
 cargo run -p pgtk-proto-burn-in -- \
@@ -460,15 +460,16 @@ coverage model, stopping conditions, and workflow policy.
 ## Supported PostgreSQL versions
 
 PostgreSQL **14, 15, 16, 17, and 18** are supported. Each version runs the same
-live suite against its official Alpine image. PostgreSQL 14–17 negotiate a
+live suite against the pinned release of the pgtk workspace, which
+`pgtk-test-server` builds from the vendored source. PostgreSQL 14–17 negotiate a
 requested protocol 3.2 startup down to 3.0; PostgreSQL 18 reports protocol 3.2.
 Both behaviours are covered explicitly.
 
-Run a selected version locally with a Docker-compatible runtime:
+`cargo test` runs the suite against PostgreSQL 18. Run another version with:
 
 ```bash
-PGTK_PROTO_POSTGRES_VERSION=18 \
-  cargo test --lib internal_tests::postgres_container -- --ignored
+PGTK_PROTO_POSTGRES_VERSION=14 \
+  cargo test -p pgtk-proto --lib internal_tests::postgres_container
 ```
 
 See [`SUPPORTED_VERSIONS.md`](SUPPORTED_VERSIONS.md) for the tested protocol
@@ -628,11 +629,8 @@ compile-fail, and documentation tests:
 cargo test --workspace
 ```
 
-Live PostgreSQL tests require a Docker-compatible runtime:
-
-```bash
-cargo test --lib internal_tests::postgres_container -- --ignored
-```
+The live PostgreSQL tests are part of it. They start servers with `pgtk-test-server`, which
+builds the pinned PostgreSQL release from the vendored source the first time.
 
 ## Licence
 

@@ -1,24 +1,13 @@
 //! Controlled performance capture, evaluation, and artifact generation.
 
-use std::{
-    cmp::Ordering,
-    error::Error,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    path::PathBuf,
-    process::Stdio,
-    time::Duration,
-};
+use std::{cmp::Ordering, error::Error, path::PathBuf, process::Stdio, time::Duration};
 
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{ImageExt, runners::AsyncRunner},
-};
 use tokio::{process::Command, time::Instant};
 
-use crate::{ChildEvent, atomic_write, option, read_event, wait_success};
+use crate::{ChildEvent, atomic_write, option, read_event, start_postgres, wait_success};
 
 #[derive(Debug, Deserialize, Serialize)]
 struct Input {
@@ -339,15 +328,8 @@ async fn capture(
     if postgres_version != "18" {
         return Err("performance capture currently requires PostgreSQL 18".into());
     }
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(pgtk_test_server::Server::builder_of("pg18").tcp()).await?;
+    let upstream = server.tcp_address();
     let mut intermediary = Command::new(executable)
         .args(["intermediary-child", "--address", &upstream.to_string()])
         .kill_on_drop(true)
@@ -438,7 +420,7 @@ async fn capture(
         return Err("expected performance intermediary completion event".into());
     };
     wait_success(&mut intermediary, "performance intermediary").await?;
-    drop(container);
+    drop(server);
     Ok(input)
 }
 

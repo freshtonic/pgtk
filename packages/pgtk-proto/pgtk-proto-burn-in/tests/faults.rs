@@ -3,7 +3,6 @@
 use std::{fs, process::Command};
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn disposable_fault_profiles_record_recovery_without_performance_evidence() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))

@@ -23,7 +23,6 @@ fn smoke_profile_rejects_versions_outside_the_compatibility_contract() {
 }
 
 #[test]
-#[ignore = "requires Docker"]
 fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))
@@ -236,7 +235,6 @@ fn smoke_profile_crosses_a_real_intermediary_and_writes_artifacts() {
 }
 
 #[test]
-#[ignore = "requires Docker"]
 fn rich_rewrite_profile_changes_structured_messages_end_to_end() {
     let artifacts = tempfile::tempdir().expect("create artifact directory");
     let output = Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))
@@ -273,7 +271,6 @@ fn rich_rewrite_profile_changes_structured_messages_end_to_end() {
 }
 
 #[test]
-#[ignore = "requires a Docker-compatible container runtime"]
 fn authentication_profile_writes_versioned_security_evidence() {
     let artifacts = tempfile::tempdir().expect("artifact directory");
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_pgtk-proto-burn-in"))

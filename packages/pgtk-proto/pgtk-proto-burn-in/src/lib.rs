@@ -5,7 +5,7 @@ use std::{
     convert::Infallible,
     error::Error,
     io,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{Ipv4Addr, SocketAddr},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -35,10 +35,6 @@ use rustls::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use testcontainers_modules::{
-    postgres::Postgres,
-    testcontainers::{CopyDataSource, CopyTargetOptions, ImageExt, runners::AsyncRunner},
-};
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{TcpListener, TcpStream},
@@ -68,6 +64,15 @@ mod soak;
 mod trends;
 
 const CHILD_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Start the disposable PostgreSQL server that `builder` describes, off the
+/// async runtime because initdb and pg_ctl block. A failed start is an error,
+/// not a panic, so the caller still writes its artifacts.
+pub(crate) async fn start_postgres(
+    builder: pgtk_test_server::Builder,
+) -> Result<pgtk_test_server::Server, Box<dyn Error>> {
+    Ok(tokio::task::spawn_blocking(move || builder.start()).await?)
+}
 
 /// Runs the requested harness command.
 pub async fn run(arguments: Vec<String>) -> Result<(), Box<dyn Error>> {
@@ -566,31 +571,15 @@ async fn supervise_replication(executable: &str) -> Result<ReplicationResult, Bo
             );
         }
     }
-    let replication_hba = b"#!/bin/sh\nset -eu\nprintf '\\nhost replication all all trust\\n' >> \"$PGDATA/pg_hba.conf\"\n".to_vec();
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .with_env_var("POSTGRES_INITDB_ARGS", "--auth-host=trust")
-        .with_copy_to(
-            CopyTargetOptions::new("/docker-entrypoint-initdb.d/00_replication_hba.sh")
-                .with_mode(0o755),
-            CopyDataSource::Data(replication_hba),
-        )
-        .with_cmd([
-            "postgres",
-            "-c",
-            "fsync=off",
-            "-c",
-            "wal_level=replica",
-            "-c",
-            "max_wal_senders=4",
-        ])
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    // initdb's pg_hba.conf trusts replication connections from 127.0.0.1.
+    let server = start_postgres(
+        pgtk_test_server::Server::builder_of("pg18")
+            .tcp()
+            .setting("wal_level", "replica")
+            .setting("max_wal_senders", "4"),
+    )
+    .await?;
+    let upstream = server.tcp_address();
 
     let mut config = tokio_postgres::Config::new();
     config
@@ -697,7 +686,7 @@ async fn supervise_replication(executable: &str) -> Result<ReplicationResult, Bo
     wait_success(&mut intermediary, "replication intermediary").await?;
     drop(sql);
     timeout(CHILD_TIMEOUT, sql_task).await???;
-    drop(container);
+    drop(server);
 
     if sqlstate != "57014" {
         return Err(
@@ -804,15 +793,8 @@ async fn run_tls_rejection_profile(
     let generated = generate_simple_self_signed(vec!["localhost".into()])?;
     let certificate_path = artifacts.join("rejection-root.der");
     tokio::fs::write(&certificate_path, generated.cert.der()).await?;
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(pgtk_test_server::Server::builder_of("pg18").tcp()).await?;
+    let upstream = server.tcp_address();
     let mut intermediary = Command::new(executable)
         .args([
             "intermediary-child",
@@ -836,7 +818,7 @@ async fn run_tls_rejection_profile(
     if driver_status.success() || intermediary_status.success() {
         return Err("required TLS unexpectedly accepted a plaintext PostgreSQL server".into());
     }
-    drop(container);
+    drop(server);
     Ok(())
 }
 
@@ -845,28 +827,18 @@ async fn run_password_profile(
     host_auth: &str,
     password: Option<&str>,
 ) -> Result<(), Box<dyn Error>> {
-    let image = if host_auth == "trust" {
-        Postgres::default().with_host_auth().with_tag("18-alpine")
+    let builder = pgtk_test_server::Server::builder_of("pg18").host_auth(host_auth);
+    let builder = if host_auth == "trust" {
+        builder
     } else if host_auth == "md5" {
-        Postgres::default()
-            .with_password(password.expect("MD5 authentication requires a password"))
-            .with_init_sql(
-                b"SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';"
-                    .to_vec(),
-            )
-            .with_tag("18-alpine")
-            .with_env_var("POSTGRES_HOST_AUTH_METHOD", "md5")
+        builder
+            .password(password.expect("MD5 authentication requires a password"))
+            .init_sql("SET password_encryption = 'md5'; ALTER ROLE postgres PASSWORD 'postgres';")
     } else {
-        Postgres::default()
-            .with_password(password.expect("password authentication requires a password"))
-            .with_tag("18-alpine")
-            .with_env_var("POSTGRES_HOST_AUTH_METHOD", host_auth)
+        builder.password(password.expect("password authentication requires a password"))
     };
-    let container = image.start().await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(builder).await?;
+    let upstream = server.tcp_address();
     let mut intermediary =
         spawn_authenticated_child(executable, "intermediary-child", upstream, password).await?;
     let ChildEvent::Ready { listen_addr, .. } = read_event(&mut intermediary).await? else {
@@ -889,7 +861,7 @@ async fn run_password_profile(
         return Err(format!("{host_auth} intermediary did not complete").into());
     };
     wait_success(&mut intermediary, "intermediary").await?;
-    drop(container);
+    drop(server);
     Ok(())
 }
 
@@ -898,29 +870,18 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
     let certificate_der = generated.cert.der().to_vec();
     let certificate_path = artifacts.join("tls-root.der");
     tokio::fs::write(&certificate_path, &certificate_der).await?;
-    let setup = b"#!/bin/sh\nset -eu\ncp /docker-entrypoint-initdb.d/server.crt /var/lib/postgresql/server.crt\ncp /docker-entrypoint-initdb.d/server.key /var/lib/postgresql/server.key\nchown postgres:postgres /var/lib/postgresql/server.crt /var/lib/postgresql/server.key\nchmod 600 /var/lib/postgresql/server.key\nprintf \"\\nssl=on\\nssl_cert_file='/var/lib/postgresql/server.crt'\\nssl_key_file='/var/lib/postgresql/server.key'\\n\" >> \"$PGDATA/postgresql.conf\"\n".to_vec();
-    let image = Postgres::default()
-        .with_password("postgres")
-        .with_tag("18-alpine")
-        .with_copy_to(
-            CopyTargetOptions::new("/docker-entrypoint-initdb.d/00_tls.sh").with_mode(0o755),
-            CopyDataSource::Data(setup),
-        )
-        .with_copy_to(
-            "/docker-entrypoint-initdb.d/server.crt",
-            CopyDataSource::Data(generated.cert.pem().into_bytes()),
-        )
-        .with_copy_to(
-            // Init scripts run as `postgres`; the copied archive is root-owned.
-            // The script immediately installs the key as postgres-owned mode 0600.
-            CopyTargetOptions::new("/docker-entrypoint-initdb.d/server.key").with_mode(0o644),
-            CopyDataSource::Data(generated.signing_key.serialize_pem().into_bytes()),
-        );
-    let container = image.start().await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(
+        pgtk_test_server::Server::builder_of("pg18")
+            .host_auth("scram-sha-256")
+            .password("postgres")
+            .file("server.crt", generated.cert.pem())
+            .file("server.key", generated.signing_key.serialize_pem())
+            .setting("ssl", "on")
+            .setting("ssl_cert_file", "server.crt")
+            .setting("ssl_key_file", "server.key"),
+    )
+    .await?;
+    let upstream = server.tcp_address();
     let mut intermediary = Command::new(executable)
         .args([
             "intermediary-child",
@@ -948,7 +909,7 @@ async fn run_tls_profile(executable: &str, artifacts: &Path) -> Result<(), Box<d
     wait_success(&mut driver, "TLS driver").await?;
     let _ = read_event(&mut intermediary).await?;
     wait_success(&mut intermediary, "TLS intermediary").await?;
-    drop(container);
+    drop(server);
     Ok(())
 }
 
@@ -970,15 +931,11 @@ async fn supervise_smoke(
     ),
     Box<dyn Error>,
 > {
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag(format!("{postgres_version}-alpine"))
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(
+        pgtk_test_server::Server::builder_of(&format!("pg{postgres_version}")).tcp(),
+    )
+    .await?;
+    let upstream = server.tcp_address();
 
     let mut intermediary = Command::new(executable)
         .args([
@@ -1079,7 +1036,7 @@ async fn supervise_smoke(
     validate_async_traffic(&async_traffic)?;
     validate_cancellation(&cancellation)?;
     wait_success(&mut intermediary, "intermediary").await?;
-    drop(container);
+    drop(server);
     Ok((
         value,
         coverage,
@@ -1104,15 +1061,8 @@ async fn supervise_rewrites(executable: &str) -> Result<Vec<String>, Box<dyn Err
         "parse-query",
         "row-description",
     ];
-    let container = Postgres::default()
-        .with_host_auth()
-        .with_tag("18-alpine")
-        .start()
-        .await?;
-    let upstream = SocketAddr::new(
-        IpAddr::V4(Ipv4Addr::LOCALHOST),
-        container.get_host_port_ipv4(5432).await?,
-    );
+    let server = start_postgres(pgtk_test_server::Server::builder_of("pg18").tcp()).await?;
+    let upstream = server.tcp_address();
     let mut intermediary = Command::new(executable)
         .args([
             "intermediary-child",
@@ -1154,7 +1104,7 @@ async fn supervise_rewrites(executable: &str) -> Result<Vec<String>, Box<dyn Err
         return Err("rewrite intermediary did not complete".into());
     };
     wait_success(&mut intermediary, "rewrite intermediary").await?;
-    drop(container);
+    drop(server);
 
     for kind in KINDS {
         for suffix in ["mutated", "validated"] {
