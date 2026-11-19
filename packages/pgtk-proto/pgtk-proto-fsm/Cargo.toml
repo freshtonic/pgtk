@@ -1,0 +1,41 @@
+[package]
+name = "pgtk-proto-fsm"
+version = "0.12.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["James Sadler <freshtonic@gmail.com>"]
+license = "MIT"
+description = "Protocol grammar generator for pgtk-proto"
+keywords = ["protocol", "typestate", "state-machine", "proc-macro", "railroad"]
+categories = ["development-tools::procedural-macro-helpers", "network-programming"]
+documentation = "https://docs.rs/pgtk-proto-fsm"
+homepage = "https://github.com/freshtonic/pgtk"
+repository.workspace = true
+readme = "README.md"
+
+[lib]
+proc-macro = true
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# These produce unstable or dependency-graph noise rather than actionable defects.
+future_not_send = "allow"
+missing_const_for_fn = "allow"
+multiple_crate_versions = "allow"
+option_if_let_else = "allow"
+
+[dependencies]
+proc-macro2.workspace = true
+quote.workspace = true
+railroad.workspace = true
+syn = { workspace = true, features = ["full", "visit-mut"] }
+
+[dev-dependencies]
+trybuild.workspace = true

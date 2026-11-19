@@ -1,0 +1,2 @@
+# The build script probes rustc with autocfg and prints `cargo:rustc-cfg` lines.
+buildscript.run = true

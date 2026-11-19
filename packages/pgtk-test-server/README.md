@@ -32,6 +32,15 @@ let url = server.connection_string("postgres");
 
 // Or a server of a given version.
 let pg14 = Server::start_of("pg14");
+
+// Or a server that also listens on 127.0.0.1, with password authentication
+// and its own settings.
+let tcp = Server::builder_of("pg18")
+    .host_auth("scram-sha-256")
+    .password("secret")
+    .setting("wal_level", "replica")
+    .start();
+let address = tcp.tcp_address();
 ```
 
 `installation_of(feature)` gives the installation: its `bin` directory, and a `Command` for each

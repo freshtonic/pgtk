@@ -251,6 +251,25 @@ fn main() {
     println!("cargo:rustc-link-lib=static=pq");
     println!("cargo:rustc-link-lib=static=pgcommon");
     println!("cargo:rustc-link-lib=static=pgport");
+
+    // A tree configured with OpenSSL (`build-pg.sh` adds it when pkg-config finds OpenSSL) has a
+    // libpq that calls OpenSSL. Link it from the directories that configure was given.
+    let pg_config = std::fs::read_to_string(tree.join("src/include/pg_config.h"))
+        .expect("a configured tree has pg_config.h");
+    if pg_config.contains("#define USE_OPENSSL 1") {
+        let makefile = std::fs::read_to_string(tree.join("src/Makefile.global"))
+            .expect("a configured tree has src/Makefile.global");
+        for directory in makefile
+            .lines()
+            .filter_map(|line| line.strip_prefix("LDFLAGS ="))
+            .flat_map(str::split_whitespace)
+            .filter_map(|flag| flag.strip_prefix("-L"))
+        {
+            println!("cargo:rustc-link-search=native={directory}");
+        }
+        println!("cargo:rustc-link-lib=ssl");
+        println!("cargo:rustc-link-lib=crypto");
+    }
 }
 
 /// The macro definitions that configure chose for the PostgreSQL tree: the

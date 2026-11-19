@@ -1,0 +1,529 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reuse-pr-ci:
+    name: Reuse successful PR CI
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.user.login == 'github-actions[bot]' &&
+       startsWith(github.head_ref, 'release-plz-'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+      package_tested: ${{ steps.check.outputs.package_tested }}
+    steps:
+      - name: Check whether this tree passed PR CI
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          echo "tested=false" >> "$GITHUB_OUTPUT"
+          echo "package_tested=false" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            unexpected_files="$(
+              gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" --jq '.[].filename' |
+                grep -Ev '^(CHANGELOG\.md|Cargo\.lock|Cargo\.toml|[^/]+/Cargo\.toml)$' || true
+            )"
+            if [ -n "$unexpected_files" ]; then
+              echo "::notice title=Release PR CI not reused::Unexpected release files changed: $unexpected_files"
+              exit 0
+            fi
+
+            release_commit="$(gh api "repos/$REPO/git/commits/$PR_HEAD")"
+            parent_sha="$(jq -r '.parents[0].sha // empty' <<<"$release_commit")"
+            parent_count="$(jq -r '.parents | length' <<<"$release_commit")"
+            if [ "$parent_count" != "1" ] || [ "$parent_sha" != "$PR_BASE" ]; then
+              echo "::notice title=Release PR CI not reused::The release commit is not directly based on the PR base."
+              exit 0
+            fi
+
+            passed="$(
+              gh api \
+                --method GET \
+                -f event=push \
+                -f head_sha="$parent_sha" \
+                -f status=completed \
+                -f per_page=100 \
+                "repos/$REPO/actions/workflows/ci.yml/runs" \
+                --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0'
+            )"
+            if [ "$passed" = "true" ]; then
+              echo "tested=true" >> "$GITHUB_OUTPUT"
+              echo "::notice title=Release PR CI reused::Skipping duplicate tests already passed by parent $parent_sha."
+            else
+              echo "::notice title=Release PR CI not reused::The release parent has no successful push CI run."
+            fi
+            exit 0
+          fi
+
+          max_attempts=6
+          retry_delay=10
+
+          for attempt in $(seq 1 "$max_attempts"); do
+            echo "::group::Reuse lookup attempt $attempt of $max_attempts"
+
+            commit_json="$(
+              gh api "repos/$REPO/git/commits/$COMMIT" 2>/dev/null || true
+            )"
+            main_tree="$(jq -r '.tree.sha // empty' <<<"${commit_json:-null}")"
+            parent_count="$(jq -r '.parents | length' <<<"${commit_json:-null}")"
+
+            pr="$(
+              gh api "repos/$REPO/commits/$COMMIT/pulls" \
+                --jq 'map(select(.merged_at != null)) | sort_by(.merged_at) | last' \
+                2>/dev/null || true
+            )"
+            head_sha="$(jq -r '.head.sha // empty' <<<"${pr:-null}")"
+            head_repo="$(jq -r '.head.repo.full_name // empty' <<<"${pr:-null}")"
+            source="associated merged PR"
+
+            # Commit-to-PR associations are eventually consistent after a merge.
+            # A normal two-parent merge records the exact PR head as parent 2,
+            # which provides a safe fallback while that index catches up.
+            if [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
+              if [ "$parent_count" = "2" ]; then
+                head_sha="$(jq -r '.parents[1].sha // empty' <<<"$commit_json")"
+                head_repo="$REPO"
+                source="second merge parent"
+              fi
+            fi
+
+            if [ -z "$main_tree" ]; then
+              reason="main commit metadata is not available yet"
+            elif [ -z "$head_sha" ] || [ -z "$head_repo" ]; then
+              reason="no merged PR association or two-parent merge fallback is available yet"
+            else
+              echo "Candidate $head_sha resolved from $source"
+              pr_tree="$(
+                gh api "repos/$head_repo/git/commits/$head_sha" --jq '.tree.sha' \
+                  2>/dev/null || true
+              )"
+
+              if [ -z "$pr_tree" ] && [ "$head_repo" != "$REPO" ]; then
+                # GitHub retains a merged fork head as an object in the base
+                # repository even if the fork or branch has since been deleted.
+                pr_tree="$(
+                  gh api "repos/$REPO/git/commits/$head_sha" --jq '.tree.sha' \
+                    2>/dev/null || true
+                )"
+              fi
+
+              if [ -z "$pr_tree" ]; then
+                reason="candidate commit metadata is not available yet"
+              elif [ "$main_tree" != "$pr_tree" ]; then
+                echo "Main tree $main_tree differs from candidate tree $pr_tree"
+                echo "::endgroup::"
+                echo "::notice title=PR CI not reused::The main and PR trees differ."
+                exit 0
+              else
+                echo "Main and candidate share tree $main_tree"
+                passed="$(
+                  gh api \
+                    --method GET \
+                    -f event=pull_request \
+                    -f head_sha="$head_sha" \
+                    -f status=completed \
+                    -f per_page=100 \
+                    "repos/$REPO/actions/workflows/ci.yml/runs" \
+                    --jq '[.workflow_runs[] | select(.conclusion == "success")] | length > 0' \
+                    2>/dev/null || true
+                )"
+
+                if [ "$passed" = "true" ]; then
+                  echo "Successful pull-request CI found for $head_sha"
+                  echo "::endgroup::"
+                  echo "tested=true" >> "$GITHUB_OUTPUT"
+                  echo "package_tested=true" >> "$GITHUB_OUTPUT"
+                  echo "::notice title=PR CI reused::Skipping duplicate CI for tree $main_tree."
+                  exit 0
+                fi
+                reason="a successful pull-request CI run is not available yet"
+              fi
+            fi
+
+            echo "$reason"
+            echo "::endgroup::"
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              sleep "$retry_delay"
+            fi
+          done
+
+          echo "::notice title=PR CI not reused::No reusable successful PR run was found after $max_attempts attempts; running CI."
+
+  quality:
+    name: Quality gates
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --workspace --no-deps
+
+      - name: Functional builder examples
+        run: cargo check --workspace --examples
+
+  portable-tests:
+    name: Portable tests
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Builder facade doctests
+        run: cargo test --workspace --doc
+
+      - name: Builder-only public surface
+        run: cargo test --test public_surface
+
+      - name: Legacy documentation reference audit
+        run: cargo test --test documentation_audit
+
+      - name: Run all portable tests
+        run: cargo test --workspace
+
+  container-tests:
+    name: Core container tests
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run core container tests
+        run: timeout 10m cargo test -p pgtk-proto -- --ignored --test-threads=1
+
+  burn-in-tests:
+    name: Burn-in verification
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run burn-in fault tests
+        run: >-
+          timeout 10m cargo test -p pgtk-proto-burn-in --test faults --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in performance tests
+        run: >-
+          timeout 10m cargo test -p pgtk-proto-burn-in --test performance --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in replication tests
+        run: >-
+          timeout 10m cargo test -p pgtk-proto-burn-in --test replication --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in authentication and smoke tests
+        run: >-
+          timeout 10m cargo test -p pgtk-proto-burn-in --test smoke --
+          --include-ignored --test-threads=1
+
+      - name: Run burn-in soak tests
+        run: >-
+          timeout 10m cargo test -p pgtk-proto-burn-in --test soak --
+          --include-ignored --test-threads=1
+
+      - name: Run ordinary burn-in smoke
+        run: >-
+          cargo run -p pgtk-proto-burn-in --
+          conformance --profile smoke --postgres-version 18
+          --output-dir target/burn-in/smoke
+
+      - name: Run malformed scripted conformance
+        run: >-
+          cargo run -p pgtk-proto-burn-in --
+          conformance --profile scripted
+          --output-dir target/burn-in/scripted
+
+      - name: Audit complete protocol catalogue
+        run: >-
+          cargo run -p pgtk-proto-burn-in --
+          catalogue --approved --as-of $(date -u +%F)
+          --output-dir target/burn-in/catalogue
+
+      - name: Upload ordinary burn-in evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: burn-in-smoke
+          path: target/burn-in
+          if-no-files-found: warn
+
+  test:
+    name: Tests and quality gates
+    needs:
+      - reuse-pr-ci
+      - quality
+      - portable-tests
+      - container-tests
+      - burn-in-tests
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require every split test job
+        env:
+          REUSED: ${{ needs.reuse-pr-ci.outputs.tested }}
+          QUALITY: ${{ needs.quality.result }}
+          PORTABLE_TESTS: ${{ needs.portable-tests.result }}
+          CONTAINER_TESTS: ${{ needs.container-tests.result }}
+          BURN_IN_TESTS: ${{ needs.burn-in-tests.result }}
+        run: |
+          if [ "$REUSED" = "true" ]; then
+            echo "All test and quality gates were reused from successful PR CI."
+            exit 0
+          fi
+
+          for result in "$QUALITY" "$PORTABLE_TESTS" "$CONTAINER_TESTS" "$BURN_IN_TESTS"; do
+            if [ "$result" != "success" ]; then
+              echo "A required split test job did not succeed: $result"
+              exit 1
+            fi
+          done
+
+  benches:
+    name: Benchmarks
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true' &&
+      (github.event_name != 'pull_request' || github.actor != 'github-actions[bot]')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: benchmarks-pr-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check whether benchmark results may update the pull request
+        if: github.event_name == 'pull_request'
+        id: retention
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git fetch --no-tags --depth=1 origin "$PR_BASE_SHA"
+          if git diff --quiet "$PR_BASE_SHA" HEAD -- .github/workflows/ci.yml; then
+            echo "allowed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "allowed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Benchmark retention skipped::A pull request may not use its modified CI workflow to push benchmark results."
+          fi
+
+      - name: Run all benchmarks
+        run: cargo bench --workspace
+
+      - name: Retain pull request benchmark result
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.retention.outputs.allowed == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          python3 scripts/update_benches.py
+          --criterion-root target/criterion
+          --pr "$PR_NUMBER"
+          --commit "$PR_HEAD_SHA"
+
+      - name: Add benchmark result to the pull request
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          steps.retention.outputs.allowed == 'true'
+        env:
+          PR_BRANCH: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if git diff --quiet -- BENCHES.md benchmark-results; then
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add BENCHES.md benchmark-results
+          git commit -m "chore: update benchmark results"
+          git push origin "HEAD:$PR_BRANCH"
+
+  msrv:
+    name: MSRV 1.88
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install minimum supported Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.88.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check every workspace target
+        run: cargo check --workspace --all-targets
+
+  package:
+    name: Package crates
+    needs: reuse-pr-ci
+    if: >-
+      always() &&
+      needs.reuse-pr-ci.outputs.package_tested != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install development Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Verify publishable packages
+        run: cargo package --workspace
+
+  fuzz:
+    name: Fuzz ${{ matrix.target }}
+    needs: reuse-pr-ci
+    if: always()
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - frontend_codec
+          - backend_codec
+          - pre_startup
+          - scram
+          - runtime_fsm
+    steps:
+      - name: Reuse successful CI result
+        if: needs.reuse-pr-ci.outputs.tested == 'true'
+        run: echo "Fuzz coverage was already verified by the release parent."
+
+      - name: Checkout repository
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        uses: actions/checkout@v7
+
+      - name: Install nightly Rust
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: nightly-2026-08-12
+
+      - name: Cache Rust build artifacts
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+
+      - name: Install cargo-fuzz
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        run: cargo install cargo-fuzz --locked
+
+      - name: Run fuzz target
+        if: needs.reuse-pr-ci.outputs.tested != 'true'
+        run: cargo +nightly-2026-08-12 fuzz run --fuzz-dir fuzz ${{ matrix.target }} -- -max_total_time=60

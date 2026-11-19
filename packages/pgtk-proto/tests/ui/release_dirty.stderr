@@ -1,0 +1,11 @@
+error[E0599]: no method named `release` found for struct `Conn<S, pgtk_proto::auth::Ready, pgtk_proto::Dirty>` in the current scope
+ --> tests/ui/release_dirty.rs:4:19
+  |
+4 |     let _ = ready.release();
+  |                   ^^^^^^^
+  |
+help: there is a method `erase` with a similar name
+  |
+4 -     let _ = ready.release();
+4 +     let _ = ready.erase();
+  |

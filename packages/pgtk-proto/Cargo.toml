@@ -1,0 +1,65 @@
+[package]
+name = "pgtk-proto"
+version = "0.12.0"
+edition = "2024"
+rust-version = "1.88"
+authors = ["James Sadler <freshtonic@gmail.com>"]
+license = "MIT"
+description = "Session-typed PostgreSQL wire protocol"
+keywords = ["postgresql", "protocol", "proxy", "typestate", "async"]
+categories = ["database", "network-programming", "asynchronous"]
+documentation = "https://docs.rs/pgtk-proto"
+homepage = "https://github.com/freshtonic/pgtk"
+readme = "README.md"
+repository.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[lints.rust]
+missing_docs = "deny"
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+nursery = { level = "warn", priority = -1 }
+cargo = { level = "warn", priority = -1 }
+# These produce unstable or dependency-graph noise rather than actionable defects.
+future_not_send = "allow"
+missing_const_for_fn = "allow"
+multiple_crate_versions = "allow"
+option_if_let_else = "allow"
+# The `async fn` impls match the `async fn` declarations of their traits.
+unused_async_trait_impl = "allow"
+
+[dependencies]
+bytes.workspace = true
+base64.workspace = true
+hmac.workspace = true
+postgres-protocol.workspace = true
+pgtk-proto-fsm = { version = "0.12.0", path = "pgtk-proto-fsm" }
+rand.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+stringprep.workspace = true
+subtle.workspace = true
+socket2.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "time"] }
+tokio-rustls.workspace = true
+tokio-util = { workspace = true, features = ["codec"] }
+x509-parser.workspace = true
+
+[dev-dependencies]
+criterion = { workspace = true, features = ["async_tokio"] }
+futures-util.workspace = true
+rcgen.workspace = true
+pgtk-test-server = { path = "../pgtk-test-server" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "time"] }
+tokio-postgres.workspace = true
+tokio-postgres-rustls.workspace = true
+trybuild.workspace = true
+
+[[bench]]
+name = "in_memory_throughput"
+harness = false

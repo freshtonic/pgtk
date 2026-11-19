@@ -1,0 +1,2 @@
+# The build script generates `oid_db.rs` in OUT_DIR from assets/oid_db.txt.
+buildscript.run = true

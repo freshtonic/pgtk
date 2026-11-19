@@ -1,0 +1,2 @@
+# The build script prints a cfg only for the `read_buf` feature on nightly, which is off.
+buildscript.run = false

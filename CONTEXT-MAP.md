@@ -9,6 +9,8 @@
   catalog as an immutable snapshot.
 - [pgtk-analyze](./packages/pgtk-analyze/CONTEXT.md) — performs PostgreSQL parse analysis on a
   parsed Statement against a Catalog.
+- [pgtk-proto](./packages/pgtk-proto/CONTEXT.md) — PostgreSQL wire-protocol traffic as it passes
+  through a proxy.
 
 The tooling crates (`pgtk-oracle`, `pgtk-psql-oracle`, `pgtk-test-server`, `pgtk-test-features`,
 `pgtk-catalog-xtask`) have no domain language and no context.

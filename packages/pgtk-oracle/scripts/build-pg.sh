@@ -78,6 +78,13 @@ fi
 # older tree, or a tree that was moved) is built again.
 PREFIX="$PG_TREE/install"
 CONFIGURE_OPTIONS=(--prefix="$PREFIX" --with-libxml --without-icu --without-zlib --without-readline)
+# OpenSSL, when pkg-config finds it: the pgtk-proto tests of TLS and of SCRAM-SHA-256-PLUS need a
+# server with SSL. A tree built without it serves no TLS, and only those tests fail.
+if pkg-config --exists openssl 2>/dev/null; then
+  CONFIGURE_OPTIONS+=(--with-ssl=openssl)
+  CONFIGURE_OPTIONS+=(--with-includes="$(pkg-config --variable=includedir openssl)")
+  CONFIGURE_OPTIONS+=(--with-libraries="$(pkg-config --variable=libdir openssl)")
+fi
 OPTIONS_STAMP="$PG_TREE/pgtk-configure-options"
 if [ -f "$PG_TREE/src/Makefile.global" ] \
   && [ "$(cat "$OPTIONS_STAMP" 2>/dev/null || true)" != "${CONFIGURE_OPTIONS[*]}" ]; then

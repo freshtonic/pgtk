@@ -90,3 +90,20 @@ publish = false
 name = "pgtk-skills"
 release = false
 publish = false
+
+# Not released yet. pgtk-proto was the pg-proto repository (0.12.0 is the last pg-proto release).
+# Its release configuration is a change of its own.
+[[package]]
+name = "pgtk-proto"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-proto-fsm"
+release = false
+publish = false
+
+[[package]]
+name = "pgtk-proto-burn-in"
+release = false
+publish = false
