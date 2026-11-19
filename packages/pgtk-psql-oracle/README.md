@@ -28,7 +28,7 @@ The oracle reads the arguments of each command as `command.c` reads them. It app
 `\unset`, `\if`, `\elif`, `\else` and `\endif`. It runs no other command, and it never runs a
 backquoted shell command.
 
-The version feature (`pg14` ... `pg19-beta`, default `pg17`) selects the release from
+The version feature (`pg14` ... `pg19-beta`, default `pg18`) selects the release from
 `pgtk-oracle/pins.tsv`.
 
 ## Use

@@ -28,8 +28,8 @@
     "handoff-2026-09-01.md"
   ],
   "rules": [
-    "pgtk-sql, pgtk-psql and pgtk-analyze each need exactly one PostgreSQL version feature: pg14, pg15, pg16, pg17, pg18 or pg19-beta. The default is pg17. The build stops with zero or with two or more.",
-    "To select a version other than pg17, set default-features = false and one version feature, for example: pgtk-sql = { version = \"0.1\", default-features = false, features = [\"pg16\"] }.",
+    "pgtk-sql, pgtk-psql and pgtk-analyze each need exactly one PostgreSQL version feature: pg14, pg15, pg16, pg17, pg18 or pg19-beta. The default is pg18. The build stops with zero or with two or more.",
+    "To select a version other than pg18, set default-features = false and one version feature, for example: pgtk-sql = { version = \"0.1\", default-features = false, features = [\"pg16\"] }.",
     "A crate between your crate and pgtk-sql must use default-features = false on pgtk-sql and forward the version features. If not, Cargo feature unification can turn on two versions.",
     "pgtk_sql::document::parse_sql parses a document of many statements. It needs the spans feature of pgtk-sql.",
     "To parse one statement, use: let lexed = pgtk_sql::lex(sql); let mut input = lexed.input(); then pgtk_sql::ast::Statement::parse(&mut input).",

@@ -8,7 +8,7 @@ publish = false
 [features]
 # Target version (ADR 0009): the oracle builds the pinned PostgreSQL release
 # of the selected version (`pins.tsv`). Enable exactly one version feature.
-default = ["pg17", "parser"]
+default = ["pg18", "parser"]
 # The FFI parser of the pinned release. Without it the crate is empty, and the build script builds
 # no PostgreSQL. pgtk-sql turns it on with its `postgres-oracle` feature.
 parser = []

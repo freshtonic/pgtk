@@ -18,6 +18,7 @@
 //!   PostgreSQL 15: 42601: subquery in FROM must have an alias
 //!   PostgreSQL 16: ok
 //!   PostgreSQL 17: ok
+//!   PostgreSQL 18: ok
 //! ```
 
 use pgtk_analyze::{AnalyzeError, Analyzer, GRAMMAR_VERSION, Session, Settings, TargetVersion};

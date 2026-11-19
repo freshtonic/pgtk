@@ -99,7 +99,7 @@ evaluation.
 
 | Feature | What it does |
 |---|---|
-| `pg14` ... `pg19-beta` | Selects the PostgreSQL version of `pgtk-sql` and of the psql lexer. Use exactly one. The default is `pg17`. |
+| `pg14` ... `pg19-beta` | Selects the PostgreSQL version of `pgtk-sql` and of the psql lexer. Use exactly one. The default is `pg18`. |
 | `psql-oracle` | Development only: builds psql's lexers for the differential tests. |
 
 ## What it does not do

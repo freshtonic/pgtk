@@ -1,7 +1,7 @@
 # pgtk-sql Domain
 
 `pgtk-sql` is a PostgreSQL parser built with Recursa. Each build targets one
-PostgreSQL version, PostgreSQL 17 by default. The port preserves language coverage
+PostgreSQL version, PostgreSQL 18 by default. The port preserves language coverage
 and semantic information without promising compatibility with the legacy Rust
 API.
 
@@ -17,7 +17,7 @@ API.
   which the caller chooses for each Analysis.
 - **Version feature**: the Cargo feature that selects the target version:
   `pg14`, `pg15`, `pg16`, `pg17`, `pg18` or `pg19-beta`. They are mutually
-  exclusive, and `pg17` is the default. `pg19-beta` becomes `pg19` when
+  exclusive, and `pg18` is the default. `pg19-beta` becomes `pg19` when
   PostgreSQL 19.0 is tagged.
 - **Version parity**: a build accepts exactly what its target version's raw
   parser (`gram.y` and `scan.l`) accepts, and rejects exactly what it

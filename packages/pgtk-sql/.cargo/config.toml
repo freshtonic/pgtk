@@ -9,4 +9,4 @@ rustc-wrapper = ""
 # configuration (scripts/merge-gate), so the loop and the gate share one build
 # and one incremental cache. Example: `cargo loop --test embedded`.
 [alias]
-loop = "test -p pgtk-sql --no-default-features --features pg17,spans,arbitrary,postgres-oracle"
+loop = "test -p pgtk-sql --no-default-features --features pg18,spans,arbitrary,postgres-oracle"

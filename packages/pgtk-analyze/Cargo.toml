@@ -16,7 +16,7 @@ publish = true
 # a build with zero or with two or more. A crate between a consumer and
 # pgtk-analyze uses `default-features = false` on pgtk-analyze and forwards these
 # features. The Target Version is chosen at run time in the Settings.
-default = ["pg17"]
+default = ["pg18"]
 pg14 = ["pgtk-sql/pg14", "pgtk-psql/pg14"]
 pg15 = ["pgtk-sql/pg15", "pgtk-psql/pg15", "since-pg15"]
 pg16 = ["pgtk-sql/pg16", "pgtk-psql/pg16", "since-pg15", "since-pg16"]

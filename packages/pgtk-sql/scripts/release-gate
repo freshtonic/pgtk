@@ -10,9 +10,9 @@
 # merge gate configuration of that version (`spans`, `arbitrary`, both
 # oracles) in one cargo invocation and runs every test of pgtk-sql, pgtk-psql,
 # pgtk-oracle and pgtk-psql-oracle, then prints the corpus coverage of the
-# version baseline. For pg17 it also runs pgtk-sql without `spans` and without
-# `arbitrary`, and the parity gate (ADR 0006): the parse bench's
-# pgtk-sql/sqlparser geomean must be at or below 1.0.
+# version baseline. For pg18, the default version, it also runs pgtk-sql
+# without `spans` and without `arbitrary`, and the parity gate (ADR 0006): the
+# parse bench's pgtk-sql/sqlparser geomean must be at or below 1.0.
 #
 # The Arbitrary round trip (tests/arbitrary_roundtrip.rs) runs for each
 # version with 1,000,000 attempts, ten times the merge gate's count. It takes
@@ -53,9 +53,9 @@ for version in "${versions[@]}"; do
   run cargo test --locked "${gate_packages[@]}" --features "$(gate_features "$version")"
   coverage "$version"
 
-  if [ "$version" = pg17 ]; then
-    echo "=== pg17 without spans and without arbitrary" >&2
-    run cargo test --locked -p pgtk-sql --no-default-features --features pg17,postgres-oracle
+  if [ "$version" = pg18 ]; then
+    echo "=== pg18 without spans and without arbitrary" >&2
+    run cargo test --locked -p pgtk-sql --no-default-features --features pg18,postgres-oracle
     echo "=== parity gate" >&2
     PG_SQL_PARITY_MAX=1.0 run cargo bench --locked -p pgtk-sql --features postgres-oracle --bench parse
   fi

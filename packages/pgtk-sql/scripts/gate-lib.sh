@@ -13,7 +13,7 @@ gate_features() {
   local v="$1"
   echo "pgtk-sql/$v,pgtk-sql/spans,pgtk-sql/arbitrary,pgtk-sql/postgres-oracle,pgtk-psql/$v,pgtk-psql/psql-oracle,pgtk-oracle/$v,pgtk-psql-oracle/$v"
 }
-merge_features="$(gate_features pg17)"
+merge_features="$(gate_features pg18)"
 
 # Where the gates keep their lock. $PG_SQL_GATE_LOCK moves it.
 gate_lock_file() {

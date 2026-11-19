@@ -27,8 +27,8 @@ version feature. The build script, `scripts/build-pg.sh`, CI and the tests all r
 | `pg14` | `REL_14_24` |
 | `pg15` | `REL_15_19` |
 | `pg16` | `REL_16_15` |
-| `pg17` (default) | `REL_17_11` |
-| `pg18` | `REL_18_6` |
+| `pg17` | `REL_17_11` |
+| `pg18` (default) | `REL_18_6` |
 | `pg19-beta` | `REL_19_STABLE` at `b73d13c` |
 
 The parser is behind the `parser` feature, which is on by default. Without it, the crate has only

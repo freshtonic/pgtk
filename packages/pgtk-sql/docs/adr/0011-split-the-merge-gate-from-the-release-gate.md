@@ -12,13 +12,14 @@ crate that takes a minute to compile on a quiet machine, before any test ran.
 Agent sessions ran two or three such gates at once on ten cores, and a run
 took hours.
 
-The merge gate now proves one gate configuration: the default target version,
-`pg17`, with `spans`, `arbitrary` and both oracles, in one cargo invocation
-over pgtk-sql, pgtk-psql, pgtk-oracle and pgtk-psql-oracle. That is one compile of
+The merge gate now proves one gate configuration: the default target version
+(`pg17` when this was decided, `pg18` since issue #140), with `spans`,
+`arbitrary` and both oracles, in one cargo invocation over pgtk-sql,
+pgtk-psql, pgtk-oracle and pgtk-psql-oracle. That is one compile of
 the grammar, and it is the same configuration the edit loop uses
 (`cargo loop`), so the loop and the gate share one build and one incremental
-cache. The other five versions, the `pg17` build without `spans` and without
-`arbitrary`, the parity gate of ADR 0006 and the corpus coverage of each
+cache. The other five versions, the default version's build without `spans` and
+without `arbitrary`, the parity gate of ADR 0006 and the corpus coverage of each
 version baseline move to the release gate, which runs before a release and
 only then. The alternative, keeping every version on every merge and making
 each build cheaper, was measured first: the floor is six compiles of the
@@ -40,7 +41,7 @@ other versions rarely fail.
 - Both gates run the `Arbitrary` round trip (`tests/arbitrary_roundtrip.rs`,
   issue #49). It samples statements with `Arbitrary`, renders them, parses
   them again, and asks the oracle of the version about each one. The merge
-  gate samples 100,000 statements (pg17, about 6 seconds in a debug build).
+  gate samples 100,000 statements (about 6 seconds in a debug build).
   The release gate samples 1,000,000 statements for each version (about one
   minute each). The test fails when a failure has no entry in its list of
   known failures, or when the yield falls below its pinned floor.

@@ -82,9 +82,9 @@ pub use target_version::TargetVersion;
 /// The target version of this build, selected by the Cargo version feature.
 ///
 /// ```
-/// // With the default features, pgtk-sql targets PostgreSQL 17.
-/// # #[cfg(feature = "pg17")] {
-/// assert_eq!(pgtk_sql::TARGET_VERSION.major(), 17);
+/// // With the default features, pgtk-sql targets PostgreSQL 18.
+/// # #[cfg(feature = "pg18")] {
+/// assert_eq!(pgtk_sql::TARGET_VERSION.major(), 18);
 /// # }
 /// ```
 #[cfg(feature = "pg14")]

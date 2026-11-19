@@ -23,7 +23,7 @@ serde_json = "1"
 
 - `pgtk-catalog/serde` reads the snapshot. `pgtk-sql/spans` gives `parse_sql`, which divides a
   file into statements.
-- Use the same version feature (`pg14` ... `pg19-beta`, default `pg17`) on pgtk-analyze and on
+- Use the same version feature (`pg14` ... `pg19-beta`, default `pg18`) on pgtk-analyze and on
   pgtk-sql. Use `default-features = false` on both to select a version other than 17.
 
 ## Steps
